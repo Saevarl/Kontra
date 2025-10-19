@@ -1,25 +1,31 @@
-[project]
-name = "contra"
-version = "0.1.0"
-description = "Developer-first data quality engine"
-authors = [{ name = "Contra Team" }]
-dependencies = ["polars", "duckdb", "pydantic", "typer", "rich"]
-
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
+[project]
+name = "kontra"                                # package/distribution name
+version = "0.1.0"
+description = "Developer-first data quality engine"
+authors = [{ name = "Kontra Team" }]
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+  "polars",
+  "duckdb",
+  "pydantic",
+  "typer",
+  "rich"
+]
 
 [project.scripts]
-contra = "contra.cli.main:main"
+# primary CLI (new name)
+kontra = "kontra.cli.main:main"
+# optional: keep the old 'contra' command for backward-compat
+contra = "kontra.cli.main:main"
 
 [project.optional-dependencies]
 s3 = ["s3fs>=2024.6.0"]
 
-[project]
-license = {text = "Apache-2.0"}
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kontra*"]
