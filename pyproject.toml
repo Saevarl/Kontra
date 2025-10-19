@@ -1,0 +1,25 @@
+[project]
+name = "contra"
+version = "0.1.0"
+description = "Developer-first data quality engine"
+authors = [{ name = "Contra Team" }]
+dependencies = ["polars", "duckdb", "pydantic", "typer", "rich"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+contra = "contra.cli.main:main"
+
+[project.optional-dependencies]
+s3 = ["s3fs>=2024.6.0"]
+
+[project]
+license = {text = "Apache-2.0"}
