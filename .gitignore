@@ -1,0 +1,79 @@
+# --- Python Virtual Environments ---
+# Common names for virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# --- Python Cache & Bytecode ---
+# Compiled Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Distribution & Build Artifacts ---
+# Packaging (setuptools, wheel, twine)
+build/
+dist/
+*.egg-info/
+*.egg
+wheelhouse/
+pip-wheel-metadata/
+share/python-wheels/
+
+# --- Secrets & Environment Variables ---
+# Never commit your environment variables or local secrets!
+.env
+.env.*
+# --- BUT: DO commit an example file ---
+# !.env.example
+
+# --- IDE & Editor Configuration ---
+# VSCode
+.vscode/
+# PyCharm / IntelliJ
+.idea/
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+# Vim
+*.swp
+*.swo
+*~
+
+# --- Testing & Coverage ---
+# pytest cache
+.pytest_cache/
+pytest-results.xml
+# Coverage reports
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+
+# --- OS & System Files ---
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Logs & Runtime Files ---
+*.log
+*.log.*
+*.logs
+*.db
+*.sqlite3
+
+# --- Notebooks ---
+# Jupyter notebook checkpoints
+.ipynb_checkpoints
+
+# --- DuckDB ---
+# DuckDB write-ahead logs
+*.wal
