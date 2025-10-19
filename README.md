@@ -1,3 +1,3 @@
-# Contra
+# Kontra
 
-Developer-first Data Quality Engine (MVP Scaffold)
+Developer-first Data Quality Engine
