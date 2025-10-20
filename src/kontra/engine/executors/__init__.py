@@ -1,12 +1,15 @@
-from __future__ import annotations
+# src/kontra/engine/executors/__init__.py
+from .base import SqlExecutor
+from .registry import (
+    pick_executor,
+    register_default_executors,
+    register_executor,
+)
 
-"""
-Executors package
-
-Exports:
-  - SqlRuleExecutor (Protocol)
-  - DuckDBSqlExecutor (implementation)
-"""
-
-from .sql_base import SqlRuleExecutor  # re-export for convenience
-from .duckdb_sql import DuckDBSqlExecutor  # concrete executor
+# Re-export for convenience
+__all__ = [
+    "SqlExecutor",
+    "pick_executor",
+    "register_executor",
+    "register_default_executors",
+]

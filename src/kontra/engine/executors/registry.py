@@ -1,36 +1,57 @@
+# src/kontra/engine/executors/registry.py
 from __future__ import annotations
-from typing import List, Dict, Any, Optional
 
-from .sql_base import SqlRuleExecutor
-from .duckdb_sql import DuckDBSqlExecutor
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-# Global registry (simple list preserves order)
-_SQL_EXECUTORS: List[SqlRuleExecutor] = []
+from kontra.connectors.handle import DatasetHandle
 
-
-def register_sql_executor(executor: SqlRuleExecutor) -> None:
-    """Register an SQL executor implementation (in priority order)."""
-    _SQL_EXECUTORS.append(executor)
+if TYPE_CHECKING:
+    from .base import SqlExecutor
 
 
-def available_executors() -> List[SqlRuleExecutor]:
-    return list(_SQL_EXECUTORS)
+# Global registry: maps "executor_name" -> constructor()
+_EXECUTORS: Dict[str, Callable[[], SqlExecutor]] = {}
 
 
-def pick_sql_executor(source_uri: str, connector_caps: int, sql_specs: List[Dict[str, Any]]) -> Optional[SqlRuleExecutor]:
+def register_executor(name: str):
     """
-    Choose the first executor that supports both the source and the rule specs.
-    Return None if no executor applies (engine will skip pushdown).
+    Decorator to register a SQL executor class.
     """
-    for exec_ in _SQL_EXECUTORS:
+
+    def deco(cls: Callable[[], SqlExecutor]) -> Callable[[], SqlExecutor]:
+        if name in _EXECUTORS:
+            raise ValueError(f"Executor '{name}' is already registered.")
+        _EXECUTORS[name] = cls
+        return cls
+
+    return deco
+
+
+def pick_executor(
+    handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
+) -> Optional[SqlExecutor]:
+    """
+    Find the first registered executor that supports the given handle and rules.
+    """
+    if not sql_specs:
+        return None  # Nothing to push down
+
+    # Iterate over registered constructors
+    for name, ctor in _EXECUTORS.items():
+        executor = ctor()  # Instantiate the executor
         try:
-            if exec_.supports_source(source_uri, connector_caps) and exec_.supports_rules(sql_specs):
-                return exec_
+            if executor.supports(handle, sql_specs):
+                return executor
         except Exception:
-            # Be conservative: ignore faulty executors.
+            # Be conservative: ignore faulty executors
             continue
     return None
 
 
-# Register built-ins (DuckDB first, can add Snowflake/Postgres later)
-register_sql_executor(DuckDBSqlExecutor())
+def register_default_executors() -> None:
+    """
+    Eagerly import built-in executors so their @register_executor
+    decorators run and populate the registry.
+    """
+    # Local import triggers decorator side-effect
+    from . import duckdb_sql  # noqa: F401

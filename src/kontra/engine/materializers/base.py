@@ -1,32 +1,42 @@
+# src/kontra/engine/materializers/base.py
 from __future__ import annotations
-from typing import List, Optional, Protocol, runtime_checkable, Dict, Any
 
-# NOTE: keep imports inside method bodies to avoid hard deps (pyarrow, polars)
-# Materializers should be lightweight and dependency-safe.
+from typing import Any, Dict, List, Optional
 
-@runtime_checkable
-class Materializer(Protocol):
+import polars as pl
+
+from kontra.connectors.handle import DatasetHandle
+
+
+class BaseMaterializer:
     """
-    Source → (Arrow/Polars) with optional column projection.
+    Minimal base class for materializers.
 
-    Implementations MUST:
-      - be side-effect free (no global/env mutation)
-      - prefer columnar paths (Arrow/Polars) when possible
-      - expose lightweight I/O diagnostics via io_debug()
+    Defines the interface for:
+      - Loading a source into a Polars DataFrame (with projection)
+      - Peeking the schema
+      - Reporting I/O diagnostics
     """
+
+    materializer_name: str = "unknown"
+
+    def __init__(self, handle: DatasetHandle):
+        """
+        Initialize the materializer with a data source handle.
+
+        Args:
+            handle: The DatasetHandle containing the URI and fs_opts.
+        """
+        self.handle = handle
 
     def schema(self) -> List[str]:
         """Return column names without materializing data (best effort)."""
-        ...
+        raise NotImplementedError
 
-    def to_arrow(self, columns: Optional[List[str]]) -> "pa.Table":
-        """Materialize as a pyarrow.Table (preferred for zero/low-copy handoff)."""
-        ...
-
-    def to_polars(self, columns: Optional[List[str]]) -> "pl.DataFrame":
+    def to_polars(self, columns: Optional[List[str]]) -> pl.DataFrame:
         """Materialize directly as a Polars DataFrame."""
-        ...
+        raise NotImplementedError
 
     def io_debug(self) -> Optional[Dict[str, Any]]:
         """Return last I/O diagnostics for observability (or None)."""
-        ...
+        return None  # Default implementation

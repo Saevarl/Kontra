@@ -164,7 +164,6 @@ class ValidationEngine:
             if self.show_plan and sql_plan_str:
                 print(f"\n-- {exec_sql.name} SQL plan --\n{sql_plan_str}\n")
 
-            # --- PHASE 1 FIX ---
             # Pass the whole handle. The executor now knows what to do.
             duck_out = exec_sql.execute(handle, sql_plan_str)
             sql_results_by_id = {
@@ -173,6 +172,7 @@ class ValidationEngine:
 
             # Honest width/height without materializing data
             info = exec_sql.introspect(handle)
+
             sql_row_count = info.get("row_count")
             available_cols = info.get("available_cols") or []
             engine_name = f"{exec_sql.name}_hybrid"

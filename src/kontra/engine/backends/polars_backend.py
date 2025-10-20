@@ -12,10 +12,8 @@ from typing import Any, Dict, List, Callable
 
 import polars as pl
 
-from .base import ValidationBackend
 
-
-class PolarsBackend(ValidationBackend):
+class PolarsBackend:
     name = "polars"
 
     def __init__(self, executor: Callable[[pl.DataFrame, Any], List[Dict[str, Any]]]):

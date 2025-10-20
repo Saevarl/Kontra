@@ -1,10 +1,19 @@
+# src/kontra/engine/materializers/registry.py
 from __future__ import annotations
-from typing import Callable, Dict, Optional, List
+
+from typing import TYPE_CHECKING, Callable, Dict, List
 
 from kontra.connectors.handle import DatasetHandle
 
+if TYPE_CHECKING:
+    # Import from the new base file
+    from .base import BaseMaterializer as Materializer
+    from .duckdb import DuckDBMaterializer  # noqa: F401
+    from .polars_connector import PolarsConnectorMaterializer  # noqa: F401
+
+
 # Registry: materializer_name -> ctor(handle) function
-_MATS: Dict[str, Callable[[DatasetHandle], "BaseMaterializer"]] = {}
+_MATS: Dict[str, Callable[[DatasetHandle], Materializer]] = {}
 # Simple order for picking when multiple can handle a handle
 _ORDER: List[str] = []
 
@@ -12,68 +21,60 @@ _ORDER: List[str] = []
 def register_materializer(name: str):
     """
     Decorator to register a materializer class under a stable name.
-    The class must implement the BaseMaterializer interface (duck-typed).
+    The class must implement the Materializer protocol.
     """
-    def deco(cls):
-        _MATS[name] = lambda handle: cls(handle)
+
+    def deco(cls: Callable[[DatasetHandle], Materializer]) -> Callable[
+        [DatasetHandle], Materializer
+    ]:
+        if name in _MATS:
+            raise ValueError(f"Materializer '{name}' is already registered.")
+        _MATS[name] = cls
         if name not in _ORDER:
             _ORDER.append(name)
         cls.materializer_name = name  # friendly label for stats.io
         return cls
+
     return deco
 
 
-def pick_materializer(handle: DatasetHandle, prefer_pruning: bool = True) -> "BaseMaterializer":
+def pick_materializer(handle: DatasetHandle) -> Materializer:
     """
     Choose the best materializer for the given dataset handle.
 
-    Policy (v1):
-      - If Parquet/CSV and URI is local/remote → DuckDB materializer (true projection).
-      - Otherwise → PolarsConnector materializer (fallback).
+    Policy (v1.1 - Refactored):
+      - If the URI is remote (s3, http, etc.) AND the format is known
+        (parquet, csv), we *always* use the DuckDB materializer
+        for its superior I/O and column pruning.
+      - Otherwise, we fall back to the PolarsConnector materializer.
+
+    This logic is now INDEPENDENT of the projection flag.
     """
-    if prefer_pruning and handle.format in ("parquet", "csv"):
+    # --- BUG FIX ---
+    # We no longer check `prefer_pruning`. We check the handle's scheme.
+    is_remote = handle.scheme in ("s3", "http", "https")
+    is_known_format = handle.format in ("parquet", "csv")
+
+    if is_remote and is_known_format:
         ctor = _MATS.get("duckdb")
         if ctor:
             return ctor(handle)
+    # --- END BUG FIX ---
 
+    # Fallback for local files or unknown formats
     ctor = _MATS.get("polars-connector")
     if not ctor:
-        raise RuntimeError("No default materializer registered (polars-connector missing)")
+        raise RuntimeError(
+            "No default materializer registered (polars-connector missing)"
+        )
     return ctor(handle)
-
-
-def get_materializer_for(source_uri: str, prefer_pruning: bool = True) -> "BaseMaterializer":
-    """
-    Convenience wrapper used by the engine:
-      URI string -> DatasetHandle -> best materializer
-    """
-    handle = DatasetHandle.from_uri(source_uri)
-    return pick_materializer(handle, prefer_pruning)
 
 
 def register_default_materializers() -> None:
     """
     Eagerly import built-in materializers so their @register_materializer
     decorators run and populate the registry.
-
-    Kept as a function (not a module-level import) to avoid circular imports
-    during packaging and to make tests able to override/patch easily.
     """
-    # Local imports to trigger decorator side-effects without creating
-    # hard dependencies at import time.
-    from .duckdb import DuckDBMaterializer  # noqa: F401
-    from .polars_connector import PolarsConnectorMaterializer  # noqa: F401
-    # Nothing else to do: importing is enough.
-
-
-class BaseMaterializer:
-    """
-    Minimal protocol (duck-typed) for materializers:
-      - to_polars(columns: Optional[List[str]]) -> pl.DataFrame
-      - schema() -> list[str]
-      - io_debug() -> Optional[dict]  (stats/diagnostics)
-    """
-    materializer_name: str = "unknown"
-
-    def __init__(self, handle: DatasetHandle):
-        self.handle = handle
+    # Local imports to trigger decorator side-effects
+    from . import duckdb  # noqa: F401
+    from . import polars_connector  # noqa: F401

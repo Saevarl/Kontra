@@ -14,7 +14,8 @@ dependencies = [
   "duckdb",
   "pydantic",
   "typer",
-  "rich"
+  "rich",
+  "pyarrow"
 ]
 
 [project.scripts]

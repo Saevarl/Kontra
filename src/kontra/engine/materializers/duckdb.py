@@ -7,15 +7,16 @@ from typing import Any, Dict, List, Optional
 
 import polars as pl
 
+# --- Kontra Imports ---
 from kontra.engine.backends.duckdb_session import create_duckdb_connection
+from kontra.engine.backends.duckdb_utils import (
+    esc_ident,
+    lit_str,
+)
 from kontra.connectors.handle import DatasetHandle
 
-from .registry import BaseMaterializer, register_materializer
-
-
-def _esc_ident(name: str) -> str:
-    """Quote an identifier for DuckDB (double quotes, escape internal quotes)."""
-    return '"' + name.replace('"', '""') + '"'
+from .base import BaseMaterializer  # Import from new base file
+from .registry import register_materializer
 
 
 @register_materializer("duckdb")
@@ -44,7 +45,7 @@ class DuckDBMaterializer(BaseMaterializer):
         """Return column names without materializing data (best effort)."""
         # TODO: This should be format-aware like to_polars
         cur = self.con.execute(
-            f"SELECT * FROM read_parquet({_lit_str(self.source)}) LIMIT 0"
+            f"SELECT * FROM read_parquet({lit_str(self.source)}) LIMIT 0"
         )
         return [d[0] for d in cur.description] if cur.description else []
 
@@ -53,11 +54,13 @@ class DuckDBMaterializer(BaseMaterializer):
         # Route through Arrow for consistent, zero/low-copy columnar materialization.
         import pyarrow as pa  # noqa: F401
 
-        cols_sql = ", ".join(_esc_ident(c) for c in (columns or [])) if columns else "*"
+        cols_sql = (
+            ", ".join(esc_ident(c) for c in (columns or [])) if columns else "*"
+        )
         read_func = self._get_read_function()
 
         t0 = time.perf_counter()
-        query = f"SELECT {cols_sql} FROM {read_func}({_lit_str(self.source)})"
+        query = f"SELECT {cols_sql} FROM {read_func}({lit_str(self.source)})"
         cur = self.con.execute(query)
         table = cur.fetch_arrow_table()
         t1 = time.perf_counter()
@@ -87,11 +90,11 @@ class DuckDBMaterializer(BaseMaterializer):
         if self.handle.format == "csv":
             # TODO: Pass CSV options from handle.fs_opts
             return "read_csv_auto"
-        
+
         # Fallback: try DuckDB's autodetect (best effort)
         # We default to parquet as it's the most common case.
         return "read_parquet"
 
     # Note: _safe_set, _configure_perf, and _configure_storage
     # have been removed. All connection logic is now centralized
-    # in kontra.backends.duckdb_session.
+    # in kontra.engine.backends.duckdb_session.
