@@ -1,73 +1,131 @@
 # src/kontra/engine/materializers/polars_connector.py
 from __future__ import annotations
 
+"""
+PolarsConnectorMaterializer
+
+Purpose
+-------
+Local, dependency-light materializer that produces a Polars DataFrame from
+file-based datasets (Parquet/CSV). Supports column projection. Does *not*
+require the legacy connectors package.
+
+Design
+------
+- First tries legacy `ConnectorFactory` (for back-compat if present).
+- Otherwise uses native Polars lazy scans:
+    - scan_*  → optional .select(projection) → collect()
+
+Notes
+-----
+Polars ≥ 1.34 removed `columns=` from scan_*; apply projection via `.select()`.
+"""
+
 from typing import Any, Dict, List, Optional
 
 import polars as pl
 
 from kontra.connectors.handle import DatasetHandle
-
-from .base import BaseMaterializer  # <-- Import from new base file
+from .base import BaseMaterializer
 from .registry import register_materializer
+
+
+def _infer_format(uri: str, explicit: Optional[str]) -> str:
+    """Resolve file format from explicit handle.format or file extension."""
+    if explicit:
+        return explicit.lower()
+    low = uri.lower()
+    if low.endswith(".parquet"):
+        return "parquet"
+    if low.endswith(".csv"):
+        return "csv"
+    return ""
 
 
 @register_materializer("polars-connector")
 class PolarsConnectorMaterializer(BaseMaterializer):
     """
-    Fallback materializer that uses the (old) ConnectorFactory.load()
-    to produce a Polars DataFrame. Projection is best-effort.
+    Minimal, deterministic materializer for local files.
 
-    This is kept for local files and as a fallback for unknown
-    remote file types that Polars might support.
+    Responsibilities
+    ----------------
+    - Cheap schema peek (names only)
+    - DataFrame materialization with optional projection
+    - No side effects; no hidden state
     """
+
+    name = "polars-connector"
 
     def __init__(self, handle: DatasetHandle):
         super().__init__(handle)
-        self._io_debug: Optional[Dict[str, Any]] = None  # always None for this path
+        self._io_debug: Optional[Dict[str, Any]] = None  # retained for parity with duckdb materializer
+
+    # ------------------------------------------------------------------ #
+    # Introspection
+    # ------------------------------------------------------------------ #
 
     def schema(self) -> List[str]:
-        """Best-effort peek via Polars lazy scan."""
-        uri = self.handle.uri.lower()
+        """
+        Return column names using a lazy scan. Never raises — empty list on failure.
+        """
+        uri = self.handle.uri
+        fmt = _infer_format(uri, getattr(self.handle, "format", None))
+
         try:
-            if uri.endswith(".parquet"):
-                return list(
-                    pl.scan_parquet(self.handle.uri).collect_schema().names()
-                )
-            if uri.endswith(".csv"):
-                return list(
-                    pl.scan_csv(self.handle.uri).collect_schema().names()
-                )
+            if fmt == "parquet":
+                return list(pl.scan_parquet(uri).collect_schema().names())
+            if fmt == "csv":
+                return list(pl.scan_csv(uri).collect_schema().names())
         except Exception:
-            pass  # Fallback to empty list
+            pass
         return []
+
+    # ------------------------------------------------------------------ #
+    # Materialization
+    # ------------------------------------------------------------------ #
 
     def to_polars(self, columns: Optional[List[str]]) -> pl.DataFrame:
         """
-        Materialize using the old ConnectorFactory.
+        Materialize dataset into a Polars DataFrame.
 
-        NOTE: This relies on the old `connectors` code. This materializer
-        will be fully deprecated once all sources are handled by
-        the DuckDB materializer or a future native Polars one.
+        Strategy
+        --------
+        1) Attempt legacy connectors path (if installed) to preserve behavior.
+        2) Otherwise, native Polars scan with projection via `.select()`.
         """
-        # TODO: This is a temporary bridge to the old (soon to be deleted)
-        # connector code. This should be replaced with a native
-        # Polars scan_parquet/scan_csv.
+        # --- Legacy path (optional/back-compat) --------------------------------
         try:
-            from kontra.connectors.factory import ConnectorFactory
+            from kontra.connectors.factory import ConnectorFactory  # type: ignore
 
             connector = ConnectorFactory.from_source(self.handle.uri)
-            # Connector API allows "columns="; not all connectors can honor it.
+            # The legacy API accepts `columns=` (best-effort).
             return connector.load(self.handle.uri, columns=columns)
-        except ImportError:
-            # Fallback if old connectors are deleted
-            if self.handle.format == "parquet":
-                return pl.scan_parquet(self.handle.uri, columns=columns).collect()
-            if self.handle.format == "csv":
-                return pl.scan_csv(self.handle.uri, columns=columns).collect()
-            raise IOError(
-                f"Unsupported format for PolarsConnectorMaterializer: {self.handle.uri}"
-            )
+        except (ImportError, ModuleNotFoundError):
+            # Fall back to native Polars path
+            pass
+
+        # --- Native Polars path -------------------------------------------------
+        uri = self.handle.uri
+        fmt = _infer_format(uri, getattr(self.handle, "format", None))
+
+        if fmt == "parquet":
+            lf = pl.scan_parquet(uri)
+        elif fmt == "csv":
+            # Add CSV options here if your data requires (delimiter, nulls, dtypes).
+            lf = pl.scan_csv(uri)
+        else:
+            raise IOError(f"Unsupported format for PolarsConnectorMaterializer: {uri}")
+
+        if columns:
+            lf = lf.select([pl.col(c) for c in columns])
+
+        # NOTE: streaming=True is deprecated; default engine suffices for tests and CI.
+        return lf.collect()
+
+    # ------------------------------------------------------------------ #
+    # Diagnostics
+    # ------------------------------------------------------------------ #
 
     def io_debug(self) -> Optional[Dict[str, Any]]:
-        # No special diagnostics here; reserved for duckdb materializer.
+        """Reserved hook for I/O diagnostics (none for this materializer)."""
         return None
