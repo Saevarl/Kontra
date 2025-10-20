@@ -1,0 +1,27 @@
+# contracts/users_pushdown_1rule_per_col.yml
+# Goal: 1 rule per column; 3 SQL pushdown; 6 residual (project to 6/19 cols)
+
+dataset: "s3://test/data/users_10m.parquet"
+
+rules:
+  # --- SQL pushdown (DuckDB): 3 columns ---
+  - name: not_null
+    params: { column: email }        # SQL-capable
+  - name: not_null
+    params: { column: status }       # SQL-capable
+  - name: not_null
+    params: { column: last_login }   # SQL-capable
+
+  # --- Residual (Polars): 6 columns ---
+  - name: unique
+    params: { column: user_id }              # non-SQL
+  - name: dtype
+    params: { column: country, type: "utf8" }     # non-SQL
+  - name: dtype
+    params: { column: signup_date, type: "date" } # non-SQL
+  - name: dtype
+    params: { column: age, type: "int16" }        # non-SQL
+  - name: dtype
+    params: { column: is_premium, type: "boolean" } # non-SQL
+  - name: dtype
+    params: { column: balance, type: "float64" }    # non-SQL

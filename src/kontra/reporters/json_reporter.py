@@ -1,4 +1,3 @@
-# src/contra/reporters/json_reporter.py
 from __future__ import annotations
 
 import json
@@ -29,17 +28,11 @@ def _utc_now_iso() -> str:
 
 
 def _normalize_result(item: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normalize engine result items into the reporter schema.
-    Expected input from engine: rule_id, passed, message, failed_count,
-    (optional) severity, (optional) actions_executed.
-    """
     passed = bool(item.get("passed", False))
     msg = str(item.get("message", ""))
-    sev_in = item.get("severity")
 
-    # Default severity: INFO for passed rules, ERROR for failed
-    severity = str(sev_in) if sev_in is not None else ("INFO" if passed else "ERROR")
+    # Always compute from 'passed', ignore incoming 'severity' to keep outputs consistent.
+    severity = "INFO" if passed else "ERROR"
 
     return {
         "rule_id": str(item.get("rule_id", "")),
@@ -49,6 +42,7 @@ def _normalize_result(item: Dict[str, Any]) -> Dict[str, Any]:
         "severity": severity,
         "actions_executed": list(item.get("actions_executed", [])),
     }
+
 
 
 def _sorted_results(results: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:

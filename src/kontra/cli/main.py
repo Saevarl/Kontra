@@ -1,12 +1,9 @@
-# src/kontra/cli/main.py
 from __future__ import annotations
 
 """
 Kontra CLI — Developer-first Data Quality Engine
 
-This module defines the public CLI entrypoints powered by Typer.
-It keeps the CLI thin: argument parsing, delegating to the engine,
-and handing off machine-readable output to reporters.
+Thin layer: parse args → call engine → print via reporters.
 """
 
 from typing import Literal, Optional
@@ -19,7 +16,7 @@ from kontra.version import VERSION
 
 app = typer.Typer(help="Kontra CLI — Developer-first Data Quality Engine")
 
-# Exit codes (keep stable for CI/CD)
+# Exit codes (stable for CI/CD)
 EXIT_SUCCESS = 0
 EXIT_VALIDATION_FAILED = 1
 EXIT_CONFIG_ERROR = 2
@@ -32,57 +29,64 @@ def _version(
         None, "--version", help="Show the Kontra version and exit.", is_eager=True
     )
 ) -> None:
-    """
-    Global --version flag. Exits immediately when present.
-    """
     if version:
         typer.echo(f"kontra {VERSION}")
         raise typer.Exit(code=0)
 
 
 def _print_rich_stats(stats: dict | None) -> None:
-    """
-    Pretty-print the (optional) stats block in rich mode.
-    """
+    """Pretty-print the optional stats block (concise, high-signal)."""
     if not stats:
         return
 
-    ds = stats.get("dataset", {})
-    run = stats.get("run_meta", {})
-    cols = stats.get("columns_touched", [])
-    proj = stats.get("projection")
+    ds = stats.get("dataset", {}) or {}
+    run = stats.get("run_meta", {}) or {}
+    proj = stats.get("projection") or {}
+
+    # Prefer the human-friendly engine label if present
+    engine_label = run.get("engine") or run.get("engine_label")
 
     nrows = ds.get("nrows")
     ncols = ds.get("ncols")
     dur = run.get("duration_ms_total")
-    engine = run.get("engine")
+
     if nrows is not None and ncols is not None and dur is not None:
         base = f"\nStats  •  rows={nrows:,}  cols={ncols}  duration={dur} ms"
-        if engine:
-            base += f"  engine={engine}"
+        if engine_label:
+            base += f"  engine={engine_label}"
         typer.secho(base, fg=typer.colors.BLUE)
     elif nrows is not None and ncols is not None:
         typer.secho(f"\nStats  •  rows={nrows:,}  cols={ncols}", fg=typer.colors.BLUE)
 
-    if cols:
-        preview = ", ".join(cols[:6]) + ("…" if len(cols) > 6 else "")
-        typer.secho(f"Columns touched: {preview}", fg=typer.colors.BLUE)
+    # NEW: explicit validated vs loaded columns (short previews)
+    validated = stats.get("columns_validated") or []
+    loaded = stats.get("columns_loaded") or []
 
+    if validated:
+        v_preview = ", ".join(validated[:6]) + ("…" if len(validated) > 6 else "")
+        typer.secho(f"Columns validated ({len(validated)}): {v_preview}", fg=typer.colors.BLUE)
+
+    if loaded:
+        l_preview = ", ".join(loaded[:6]) + ("…" if len(loaded) > 6 else "")
+        typer.secho(f"Columns loaded ({len(loaded)}): {l_preview}", fg=typer.colors.BLUE)
+
+    # Projection effectiveness (req/loaded/avail)
     if proj:
         enabled = proj.get("enabled", True)
         required = proj.get("required_count", 0)
-        loaded = proj.get("loaded_count", 0)
-        available = proj.get("available_count")  # may be absent
+        loaded_cnt = proj.get("loaded_count", 0)
+        available = proj.get("available_count")
         effectiveness = "(pruned)" if proj.get("effective") else "(no reduction)"
         if available is not None:
             msg = (
                 f"Projection [{'on' if enabled else 'off'}]: "
-                f"{required}/{loaded}/{available} (req/loaded/avail) {effectiveness}"
+                f"{required}/{loaded_cnt}/{available} (req/loaded/avail) {effectiveness}"
             )
         else:
-            msg = f"Projection [{'on' if enabled else 'off'}]: {required}/{loaded} (req/loaded) {effectiveness}"
+            msg = f"Projection [{'on' if enabled else 'off'}]: {required}/{loaded_cnt} (req/loaded) {effectiveness}"
         typer.secho(msg, fg=typer.colors.BLUE)
 
+    # Optional per-column profile (if requested)
     prof = stats.get("profile")
     if prof:
         typer.secho("Profile:", fg=typer.colors.BLUE)
@@ -118,20 +122,27 @@ def validate(
         "--stats",
         help="Attach run statistics (summary) or lightweight per-column profile.",
     ),
+    # New, explicit toggle matching engine semantics
+    pushdown: Optional[Literal["auto", "off"]] = typer.Option(
+        None,
+        "--pushdown",
+        help="SQL pushdown: 'auto' (default) enables pushdown; 'off' disables it.",
+    ),
+    # Back-compat alias (deprecated): maps 'none' => pushdown=off
     sql_engine: Literal["auto", "none"] = typer.Option(
         "auto",
         "--sql-engine",
-        help="SQL pushdown engine: 'auto' (default) picks best from registry, 'none' forces pure Polars.",
+        help="(deprecated) Use '--pushdown off' instead. 'none' disables pushdown.",
     ),
     show_plan: bool = typer.Option(
         False,
         "--show-plan",
-        help="When using --sql-engine auto, print the generated SQL for debugging.",
+        help="If pushdown is enabled, print the generated SQL for debugging.",
     ),
     no_projection: bool = typer.Option(
         False,
         "--no-projection",
-        help="Disable column projection/pruning (load all columns). Useful for debugging and perf baselines.",
+        help="Disable column projection/pruning (load all columns).",
     ),
     no_actions: bool = typer.Option(  # reserved for future wiring
         False,
@@ -145,16 +156,21 @@ def validate(
     """
     Validate data against a declarative contract.
 
-    The CLI stays declarative and stateless:
-    - Delegates execution to ValidationEngine.
-    - Uses reporters for machine-readable output (JSON).
-    - Prints human-friendly Rich output otherwise.
+    The CLI remains stateless and declarative:
+      - Delegates to ValidationEngine for execution.
+      - JSON output via reporters for CI/CD.
+      - Rich output for humans.
     """
     del no_actions  # placeholder until actions are wired
 
     try:
-        # In JSON mode suppress Rich banners; reporters own serialized output.
         emit_report = output_format == "rich"
+
+        # Determine effective pushdown choice (new flag wins, else fall back)
+        if pushdown is None:
+            effective_pushdown: Literal["auto", "off"] = "off" if sql_engine == "none" else "auto"
+        else:
+            effective_pushdown = pushdown
 
         eng = ValidationEngine(
             contract_path=contract,
@@ -162,41 +178,35 @@ def validate(
             emit_report=emit_report,
             stats_mode=stats,
             enable_projection=not no_projection,
-            sql_engine=sql_engine,  # <-- Use the refactored name
+            # Pass both for back-compat; engine normalizes internally
+            pushdown=effective_pushdown,
+            sql_engine=sql_engine,
             show_plan=show_plan,
         )
         result = eng.run()
 
         if output_format == "json":
-            # Delegate shape + determinism to JSONReporter
             payload = render_json(
                 dataset_name=result["summary"]["dataset_name"],
                 summary=result["summary"],
                 results=result["results"],
                 stats=result.get("stats"),
                 quarantine=result.get("summary", {}).get("quarantine"),
-                validate=False,  # flip to True once local JSON Schema & validator are bundled
+                validate=False,  # set True once schema validator is bundled
             )
             typer.echo(payload)
         else:
-            # Human-readable extras
             if stats != "none":
                 _print_rich_stats(result.get("stats"))
 
-        # Exit with CI-stable codes
-        exit_code = (
-            EXIT_SUCCESS
-            if result["summary"]["passed"]
-            else EXIT_VALIDATION_FAILED
+        raise typer.Exit(
+            code=EXIT_SUCCESS if result["summary"]["passed"] else EXIT_VALIDATION_FAILED
         )
-        raise typer.Exit(code=exit_code)
 
     except typer.Exit:
-        # Let Typer-controlled exits pass through unchanged
         raise
 
     except FileNotFoundError as e:
-        # Contract/data path issues → CONFIG error
         if verbose:
             typer.secho(f"[CONFIG_ERROR] {e}", fg=typer.colors.RED)
         else:
@@ -204,14 +214,10 @@ def validate(
         raise typer.Exit(code=EXIT_CONFIG_ERROR)
 
     except Exception as e:
-        # Unknown failures → RUNTIME error
         if verbose:
             typer.secho(f"[RUNTIME_ERROR] {repr(e)}", fg=typer.colors.RED)
         else:
-            typer.secho(
-                "An unexpected error occurred. Use --verbose for details.",
-                fg=typer.colors.RED,
-            )
+            typer.secho("An unexpected error occurred. Use --verbose for details.", fg=typer.colors.RED)
         raise typer.Exit(code=EXIT_RUNTIME_ERROR)
 
 
