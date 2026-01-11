@@ -77,3 +77,6 @@ Desktop.ini
 # --- DuckDB ---
 # DuckDB write-ahead logs
 *.wal
+
+Kontra_Docs_v1.0/contracts/
+data/

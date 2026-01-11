@@ -58,17 +58,45 @@ def _print_rich_stats(stats: dict | None) -> None:
     elif nrows is not None and ncols is not None:
         typer.secho(f"\nStats  •  rows={nrows:,}  cols={ncols}", fg=typer.colors.BLUE)
 
-    # NEW: explicit validated vs loaded columns (short previews)
+    # Preplan / pushdown timing (if available)
+    preplan_ms = (run.get("preplan_breakdown_ms") or {}).get("analyze")
+    push_ms = run.get("pushdown_breakdown_ms") or {}
+    if preplan_ms is not None:
+        typer.secho(f"Preplan: analyze={preplan_ms} ms", fg=typer.colors.BLUE)
+    if push_ms:
+        parts = []
+        for k in ("compile", "execute", "introspect"):
+            v = push_ms.get(k)
+            if v is not None:
+                parts.append(f"{k}={v} ms")
+        if parts:
+            typer.secho("SQL pushdown: " + ", ".join(parts), fg=typer.colors.BLUE)
+
+    # If present, show RG pruning summary from preplan (engine may emit either key)
+    manifest = stats.get("pushdown_manifest") or {}
+    if manifest:
+        kept = manifest.get("row_groups_kept")
+        total = manifest.get("row_groups_total")
+        if kept is not None and total is not None:
+            typer.secho(f"Preplan manifest: row-groups {kept}/{total} kept", fg=typer.colors.BLUE)
+
+    # Explicit validated vs loaded columns (short previews)
     validated = stats.get("columns_validated") or []
     loaded = stats.get("columns_loaded") or []
 
     if validated:
         v_preview = ", ".join(validated[:6]) + ("…" if len(validated) > 6 else "")
-        typer.secho(f"Columns validated ({len(validated)}): {v_preview}", fg=typer.colors.BLUE)
+        typer.secho(
+            f"Columns validated ({len(validated)}): {v_preview}",
+            fg=typer.colors.BLUE,
+        )
 
     if loaded:
         l_preview = ", ".join(loaded[:6]) + ("…" if len(loaded) > 6 else "")
-        typer.secho(f"Columns loaded ({len(loaded)}): {l_preview}", fg=typer.colors.BLUE)
+        typer.secho(
+            f"Columns loaded ({len(loaded)}): {l_preview}",
+            fg=typer.colors.BLUE,
+        )
 
     # Projection effectiveness (req/loaded/avail)
     if proj:
@@ -83,7 +111,10 @@ def _print_rich_stats(stats: dict | None) -> None:
                 f"{required}/{loaded_cnt}/{available} (req/loaded/avail) {effectiveness}"
             )
         else:
-            msg = f"Projection [{'on' if enabled else 'off'}]: {required}/{loaded_cnt} (req/loaded) {effectiveness}"
+            msg = (
+                f"Projection [{'on' if enabled else 'off'}]: "
+                f"{required}/{loaded_cnt} (req/loaded) {effectiveness}"
+            )
         typer.secho(msg, fg=typer.colors.BLUE)
 
     # Optional per-column profile (if requested)
@@ -122,11 +153,30 @@ def validate(
         "--stats",
         help="Attach run statistics (summary) or lightweight per-column profile.",
     ),
-    # New, explicit toggle matching engine semantics
-    pushdown: Optional[Literal["auto", "off"]] = typer.Option(
-        None,
+    # Independent execution controls
+    preplan: Literal["on", "off", "auto"] = typer.Option(
+        "auto",
+        "--preplan",
+        help="Metadata preflight (Parquet min/max/null counts): 'on' to force, 'off' to disable, 'auto' to try when applicable.",
+    ),
+    pushdown: Literal["on", "off", "auto"] = typer.Option(
+        "auto",
         "--pushdown",
-        help="SQL pushdown: 'auto' (default) enables pushdown; 'off' disables it.",
+        help="SQL pushdown: 'on' forces pushdown, 'off' disables it, 'auto' lets the executor decide.",
+    ),
+    projection: Literal["on", "off"] = typer.Option(
+        "on",
+        "--projection",
+        help="Column projection/pruning at source: 'on' (default) or 'off' (load all columns).",
+    ),
+    # CSV handling (argument form; replaces env-only control)
+    csv_mode: Literal["auto", "duckdb", "parquet"] = typer.Option(
+        "auto",
+        "--csv-mode",
+        help="CSV handling for I/O and pushdown: "
+        "'auto' (try DuckDB CSV, fallback to staging), "
+        "'duckdb' (DuckDB read_csv_auto only), "
+        "'parquet' (stage CSV → Parquet first).",
     ),
     # Back-compat alias (deprecated): maps 'none' => pushdown=off
     sql_engine: Literal["auto", "none"] = typer.Option(
@@ -137,14 +187,14 @@ def validate(
     show_plan: bool = typer.Option(
         False,
         "--show-plan",
-        help="If pushdown is enabled, print the generated SQL for debugging.",
+        help="If SQL pushdown is enabled, print the generated SQL for debugging.",
     ),
-    no_projection: bool = typer.Option(
+    explain_preplan: bool = typer.Option(
         False,
-        "--no-projection",
-        help="Disable column projection/pruning (load all columns).",
+        "--explain-preplan",
+        help="Print preplan manifest and metadata decisions (debug aid).",
     ),
-    no_actions: bool = typer.Option(  # reserved for future wiring
+    no_actions: bool = typer.Option(
         False,
         "--no-actions",
         help="Run without executing remediation actions (placeholder).",
@@ -166,22 +216,41 @@ def validate(
     try:
         emit_report = output_format == "rich"
 
-        # Determine effective pushdown choice (new flag wins, else fall back)
-        if pushdown is None:
-            effective_pushdown: Literal["auto", "off"] = "off" if sql_engine == "none" else "auto"
+        # Deprecation nudge (once per process execution)
+        if sql_engine == "none" and pushdown != "off":
+            typer.secho(
+                "⚠️  --sql-engine is deprecated; use '--pushdown off'.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+
+        # Effective SQL pushdown: explicit flag wins; back-compat maps sql_engine=none → off
+        effective_pushdown: Literal["on", "off", "auto"]
+        if sql_engine == "none":
+            effective_pushdown = "off"
         else:
-            effective_pushdown = pushdown
+            effective_pushdown = pushdown if pushdown in {"on", "off", "auto"} else "auto"
+
+        # Effective preplan
+        effective_preplan: Literal["on", "off", "auto"]
+        effective_preplan = preplan if preplan in {"on", "off", "auto"} else "auto"
+
+        # Effective projection
+        enable_projection = projection == "on"
 
         eng = ValidationEngine(
             contract_path=contract,
             data_path=data,
             emit_report=emit_report,
             stats_mode=stats,
-            enable_projection=not no_projection,
-            # Pass both for back-compat; engine normalizes internally
-            pushdown=effective_pushdown,
-            sql_engine=sql_engine,
+            # Independent controls
+            preplan=effective_preplan,            # NEW: metadata preflight
+            pushdown=effective_pushdown,          # SQL pushdown
+            enable_projection=enable_projection,  # bool
+            csv_mode=csv_mode,                    # "auto" | "duckdb" | "parquet"
+            # Diagnostics
             show_plan=show_plan,
+            explain_preplan=explain_preplan,
         )
         result = eng.run()
 
@@ -217,7 +286,10 @@ def validate(
         if verbose:
             typer.secho(f"[RUNTIME_ERROR] {repr(e)}", fg=typer.colors.RED)
         else:
-            typer.secho("An unexpected error occurred. Use --verbose for details.", fg=typer.colors.RED)
+            typer.secho(
+                "An unexpected error occurred. Use --verbose for details.",
+                fg=typer.colors.RED,
+            )
         raise typer.Exit(code=EXIT_RUNTIME_ERROR)
 
 

@@ -44,8 +44,9 @@ class RuleFactory:
     def build_rules(self) -> List[BaseRule]:
         """Instantiate all rules declared in the contract."""
         rules: List[BaseRule] = []
+        seen_ids: Dict[str, int] = {}  # rule_id -> index in rule_specs (for error messages)
 
-        for spec in self.rule_specs:
+        for idx, spec in enumerate(self.rule_specs):
             rule_name = spec.name
             rule_params = spec.params or {}
 
@@ -58,8 +59,22 @@ class RuleFactory:
                 # IMPORTANT: constructor accepts (name, params) only
                 rule_instance: BaseRule = rule_cls(rule_name, rule_params)
                 # Assign rule_id after construction
-                rule_instance.rule_id = _derive_rule_id(spec)
+                rule_id = _derive_rule_id(spec)
+
+                # Check for duplicate rule IDs
+                if rule_id in seen_ids:
+                    prev_idx = seen_ids[rule_id]
+                    raise ValueError(
+                        f"Duplicate rule_id '{rule_id}' at rule index {idx} "
+                        f"(conflicts with rule at index {prev_idx}). "
+                        "Use explicit 'id' in contract to disambiguate."
+                    )
+                seen_ids[rule_id] = idx
+
+                rule_instance.rule_id = rule_id
                 rules.append(rule_instance)
+            except ValueError:
+                raise  # Re-raise validation errors as-is
             except Exception as e:
                 raise RuntimeError(f"Failed to instantiate rule '{rule_name}': {e}") from e
 

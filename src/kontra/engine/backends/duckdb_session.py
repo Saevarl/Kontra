@@ -148,11 +148,13 @@ def _configure_s3(con: duckdb.DuckDBPyConnection, fs_opts: Dict[str, str]) -> No
     if url_style:
         _safe_set(con, "s3_url_style", url_style)
 
-    # Performance
-    _safe_set(
-        con, "s3_max_connections", fs_opts.get("s3_max_connections", "64")
-    )
-    _safe_set(con, "s3_request_timeout_ms", "60000")
+    # Performance and reliability for large files over S3/HTTP
+    # http_timeout is in seconds (default 30s - increase for large files)
+    _safe_set(con, "http_timeout", "600")  # 10 minutes for large files
+    _safe_set(con, "http_retries", "5")    # More retries for reliability
+    _safe_set(con, "http_retry_wait_ms", "2000")  # 2s between retries
+    # Disable keep-alive for MinIO/S3-compatible - connection pooling can cause issues
+    _safe_set(con, "http_keep_alive", "false")
 
 
 def _configure_azure(

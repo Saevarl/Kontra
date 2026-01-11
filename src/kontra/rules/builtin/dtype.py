@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, Tuple
 
 import polars as pl
 
@@ -10,64 +10,124 @@ from kontra.rules.registry import register_rule
 @register_rule("dtype")
 class DtypeRule(BaseRule):
     """
-    Dataset-level strict dtype check for a single column.
+    Dtype — schema-level type check for a single column.
 
-    params:
-      - column: str        # required
-      - type: str          # required (e.g., "int64", "float64", "utf8", "string", "boolean", "date", "datetime")
-      - mode: "strict"     # optional; only "strict" supported for now (default)
+    Params
+    ------
+      - column: str            # required
+      - type:   str            # required
+        Accepts either:
+          * exact physical types: int8/int16/int32/int64, uint8/uint16/uint32/uint64,
+                                  float32/float64 (or float/double as aliases),
+                                  boolean/bool, utf8/string/str/text, date, datetime, time
+          * logical families:    int/integer, float, numeric, string/str
 
-    Semantics:
-      - Treat Polars' "Utf8" and "String" as equivalent string types.
-      - Map common aliases to Polars dtypes and compare dtype objects, not their string names.
+      - mode: "strict"         # optional (default). Future: may support relaxed modes.
+
+    Semantics
+    ---------
+    - Exact types require an exact match (e.g., "int16" passes only if the column is Int16).
+    - Family types accept any member of the family (e.g., "int" accepts Int8/16/32/64).
+    - Strings: "utf8", "string", "str", "text" are treated as the same family (Utf8 or String).
+    - We do NOT cast — we only validate. (Casting hints may come via planner/materializers later.)
+
+    Results
+    -------
+    - On mismatch or invalid config, `failed_count == nrows` (schema-level violation).
+    - Message is deterministic: "<col> expected <expected>, found <ActualDtype>".
     """
+
+    # ---- Aliases / Maps -----------------------------------------------------
 
     _STRING_ALIASES = {"utf8", "string", "str", "text"}
 
-    _DTYPE_MAP = {
-        # integers
-        "int8": pl.Int8, "int16": pl.Int16, "int32": pl.Int32, "int64": pl.Int64,
-        "uint8": pl.UInt8, "uint16": pl.UInt16, "uint32": pl.UInt32, "uint64": pl.UInt64,
+    # Exact physical types (single-member sets treated as "exact")
+    _EXACT_MAP = {
+        # signed ints
+        "int8": {pl.Int8}, "int16": {pl.Int16}, "int32": {pl.Int32}, "int64": {pl.Int64},
+        # unsigned ints
+        "uint8": {pl.UInt8}, "uint16": {pl.UInt16}, "uint32": {pl.UInt32}, "uint64": {pl.UInt64},
         # floats
-        "float32": pl.Float32, "float64": pl.Float64, "double": pl.Float64, "float": pl.Float64,
+        "float32": {pl.Float32}, "float64": {pl.Float64},
+        "float": {pl.Float64}, "double": {pl.Float64},  # common aliases treated as exact Float64
         # booleans
-        "bool": pl.Boolean, "boolean": pl.Boolean,
+        "bool": {pl.Boolean}, "boolean": {pl.Boolean},
         # temporal
-        "date": pl.Date, "datetime": pl.Datetime,
-        # strings handled via alias set above
+        "date": {pl.Date}, "datetime": {pl.Datetime}, "time": {pl.Time},
     }
 
-    def _normalize_expected(self, typ: str):
-        """Return a tuple (kind, dtype_or_set). kind='string' or 'dtype'."""
+    # Logical families (multi-member sets)
+    _FAMILY_MAP = {
+        "int": {pl.Int8, pl.Int16, pl.Int32, pl.Int64},
+        "integer": {pl.Int8, pl.Int16, pl.Int32, pl.Int64},
+        "float": {pl.Float32, pl.Float64},
+        "numeric": {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Float32, pl.Float64},
+        "string": {pl.Utf8, getattr(pl, "String", pl.Utf8)},  # tolerate both Utf8 and String
+        "str": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
+        "text": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
+        "utf8": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
+    }
+
+    # ---- Normalization ------------------------------------------------------
+
+    @staticmethod
+    def _dtype_label(dt: pl.DataType) -> str:
+        """Stable, user-friendly label for actual dtype in messages."""
+        # Polars dtypes stringify nicely (e.g., "Int64", "Utf8").
+        # Keep that behavior, but ensure Utf8/String variants read cleanly.
+        if dt == pl.Utf8:
+            return "Utf8"
+        # Some Polars versions may have pl.String; prefer "Utf8" in messages for consistency.
+        if getattr(pl, "String", None) and dt == getattr(pl, "String"):
+            return "Utf8"
+        return str(dt)
+
+    def _normalize_expected(self, typ: str) -> Tuple[str, Optional[set]]:
+        """
+        Returns (label, allowed_set).
+          - label: string echoed in error messages ("int16", "int", "date", ...)
+          - allowed_set: a set of acceptable Polars dtypes (None if unknown)
+        """
         t = (typ or "").strip().lower()
+        if not t:
+            return "<unspecified>", None
 
-        # strings: accept Utf8 or String, regardless of Polars version
-        if t in self._STRING_ALIASES:
-            return "string", {pl.Utf8, getattr(pl, "String", pl.Utf8)}
+        # tolerate hyphen variants like "utf-8"
+        t_no_dash = t.replace("-", "")
 
-        # mapped numeric/temporal dtypes
-        if t in self._DTYPE_MAP:
-            return "dtype", self._DTYPE_MAP[t]
+        # Family first (covers "string", "str", "utf8", etc.)
+        if t in self._FAMILY_MAP:
+            return t, self._FAMILY_MAP[t]
+        if t_no_dash in self._FAMILY_MAP:
+            return t_no_dash, self._FAMILY_MAP[t_no_dash]
 
-        # tolerate 'utf-8' variant
-        if t.replace("-", "") in self._STRING_ALIASES:
-            return "string", {pl.Utf8, getattr(pl, "String", pl.Utf8)}
+        # Exact physical types (single-member sets)
+        if t in self._EXACT_MAP:
+            return t, self._EXACT_MAP[t]
 
-        # fall back: try to resolve dynamically, else raise
-        raise ValueError(f"Unsupported/unknown dtype alias: '{typ}'")
+        return t, None
+
+    # ---- Rule contract ------------------------------------------------------
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
-        column = self.params["column"]
+        column = self.params.get("column")
         expected_type = self.params.get("type")
         mode = (self.params.get("mode") or "strict").lower()
 
         if mode != "strict":
-            # only strict supported right now
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
                 "failed_count": int(df.height),
                 "message": f"Unsupported dtype mode '{mode}'; only 'strict' is implemented.",
+            }
+
+        if not isinstance(column, str) or not column:
+            return {
+                "rule_id": self.rule_id,
+                "passed": False,
+                "failed_count": int(df.height),
+                "message": "Missing required 'column' parameter for dtype rule",
             }
 
         if column not in df.columns:
@@ -78,35 +138,26 @@ class DtypeRule(BaseRule):
                 "message": f"Column '{column}' not found for dtype check",
             }
 
-        try:
-            kind, exp = self._normalize_expected(expected_type)
-        except Exception as e:
+        label, allowed = self._normalize_expected(str(expected_type) if expected_type is not None else "")
+        if allowed is None:
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
                 "failed_count": int(df.height),
-                "message": f"Invalid expected dtype '{expected_type}': {e}",
+                "message": f"Invalid expected dtype '{expected_type}'",
             }
 
         actual = df[column].dtype
-
-        if kind == "string":
-            passed = (actual in exp)
-        else:
-            passed = (actual == exp)
+        passed = actual in allowed
 
         return {
             "rule_id": self.rule_id,
             "passed": bool(passed),
             "failed_count": 0 if passed else int(df.height),
-            "message": (
-                "Passed"
-                if passed
-                else f"{column} expected {expected_type}, found {actual}"
-            ),
+            "message": "Passed" if passed else f"{column} expected {label}, found {self._dtype_label(actual)}",
         }
-    
+
     def required_columns(self) -> Set[str]:
-        # strict dtype check inspects the column's dtype; ensure it's loaded
+        # dtype check inspects the column’s dtype; ensure it is loaded (for projection).
         col = self.params.get("column")
         return {col} if isinstance(col, str) else set()

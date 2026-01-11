@@ -20,7 +20,8 @@ RULES_MIXED = [
 
 def test_pushdown_auto_projects_columns(write_contract, small_clean_users, run_engine):
     cpath = write_contract(dataset=small_clean_users, rules=RULES_MIXED)
-    out, label = run_engine(contract_path=cpath, pushdown="auto", stats_mode="summary")
+    # Disable preplan to ensure pushdown handles not_null rules
+    out, label = run_engine(contract_path=cpath, pushdown="auto", preplan="off", stats_mode="summary")
 
     counts = collect_counts(out)
     # required: 9 columns (3 SQL + 6 residual); available includes all fillers
@@ -30,18 +31,19 @@ def test_pushdown_auto_projects_columns(write_contract, small_clean_users, run_e
     assert counts["loaded_count"] <= counts["available_count"]
     # clean data should pass all rules
     assert counts["rules_failed"] == 0
-    assert "pushdown: on" in label
+    assert "pushdown:on" in label.replace(" ", "")
 
 def test_pushdown_off_loads_required_columns(write_contract, small_clean_users, run_engine):
     cpath = write_contract(dataset=small_clean_users, rules=RULES_MIXED)
-    out, label = run_engine(contract_path=cpath, pushdown="off", stats_mode="summary")
+    # Disable preplan so all rules go to residual (no metadata shortcuts)
+    out, label = run_engine(contract_path=cpath, pushdown="off", preplan="off", stats_mode="summary")
 
     counts = collect_counts(out)
     assert counts["required_count"] == 9
-    # with pushdown off, residual path will load all required columns for Polars
+    # with pushdown off and preplan off, residual path will load all required columns for Polars
     assert counts["loaded_count"] == counts["required_count"]
     assert counts["rules_failed"] == 0
-    assert "pushdown: off" in label
+    assert "pushdown:off" in label.replace(" ", "")
 
 @pytest.mark.parametrize("dataset_fixture", ["small_mixed_users", "small_nulls_only"])
 def test_sql_rules_execute_first_and_affect_loaded_counts(write_contract, dataset_fixture, run_engine, request):

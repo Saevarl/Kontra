@@ -161,17 +161,18 @@ def profile_for(df: pl.DataFrame, cols: List[str]) -> Dict[str, Dict[str, Any]]:
     if out.height == 0:
         return {}
 
-    row = out.row(0)
+    # Use named=True to get row as dict for direct column access
+    row = out.row(0, named=True)
     stats: Dict[str, Dict[str, Any]] = {}
     for c in cols:
         d: Dict[str, Any] = {
-            "nulls": int(row[out.find_idx_by_name(f"__nulls__{c}")]),
-            "distinct": int(row[out.find_idx_by_name(f"__distinct__{c}")]),
+            "nulls": int(row[f"__nulls__{c}"]),
+            "distinct": int(row[f"__distinct__{c}"]),
         }
         # Only attach numeric extras if these columns exist in the projection
         if f"__min__{c}" in out.columns:
-            d["min"] = row[out.find_idx_by_name(f"__min__{c}")]
-            d["max"] = row[out.find_idx_by_name(f"__max__{c}")]
-            d["mean"] = float(row[out.find_idx_by_name(f"__mean__{c}")])
+            d["min"] = row[f"__min__{c}"]
+            d["max"] = row[f"__max__{c}"]
+            d["mean"] = float(row[f"__mean__{c}"])
         stats[c] = d
     return stats

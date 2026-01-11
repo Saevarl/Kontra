@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
+from typing import Literal, Optional
 import polars as pl
 import pytest
 
@@ -7,6 +10,9 @@ import pytest
 # adjust this import if your synth module path differs
 from scripts.synthesize_users import generate_users   # <- your file name/module path
 from kontra.engine.engine import ValidationEngine
+# tests/conftest.py
+from .fixtures_csv import small_mixed_users_csv, small_clean_users_csv  # registers CSV fixtures
+
 
 # ---------- knobs ----------
 SMALL_N = 100_000  # fast for CI; override with --small-n if you want
@@ -101,15 +107,48 @@ def write_contract(tmp_path):
 
 @pytest.fixture()
 def run_engine():
-    """Convenience runner that returns (out_dict, engine_label)."""
-    def _run(contract_path: str, data_override: str | None = None, pushdown: str = "auto", stats_mode="summary"):
+    """
+    Convenience runner that returns (out_dict, engine_label).
+
+    Args:
+        contract_path: Path to the generated contract.yml
+        data_override: Optional dataset URI override
+        pushdown: 'on' | 'off' | 'auto'
+        stats_mode: 'none' | 'summary' | 'profile'
+        csv_mode: 'auto' | 'duckdb' | 'parquet'   # controls CSV handling
+        enable_projection: True → project required columns, False → load all
+
+    Usage:
+        out, label = run_engine(
+            contract_path=cpath,
+            pushdown="on",
+            csv_mode="parquet",
+            enable_projection=True,
+            stats_mode="summary",
+        )
+    """
+    def _run(
+        contract_path: str,
+        data_override: Optional[str] = None,
+        pushdown: Literal["on", "off", "auto"] = "auto",
+        preplan: Literal["on", "off", "auto"] = "auto",
+        stats_mode: Literal["none", "summary", "profile"] = "summary",
+        csv_mode: Literal["auto", "duckdb", "parquet"] = "auto",
+        enable_projection: bool = True,
+    ):
+        from kontra.engine.engine import ValidationEngine
+
         eng = ValidationEngine(
             contract_path=contract_path,
             data_path=data_override,
             emit_report=False,
             stats_mode=stats_mode,
+            preplan=preplan,
             pushdown=pushdown,
+            csv_mode=csv_mode,
+            enable_projection=enable_projection,
         )
         out = eng.run()
         return out, out["run_meta"]["engine_label"]
+
     return _run
