@@ -8,6 +8,9 @@ import polars as pl
 
 from kontra.rules.base import BaseRule
 from kontra.rules.predicates import Predicate
+from kontra.logging import get_logger, log_exception
+
+_logger = get_logger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -108,26 +111,7 @@ class RuleExecutionPlan:
 
         # 3) Derive required columns for projection (predicates + fallbacks)
         cols_pred = _collect_required_columns(predicates)
-        cols_fb: Set[str] = set()
-
-        for r in fallbacks:
-            try:
-                # Prefer explicit declaration from the rule
-                cols = r.required_columns() or set()
-                if not cols:
-                    # Heuristic: infer from common param names when not declared
-                    p = getattr(r, "params", {}) or {}
-                    col = p.get("column")
-                    cols_list = p.get("columns")
-                    if isinstance(col, str) and col:
-                        cols.add(col)
-                    if isinstance(cols_list, (list, tuple)):
-                        cols.update(c for c in cols_list if isinstance(c, str))
-                cols_fb.update(cols)
-            except Exception:
-                # Be conservative: ignore here; rule will raise during validate() if broken.
-                pass
-
+        cols_fb = _extract_columns_from_rules(fallbacks)
         required_cols = sorted(cols_pred | cols_fb)
 
         return CompiledPlan(
@@ -249,22 +233,7 @@ class RuleExecutionPlan:
         ]
 
         cols_pred = _collect_required_columns(resid_preds)
-        cols_fb: Set[str] = set()
-        for r in resid_fallbacks:
-            try:
-                cols = r.required_columns() or set()
-                if not cols:
-                    p = getattr(r, "params", {}) or {}
-                    col = p.get("column")
-                    cols_list = p.get("columns")
-                    if isinstance(col, str) and col:
-                        cols.add(col)
-                    if isinstance(cols_list, (list, tuple)):
-                        cols.update(c for c in cols_list if isinstance(c, str))
-                cols_fb.update(cols)
-            except Exception:
-                pass
-
+        cols_fb = _extract_columns_from_rules(resid_fallbacks)
         required_cols = sorted(cols_pred | cols_fb)
 
         # sql_rules are irrelevant for the residual Polars pass
@@ -296,7 +265,8 @@ def _try_compile_predicate(rule: BaseRule) -> Optional[Predicate]:
         return None
     try:
         return fn() or None
-    except Exception:
+    except Exception as e:
+        log_exception(_logger, f"compile_predicate failed for {getattr(rule, 'name', '?')}", e)
         return None
 
 
@@ -305,6 +275,34 @@ def _collect_required_columns(preds: Iterable[Predicate]) -> Set[str]:
     cols: Set[str] = set()
     for p in preds:
         cols.update(p.columns)
+    return cols
+
+
+def _extract_columns_from_rules(rules: Iterable[BaseRule]) -> Set[str]:
+    """
+    Extract required columns from fallback rules.
+
+    First tries rule.required_columns(), then falls back to inferring
+    from common param names ('column', 'columns').
+    """
+    cols: Set[str] = set()
+    for r in rules:
+        try:
+            # Prefer explicit declaration from the rule
+            rule_cols = r.required_columns() or set()
+            if not rule_cols:
+                # Heuristic: infer from common param names when not declared
+                p = getattr(r, "params", {}) or {}
+                col = p.get("column")
+                cols_list = p.get("columns")
+                if isinstance(col, str) and col:
+                    rule_cols.add(col)
+                if isinstance(cols_list, (list, tuple)):
+                    rule_cols.update(c for c in cols_list if isinstance(c, str))
+            cols.update(rule_cols)
+        except Exception as e:
+            # Be conservative: ignore here; rule will raise during validate() if broken.
+            log_exception(_logger, f"Could not extract columns for rule {getattr(r, 'name', '?')}", e)
     return cols
 
 
@@ -345,7 +343,8 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
             spec = to_sql()
             if spec:
                 return spec
-        except Exception:
+        except Exception as e:
+            log_exception(_logger, f"to_sql_spec failed for {getattr(rule, 'name', '?')}", e)
             return None
 
     # Normalize and extract context

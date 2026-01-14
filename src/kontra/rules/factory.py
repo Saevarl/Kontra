@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional
 
 from kontra.rules.base import BaseRule
-from kontra.rules.registry import get_rule
+from kontra.rules.registry import get_rule, get_all_rule_names
 from kontra.config.models import RuleSpec
 
 
@@ -52,8 +52,12 @@ class RuleFactory:
 
             try:
                 rule_cls = get_rule(rule_name)
-            except KeyError as e:
-                raise ValueError(f"Unknown rule '{rule_name}' — not found in registry.") from e
+            except KeyError:
+                available = sorted(get_all_rule_names())
+                raise ValueError(
+                    f"Unknown rule '{rule_name}'. "
+                    f"Available rules: {', '.join(available)}"
+                )
 
             try:
                 # IMPORTANT: constructor accepts (name, params) only

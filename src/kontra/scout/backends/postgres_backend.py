@@ -12,53 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.postgres import PostgresConnectionParams, get_connection
-
-
-# PostgreSQL type mapping to normalized types
-PG_DTYPE_MAP = {
-    # Integer types
-    "integer": "int",
-    "int": "int",
-    "int4": "int",
-    "int8": "int",
-    "bigint": "int",
-    "smallint": "int",
-    "int2": "int",
-    "serial": "int",
-    "bigserial": "int",
-    # Float types
-    "real": "float",
-    "float4": "float",
-    "double precision": "float",
-    "float8": "float",
-    "numeric": "float",
-    "decimal": "float",
-    # Boolean
-    "boolean": "bool",
-    "bool": "bool",
-    # String types
-    "character varying": "string",
-    "varchar": "string",
-    "character": "string",
-    "char": "string",
-    "text": "string",
-    "bpchar": "string",
-    # Date/time types
-    "date": "date",
-    "time": "time",
-    "time without time zone": "time",
-    "time with time zone": "time",
-    "timestamp": "datetime",
-    "timestamp without time zone": "datetime",
-    "timestamp with time zone": "datetime",
-    "timestamptz": "datetime",
-    "interval": "interval",
-    # UUID
-    "uuid": "string",
-    # JSON
-    "json": "string",
-    "jsonb": "string",
-}
+from kontra.scout.dtype_mapping import normalize_dtype
 
 
 class PostgreSQLBackend:
@@ -291,8 +245,9 @@ class PostgreSQLBackend:
 
 
 def normalize_pg_type(raw_type: str) -> str:
-    """Normalize a PostgreSQL type to a simplified type name."""
-    lower = raw_type.lower().strip()
-    # Handle parameterized types like numeric(10,2) or varchar(255)
-    base = lower.split("(")[0].strip()
-    return PG_DTYPE_MAP.get(base, "unknown")
+    """
+    Normalize a PostgreSQL type to a simplified type name.
+
+    This is an alias for the shared normalize_dtype function.
+    """
+    return normalize_dtype(raw_type)

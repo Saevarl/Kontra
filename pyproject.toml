@@ -3,30 +3,68 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kontra"                                # package/distribution name
-version = "0.1.0"
+name = "kontra"
+version = "0.3.0"
 description = "Developer-first data quality engine"
+readme = "README.md"
 authors = [{ name = "Kontra Team" }]
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
+keywords = ["data-quality", "validation", "data-contracts", "polars", "duckdb"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
-  "polars",
-  "duckdb",
-  "pydantic",
-  "typer",
-  "rich",
-  "pyarrow"
+    "polars>=0.20.0",
+    "duckdb>=0.9.0",
+    "pydantic>=2.0.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pyarrow>=14.0.0",
+    "pyyaml>=6.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/kontra-data/kontra"
+Documentation = "https://github.com/kontra-data/kontra#readme"
+Repository = "https://github.com/kontra-data/kontra"
+Issues = "https://github.com/kontra-data/kontra/issues"
+
 [project.scripts]
-# primary CLI (new name)
 kontra = "kontra.cli.main:main"
-# optional: keep the old 'contra' command for backward-compat
-contra = "kontra.cli.main:main"
 
 [project.optional-dependencies]
 s3 = ["s3fs>=2024.6.0"]
+postgres = ["psycopg[binary]>=3.0.0"]
+sqlserver = ["pymssql>=2.2.0"]
+all = [
+    "s3fs>=2024.6.0",
+    "psycopg[binary]>=3.0.0",
+    "pymssql>=2.2.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["kontra*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

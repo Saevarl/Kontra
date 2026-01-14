@@ -230,6 +230,42 @@ rules:
     severity: info       # Informational only
 ```
 
+## Python API
+
+Use Kontra as a library in your Python code:
+
+```python
+import kontra
+from kontra import rules
+
+# Validate with contract file
+result = kontra.validate(df, "contract.yml")
+if result.passed:
+    print("All rules passed!")
+
+# Validate with inline rules
+result = kontra.validate(df, rules=[
+    rules.not_null("user_id"),
+    rules.unique("email"),
+    rules.range("age", min=0, max=150),
+])
+
+# Profile data
+profile = kontra.scout(df, preset="standard")
+print(f"Rows: {profile.row_count}")
+
+# Generate rules from profile
+suggestions = kontra.suggest_rules(profile)
+suggestions.save("contracts/users.yml")
+
+# LLM-optimized output
+print(result.to_llm())
+# VALIDATION: users PASSED
+# PASSED: 3 rules
+```
+
+See [Python API Reference](docs/python-api.md) for complete documentation.
+
 ## State & Diff
 
 Track validation history and detect regressions:
@@ -310,6 +346,7 @@ Projection [on]: 4/12 (req/avail) (pruned)
 ## Documentation
 
 - [Quick Start Guide](docs/quickstart.md)
+- [Python API Reference](docs/python-api.md)
 - [Rule Reference](docs/rules.md)
 - [Architecture Guide](docs/architecture.md)
 - [Configuration Guide](docs/config.md)

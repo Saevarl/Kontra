@@ -84,6 +84,10 @@ Kontra uses column projection to load only the columns needed for remaining rule
 
 ```
 src/kontra/
+├── __init__.py       # Public Python API (validate, scout, etc.)
+├── api/              # Python API types and helpers
+│   ├── results.py    # ValidationResult, RuleResult, Diff, Suggestions
+│   └── rules.py      # rules.not_null(), rules.unique(), etc.
 ├── cli/              # Typer CLI entry points
 │   └── main.py       # validate, scout, init commands
 ├── config/           # Contract YAML parsing

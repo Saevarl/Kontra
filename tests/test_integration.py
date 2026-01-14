@@ -502,3 +502,146 @@ rules:
 
         # Should still pass because not_null is only warning
         assert result["summary"]["passed"] is True
+
+
+# =============================================================================
+# DataFrame Mode Integration
+# =============================================================================
+
+
+class TestDataFrameModeIntegration:
+    """Tests for DataFrame input mode."""
+
+    def test_polars_dataframe_validation(self, sample_data, tmp_path):
+        """Validate a Polars DataFrame directly."""
+        contract = tmp_path / "contract.yml"
+        contract.write_text("""
+name: df_test
+dataset: placeholder
+
+rules:
+  - name: not_null
+    params:
+      column: id
+
+  - name: min_rows
+    params:
+      threshold: 5
+""")
+
+        engine = ValidationEngine(
+            contract_path=str(contract),
+            dataframe=sample_data,
+            emit_report=False,
+            save_state=False,
+        )
+        result = engine.run()
+
+        assert result["summary"]["passed"] is True
+        assert result["summary"]["total_rules"] == 2
+
+    def test_pandas_dataframe_validation(self, sample_data, tmp_path):
+        """Validate a pandas DataFrame (auto-converted to Polars)."""
+        pytest.importorskip("pandas")
+        # Convert polars to pandas
+        pdf = sample_data.to_pandas()
+
+        contract = tmp_path / "contract.yml"
+        contract.write_text("""
+name: pandas_test
+dataset: placeholder
+
+rules:
+  - name: not_null
+    params:
+      column: id
+
+  - name: unique
+    params:
+      column: id
+""")
+
+        engine = ValidationEngine(
+            contract_path=str(contract),
+            dataframe=pdf,
+            emit_report=False,
+            save_state=False,
+        )
+        result = engine.run()
+
+        assert result["summary"]["passed"] is True
+        assert result["summary"]["total_rules"] == 2
+
+    def test_dataframe_validation_failing(self, tmp_path):
+        """DataFrame validation correctly detects failures."""
+        df = pl.DataFrame({
+            "id": [1, 2, None, 4, 5],  # Has NULL
+            "name": ["a", "b", "c", "d", "e"],
+        })
+
+        contract = tmp_path / "contract.yml"
+        contract.write_text("""
+name: failing_df_test
+dataset: placeholder
+
+rules:
+  - name: not_null
+    params:
+      column: id
+    severity: blocking
+""")
+
+        engine = ValidationEngine(
+            contract_path=str(contract),
+            dataframe=df,
+            emit_report=False,
+            save_state=False,
+        )
+        result = engine.run()
+
+        assert result["summary"]["passed"] is False
+        assert result["summary"]["rules_failed"] == 1
+
+
+class TestPublicAPIIntegration:
+    """Tests for the public kontra.validate() API."""
+
+    def test_validate_function_with_dataframe(self, sample_data, tmp_path):
+        """kontra.validate() works with DataFrame."""
+        from kontra import validate
+
+        contract = tmp_path / "contract.yml"
+        contract.write_text("""
+name: api_test
+dataset: placeholder
+
+rules:
+  - name: min_rows
+    params:
+      threshold: 5
+""")
+
+        result = validate(sample_data, str(contract), save=False)
+
+        assert result.passed is True
+        assert result.total_rules == 1
+
+    def test_validate_function_with_path(self, parquet_file, tmp_path):
+        """kontra.validate() works with file path."""
+        from kontra import validate
+
+        contract = tmp_path / "contract.yml"
+        contract.write_text(f"""
+name: path_api_test
+dataset: {parquet_file}
+
+rules:
+  - name: min_rows
+    params:
+      threshold: 5
+""")
+
+        result = validate(str(parquet_file), str(contract), save=False)
+
+        assert result.passed is True
+        assert result.total_rules == 1

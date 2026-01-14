@@ -290,8 +290,41 @@ See [Configuration Guide](config.md) for details.
 | 2 | Configuration error | Contract/file not found |
 | 3 | Runtime error | Unexpected failure |
 
+## Python API
+
+Use Kontra as a library in your Python code:
+
+```python
+import kontra
+from kontra import rules
+
+# Validate with inline rules (no contract file needed)
+result = kontra.validate(df, rules=[
+    rules.not_null("user_id"),
+    rules.unique("email"),
+    rules.range("age", min=0, max=150),
+])
+
+if result.passed:
+    print("All rules passed!")
+else:
+    for r in result.blocking_failures:
+        print(f"FAILED: {r.rule_id} - {r.message}")
+
+# Profile data
+profile = kontra.scout(df)
+print(f"Rows: {profile.row_count}")
+
+# Generate rules from profile
+suggestions = kontra.suggest_rules(profile)
+suggestions.save("contracts/users.yml")
+```
+
+See [Python API Reference](python-api.md) for complete documentation.
+
 ## Next Steps
 
+- [Python API Reference](python-api.md) - Use Kontra as a library
 - [Rule Reference](rules.md) - All 10 built-in rules
 - [Configuration Guide](config.md) - Datasources, environments, settings
 - [Architecture Guide](architecture.md) - How Kontra works

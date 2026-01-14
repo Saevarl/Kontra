@@ -12,47 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
-
-
-# SQL Server type mapping to normalized types
-SQLSERVER_DTYPE_MAP = {
-    # Integer types
-    "int": "int",
-    "bigint": "int",
-    "smallint": "int",
-    "tinyint": "int",
-    # Float types
-    "real": "float",
-    "float": "float",
-    "numeric": "float",
-    "decimal": "float",
-    "money": "float",
-    "smallmoney": "float",
-    # Boolean
-    "bit": "bool",
-    # String types
-    "varchar": "string",
-    "nvarchar": "string",
-    "char": "string",
-    "nchar": "string",
-    "text": "string",
-    "ntext": "string",
-    # Date/time types
-    "date": "date",
-    "time": "time",
-    "datetime": "datetime",
-    "datetime2": "datetime",
-    "smalldatetime": "datetime",
-    "datetimeoffset": "datetime",
-    # UUID
-    "uniqueidentifier": "string",
-    # Binary
-    "binary": "binary",
-    "varbinary": "binary",
-    "image": "binary",
-    # XML
-    "xml": "string",
-}
+from kontra.scout.dtype_mapping import normalize_dtype
 
 
 class SqlServerBackend:
@@ -258,8 +218,9 @@ class SqlServerBackend:
 
 
 def normalize_sqlserver_type(raw_type: str) -> str:
-    """Normalize a SQL Server type to a simplified type name."""
-    lower = raw_type.lower().strip()
-    # Handle parameterized types like numeric(10,2) or varchar(255)
-    base = lower.split("(")[0].strip()
-    return SQLSERVER_DTYPE_MAP.get(base, "unknown")
+    """
+    Normalize a SQL Server type to a simplified type name.
+
+    This is an alias for the shared normalize_dtype function.
+    """
+    return normalize_dtype(raw_type)

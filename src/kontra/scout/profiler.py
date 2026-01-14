@@ -31,6 +31,7 @@ from .types import (
     TemporalStats,
     TopValue,
 )
+from .dtype_mapping import normalize_dtype
 
 
 # Preset configurations
@@ -78,99 +79,6 @@ PRESETS = {
         "list_values_threshold": 15,
     },
 }
-
-
-# Type mapping from raw types to normalized types (combined DuckDB + PostgreSQL + SQL Server)
-DTYPE_MAP = {
-    # Integer types (DuckDB)
-    "TINYINT": "int",
-    "SMALLINT": "int",
-    "INTEGER": "int",
-    "BIGINT": "int",
-    "HUGEINT": "int",
-    "UTINYINT": "int",
-    "USMALLINT": "int",
-    "UINTEGER": "int",
-    "UBIGINT": "int",
-    "INT8": "int",
-    "INT16": "int",
-    "INT32": "int",
-    "INT64": "int",
-    "INT128": "int",
-    "UINT8": "int",
-    "UINT16": "int",
-    "UINT32": "int",
-    "UINT64": "int",
-    # Integer types (PostgreSQL)
-    "INT": "int",
-    "INT4": "int",
-    "INT2": "int",
-    "SERIAL": "int",
-    "BIGSERIAL": "int",
-    # Float types
-    "FLOAT": "float",
-    "DOUBLE": "float",
-    "REAL": "float",
-    "DECIMAL": "float",
-    "NUMERIC": "float",
-    "FLOAT4": "float",
-    "FLOAT8": "float",
-    "DOUBLE PRECISION": "float",
-    # Float types (SQL Server)
-    "MONEY": "float",
-    "SMALLMONEY": "float",
-    # Boolean
-    "BOOLEAN": "bool",
-    "BOOL": "bool",
-    "BIT": "bool",  # SQL Server
-    # String types
-    "VARCHAR": "string",
-    "CHAR": "string",
-    "BPCHAR": "string",
-    "TEXT": "string",
-    "STRING": "string",
-    "CHARACTER VARYING": "string",
-    "CHARACTER": "string",
-    # String types (SQL Server)
-    "NVARCHAR": "string",
-    "NCHAR": "string",
-    "NTEXT": "string",
-    # Date/time types
-    "DATE": "date",
-    "TIME": "time",
-    "TIME WITHOUT TIME ZONE": "time",
-    "TIME WITH TIME ZONE": "time",
-    "TIMESTAMP": "datetime",
-    "TIMESTAMP WITH TIME ZONE": "datetime",
-    "TIMESTAMP WITHOUT TIME ZONE": "datetime",
-    "TIMESTAMPTZ": "datetime",
-    "INTERVAL": "interval",
-    # Date/time types (SQL Server)
-    "DATETIME": "datetime",
-    "DATETIME2": "datetime",
-    "SMALLDATETIME": "datetime",
-    "DATETIMEOFFSET": "datetime",
-    # Binary
-    "BLOB": "binary",
-    "BYTEA": "binary",
-    "BINARY": "binary",  # SQL Server
-    "VARBINARY": "binary",  # SQL Server
-    "IMAGE": "binary",  # SQL Server
-    # UUID / JSON
-    "UUID": "string",
-    "JSON": "string",
-    "JSONB": "string",
-    "UNIQUEIDENTIFIER": "string",  # SQL Server
-    "XML": "string",  # SQL Server
-}
-
-
-def _normalize_dtype(raw_type: str) -> str:
-    """Normalize a raw type to a simplified type name."""
-    upper = raw_type.upper().strip()
-    # Handle parameterized types like DECIMAL(10,2) or VARCHAR(255)
-    base = upper.split("(")[0].strip()
-    return DTYPE_MAP.get(base, "unknown")
 
 
 def _select_backend(handle: DatasetHandle, sample_size: Optional[int] = None):
@@ -351,7 +259,7 @@ class ScoutProfiler:
         col_info: List[Tuple[str, str, str]] = []  # (name, raw_type, normalized_type)
 
         for col_name, raw_type in schema:
-            dtype = _normalize_dtype(raw_type)
+            dtype = normalize_dtype(raw_type)
             col_info.append((col_name, raw_type, dtype))
             col_exprs = self._build_column_agg_exprs(col_name, dtype)
             exprs.extend(col_exprs)

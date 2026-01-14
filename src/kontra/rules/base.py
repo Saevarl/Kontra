@@ -38,6 +38,45 @@ class BaseRule(ABC):
         """
         return set()
 
+    def _get_required_param(self, key: str, param_type: type = str) -> Any:
+        """
+        Get a required parameter, raising a clear error if missing or wrong type.
+
+        Args:
+            key: Parameter name
+            param_type: Expected type (default: str)
+
+        Returns:
+            The parameter value
+
+        Raises:
+            ValueError: If parameter is missing or has wrong type
+        """
+        if key not in self.params:
+            raise ValueError(
+                f"Rule '{self.name}' requires parameter '{key}' but it was not provided"
+            )
+        value = self.params[key]
+        if not isinstance(value, param_type):
+            raise ValueError(
+                f"Rule '{self.name}' parameter '{key}' must be {param_type.__name__}, "
+                f"got {type(value).__name__}"
+            )
+        return value
+
+    def _get_optional_param(self, key: str, default: Any = None) -> Any:
+        """
+        Get an optional parameter with a default value.
+
+        Args:
+            key: Parameter name
+            default: Default value if not provided
+
+        Returns:
+            The parameter value or default
+        """
+        return self.params.get(key, default)
+
     def _failures(self, df: pl.DataFrame, mask: pl.Series, message: str) -> Dict[str, Any]:
         """Utility to summarize failing rows."""
         failed_count = mask.sum()

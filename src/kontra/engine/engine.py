@@ -27,7 +27,7 @@ Principles
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Literal, Optional, Set, TYPE_CHECKING, Union
 
 import polars as pl
 
@@ -48,6 +48,9 @@ from kontra.engine.stats import RunTimers, basic_summary, columns_touched, now_m
 from kontra.reporters.rich_reporter import report_failure, report_success
 from kontra.rules.execution_plan import RuleExecutionPlan
 from kontra.rules.factory import RuleFactory
+from kontra.logging import get_logger, log_exception
+
+_logger = get_logger(__name__)
 
 # Preplan (metadata-only) + static predicate extraction
 from kontra.preplan.planner import preplan_single_parquet
@@ -140,12 +143,30 @@ class ValidationEngine:
       - SQL pushdown (optional)           [independent]
       - Residual Polars execution
       - Reporting + stats
+
+    Usage:
+        # From file paths
+        engine = ValidationEngine(contract_path="contract.yml")
+        result = engine.run()
+
+        # With DataFrame (skips preplan/pushdown, uses Polars directly)
+        import polars as pl
+        df = pl.read_parquet("data.parquet")
+        engine = ValidationEngine(contract_path="contract.yml", dataframe=df)
+        result = engine.run()
+
+        # With pandas DataFrame
+        import pandas as pd
+        pdf = pd.read_parquet("data.parquet")
+        engine = ValidationEngine(contract_path="contract.yml", dataframe=pdf)
+        result = engine.run()
     """
 
     def __init__(
         self,
-        contract_path: str,
+        contract_path: Optional[str] = None,
         data_path: Optional[str] = None,
+        dataframe: Optional[Union[pl.DataFrame, "pd.DataFrame"]] = None,
         emit_report: bool = True,
         stats_mode: Literal["none", "summary", "profile"] = "none",
         # Independent toggles
@@ -159,9 +180,44 @@ class ValidationEngine:
         # State management
         state_store: Optional["StateBackend"] = None,
         save_state: bool = True,
+        # Inline rules (Python API)
+        inline_rules: Optional[List[Dict[str, Any]]] = None,
     ):
-        self.contract_path = str(contract_path)
+        # Validate inputs
+        if contract_path is None and inline_rules is None:
+            raise ValueError("Either contract_path or inline_rules must be provided")
+
+        # Validate toggle parameters
+        valid_csv_modes = {"auto", "duckdb", "parquet"}
+        if csv_mode not in valid_csv_modes:
+            raise ValueError(
+                f"Invalid csv_mode '{csv_mode}'. "
+                f"Must be one of: {', '.join(sorted(valid_csv_modes))}"
+            )
+
+        valid_toggles = {"on", "off", "auto"}
+        if preplan not in valid_toggles:
+            raise ValueError(
+                f"Invalid preplan '{preplan}'. "
+                f"Must be one of: {', '.join(sorted(valid_toggles))}"
+            )
+        if pushdown not in valid_toggles:
+            raise ValueError(
+                f"Invalid pushdown '{pushdown}'. "
+                f"Must be one of: {', '.join(sorted(valid_toggles))}"
+            )
+
+        valid_stats_modes = {"none", "summary", "profile"}
+        if stats_mode not in valid_stats_modes:
+            raise ValueError(
+                f"Invalid stats_mode '{stats_mode}'. "
+                f"Must be one of: {', '.join(sorted(valid_stats_modes))}"
+            )
+
+        self.contract_path = str(contract_path) if contract_path else None
         self.data_path = data_path
+        self._input_dataframe = dataframe  # Store user-provided DataFrame
+        self._inline_rules = inline_rules  # Store inline rules for merging
         self.emit_report = emit_report
         self.stats_mode = stats_mode
 
@@ -202,8 +258,8 @@ class ValidationEngine:
             if self._staging_tmpdir is not None:
                 try:
                     self._staging_tmpdir.cleanup()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_exception(_logger, "Failed to cleanup staging directory", e)
                 self._staging_tmpdir = None
 
     def _save_validation_state(self, result: Dict[str, Any]) -> None:
@@ -229,8 +285,8 @@ class ValidationEngine:
             try:
                 handle = DatasetHandle.from_uri(source_uri)
                 dataset_fp = fingerprint_dataset(handle)
-            except Exception:
-                pass
+            except Exception as e:
+                log_exception(_logger, "Could not fingerprint dataset", e)
 
             # Derive contract name (from contract, or from path)
             contract_name = "unknown"
@@ -283,7 +339,8 @@ class ValidationEngine:
             # Build simple diff
             return self._build_diff(previous, self._last_state)
 
-        except Exception:
+        except Exception as e:
+            log_exception(_logger, "Failed to compute diff", e)
             return None
 
     def _build_diff(
@@ -341,14 +398,153 @@ class ValidationEngine:
 
         return diff
 
-    def _run_impl(self, timers: RunTimers) -> Dict[str, Any]:
-        # 1) Contract
+    def _run_dataframe_mode(
+        self,
+        timers: RunTimers,
+        rules: List,
+        plan: "RuleExecutionPlan",
+        compiled_full,
+        rule_severity_map: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """
+        Execute validation directly on a user-provided DataFrame.
+
+        This path:
+        - Skips preplan (no file metadata)
+        - Skips SQL pushdown (data already in memory)
+        - Uses Polars-only execution
+        """
         t0 = now_ms()
-        self.contract = (
-            ContractLoader.from_s3(self.contract_path)
-            if _is_s3_uri(self.contract_path)
-            else ContractLoader.from_path(self.contract_path)
+
+        # Convert pandas to polars if needed
+        df = self._input_dataframe
+        if not isinstance(df, pl.DataFrame):
+            try:
+                # Assume it's pandas-like
+                df = pl.from_pandas(df)
+            except Exception as e:
+                raise ValueError(
+                    f"Could not convert DataFrame to Polars: {e}. "
+                    "Pass a Polars DataFrame or a pandas DataFrame."
+                )
+
+        self.df = df
+        timers.data_load_ms = now_ms() - t0
+
+        # Execute all rules via Polars
+        t0 = now_ms()
+        polars_exec = PolarsBackend(executor=plan.execute_compiled)
+        exec_result = polars_exec.execute(self.df, compiled_full)
+        polars_results = exec_result.get("results", [])
+        timers.polars_ms = now_ms() - t0
+
+        # Merge results (all from Polars in this mode)
+        all_results: List[Dict[str, Any]] = []
+        for res in polars_results:
+            res["execution_source"] = "polars"
+            res["severity"] = rule_severity_map.get(res["rule_id"], "blocking")
+            all_results.append(res)
+
+        # Sort deterministically
+        all_results.sort(key=lambda r: r["rule_id"])
+
+        # Summary (use the plan's summary method for consistency)
+        summary = plan.summary(all_results)
+        summary["dataset_name"] = self.contract.dataset if self.contract else "dataframe"
+        engine_label = "polars (dataframe mode)"
+
+        # Report
+        if self.emit_report:
+            if summary["passed"]:
+                report_success(
+                    name=summary.get("dataset_name", "dataframe"),
+                    results=all_results,
+                    summary=summary,
+                )
+            else:
+                report_failure(
+                    name=summary.get("dataset_name", "dataframe"),
+                    results=all_results,
+                    summary=summary,
+                )
+
+        result = {
+            "summary": summary,
+            "results": all_results,
+        }
+
+        # Stats
+        if self.stats_mode != "none":
+            stats: Dict[str, Any] = {
+                "run_meta": {
+                    "contract_path": self.contract_path,
+                    "engine": engine_label,
+                    "materializer": "dataframe",
+                    "preplan": "off",
+                    "pushdown": "off",
+                },
+                "durations_ms": {
+                    "contract_load": timers.contract_load_ms,
+                    "compile": timers.compile_ms,
+                    "data_load": timers.data_load_ms,
+                    "polars": timers.polars_ms,
+                    "total": timers.total_ms(),
+                },
+            }
+
+            if self.stats_mode == "summary":
+                stats["dataset"] = basic_summary(self.df)
+            elif self.stats_mode == "profile":
+                stats["dataset"] = profile_for(self.df)
+
+            result["stats"] = stats
+
+        return result
+
+    def _load_contract(self) -> Contract:
+        """
+        Load contract from file and/or merge with inline rules.
+
+        Returns a Contract object with all rules to validate.
+        """
+        from kontra.config.models import RuleSpec
+
+        # Convert inline rules to RuleSpec objects
+        inline_specs = []
+        if self._inline_rules:
+            for rule_dict in self._inline_rules:
+                spec = RuleSpec(
+                    name=rule_dict.get("name", ""),
+                    id=rule_dict.get("id"),
+                    params=rule_dict.get("params", {}),
+                    severity=rule_dict.get("severity", "blocking"),
+                )
+                inline_specs.append(spec)
+
+        # Load from file if path provided
+        if self.contract_path:
+            contract = (
+                ContractLoader.from_s3(self.contract_path)
+                if _is_s3_uri(self.contract_path)
+                else ContractLoader.from_path(self.contract_path)
+            )
+            # Merge inline rules with contract rules
+            if inline_specs:
+                contract.rules = list(contract.rules) + inline_specs
+            return contract
+
+        # No contract file - create synthetic contract from inline rules
+        dataset = self.data_path or "inline_validation"
+        return Contract(
+            name="inline_contract",
+            dataset=dataset,
+            rules=inline_specs,
         )
+
+    def _run_impl(self, timers: RunTimers) -> Dict[str, Any]:
+        # 1) Contract (load from file and/or inline rules)
+        t0 = now_ms()
+        self.contract = self._load_contract()
         timers.contract_load_ms = now_ms() - t0
 
         # 2) Rules & plan
@@ -360,6 +556,12 @@ class ValidationEngine:
 
         # Build rule_id -> severity mapping for injecting into preplan/SQL results
         rule_severity_map = {r.rule_id: r.severity for r in rules}
+
+        # ------------------------------------------------------------------ #
+        # DataFrame mode: If user provided a DataFrame, use Polars-only path
+        # ------------------------------------------------------------------ #
+        if self._input_dataframe is not None:
+            return self._run_dataframe_mode(timers, rules, plan, compiled_full, rule_severity_map)
 
         # Dataset handle (used across phases)
         source_uri = self.data_path or self.contract.dataset
@@ -389,10 +591,10 @@ class ValidationEngine:
         if _is_s3_uri(handle.uri):
             try:
                 preplan_fs = _create_s3_filesystem(handle)
-            except Exception:
+            except Exception as e:
                 # If S3 libs aren't installed, this will fail.
                 # We'll let the ParquetFile call fail below and be caught.
-                pass
+                log_exception(_logger, "Could not create S3 filesystem for preplan", e)
 
         if self.preplan in {"on", "auto"} and _is_parquet(handle.uri):
             try:
@@ -665,8 +867,9 @@ class ValidationEngine:
                 if residual_fs is None and _is_s3_uri(handle.uri):
                     try:
                         residual_fs = _create_s3_filesystem(handle)
-                    except Exception:
-                        pass  # Let ParquetFile try default credentials
+                    except Exception as e:
+                        # Let ParquetFile try default credentials
+                        log_exception(_logger, "Could not create S3 filesystem for residual load", e)
 
                 # PyArrow S3FileSystem expects 'bucket/key' format, not 's3://bucket/key'
                 residual_path = _s3_uri_to_path(handle.uri) if residual_fs else handle.uri
@@ -914,6 +1117,6 @@ class ValidationEngine:
                 return list(pl.scan_parquet(source).collect_schema().names())
             if s.endswith(".csv"):
                 return list(pl.scan_csv(source).collect_schema().names())
-        except Exception:
-            pass
+        except Exception as e:
+            log_exception(_logger, f"Could not peek columns from {source}", e)
         return []

@@ -27,6 +27,22 @@ class RunTimers:
     compile_ms: int = 0
     execute_ms: int = 0
     report_ms: int = 0
+    polars_ms: int = 0
+    preplan_ms: int = 0
+    sql_ms: int = 0
+
+    def total_ms(self) -> int:
+        """Total time across all phases."""
+        return (
+            self.contract_load_ms
+            + self.data_load_ms
+            + self.compile_ms
+            + self.execute_ms
+            + self.report_ms
+            + self.polars_ms
+            + self.preplan_ms
+            + self.sql_ms
+        )
 
 
 def now_ms() -> int:

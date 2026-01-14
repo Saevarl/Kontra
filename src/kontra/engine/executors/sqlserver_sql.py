@@ -226,6 +226,13 @@ class SqlServerSqlExecutor(SqlExecutor):
         table = f"{_esc(params.schema)}.{_esc(params.table)}"
         results: List[Dict[str, Any]] = []
 
+        # Build rule_kinds mapping from specs
+        rule_kinds = {}
+        for spec in exists_specs:
+            rule_kinds[spec["rule_id"]] = spec.get("kind")
+        for spec in compiled_plan.get("aggregate_specs", []):
+            rule_kinds[spec["rule_id"]] = spec.get("kind")
+
         with get_connection(params) as conn:
             cursor = conn.cursor()
 
@@ -246,7 +253,7 @@ class SqlServerSqlExecutor(SqlExecutor):
                 columns = [desc[0] for desc in cursor.description] if cursor.description else []
 
                 if row and columns:
-                    exists_results = results_from_row(columns, row, is_exists=True)
+                    exists_results = results_from_row(columns, row, is_exists=True, rule_kinds=rule_kinds)
                     results.extend(exists_results)
 
             # Phase 2: Aggregate query for remaining rules
@@ -257,7 +264,7 @@ class SqlServerSqlExecutor(SqlExecutor):
                 columns = [desc[0] for desc in cursor.description] if cursor.description else []
 
                 if row and columns:
-                    agg_results = results_from_row(columns, row, is_exists=False)
+                    agg_results = results_from_row(columns, row, is_exists=False, rule_kinds=rule_kinds)
                     results.extend(agg_results)
 
         return {"results": results, "staging": None}

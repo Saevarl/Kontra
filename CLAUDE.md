@@ -59,6 +59,9 @@ Merge results (deterministic order: preplan → SQL → Polars) → Report
 ```
 src/kontra/
 ├── cli/                   # Typer CLI entry point
+├── api/                   # Python API (public interface)
+│   ├── results.py         # ValidationResult, RuleResult, Diff, Suggestions
+│   └── rules.py           # rules.not_null(), rules.unique(), etc.
 ├── config/                # Configuration and contract parsing
 │   ├── models.py          # Contract Pydantic models
 │   ├── loader.py          # Contract loading
@@ -141,15 +144,17 @@ src/kontra/
 - Use `@pytest.mark.integration` for end-to-end tests
 - Determinism tests verify identical inputs produce identical outputs
 - CLI tests use `typer.testing.CliRunner`
-- Coverage: ~70% with 270+ tests
+- Coverage: ~70% with 319+ tests
 
 ### Test Files
 
 - `tests/test_cli.py` - CLI command tests
 - `tests/test_integration.py` - End-to-end ValidationEngine tests
+- `tests/test_python_api.py` - Python API tests (validate, scout, rules helpers)
 - `tests/test_reporters.py` - JSON/Rich reporter tests
 - `tests/test_config_settings.py` - Configuration system tests
 - `tests/test_scout.py` - ScoutProfiler tests
+- `tests/test_state.py` - State management tests
 - `tests/test_rules_*.py` - Individual rule tests
 
 ## Key Patterns
@@ -178,6 +183,7 @@ src/kontra/
 ## Documentation
 
 - `docs/quickstart.md` - Getting started guide
+- `docs/python-api.md` - Python library API reference
 - `docs/config.md` - Configuration system
 - `docs/rules.md` - Rule reference
 - `docs/architecture.md` - Technical architecture
