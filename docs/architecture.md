@@ -281,13 +281,13 @@ def get_connection(params: NewDBConnectionParams):
 ### For Large Datasets
 
 ```bash
-# Use preplan + pushdown (default)
+# Use preplan + pushdown (default, fastest for most cases)
 kontra validate contract.yml
 
-# Force preplan only (fastest for Parquet)
+# Metadata-only mode (no data scanning, only if all rules resolvable from metadata)
 kontra validate contract.yml --preplan on --pushdown off
 
-# Use column projection
+# Use column projection (default on, reduces I/O)
 kontra validate contract.yml --projection on
 ```
 

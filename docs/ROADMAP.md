@@ -31,7 +31,7 @@ kontra scout data.parquet
 kontra validate contract.yml
 
 # Power user has options
-kontra validate contract.yml --preplan on --pushdown off --stats profile
+kontra validate contract.yml --pushdown on --stats profile --show-plan
 ```
 
 ### 3. Consistency Across Surfaces

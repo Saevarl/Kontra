@@ -456,22 +456,9 @@ def resolve_datasource(
     if "://" in reference or reference.startswith("/") or reference.endswith((".parquet", ".csv")):
         return reference
 
-    # Parse as datasource.table reference
-    if "." not in reference:
-        # Could be just a datasource name, or a relative file path
-        # Check if it looks like a file path
-        if "/" in reference:
-            return reference
-        raise ValueError(
-            f"Invalid datasource reference: '{reference}'. "
-            "Use 'datasource.table' format or a direct URI/path."
-        )
-
-    parts = reference.split(".", 1)
-    if len(parts) != 2:
-        raise ValueError(f"Invalid datasource reference: '{reference}'. Use 'datasource.table' format.")
-
-    ds_name, table_name = parts
+    # Check if it looks like a file path
+    if "/" in reference:
+        return reference
 
     # Load config if not provided
     if config is None:
@@ -479,10 +466,58 @@ def resolve_datasource(
         if config_path:
             config = load_config_file(config_path)
         else:
+            config = None
+
+    # Parse reference - could be "table", "datasource.table", or ambiguous
+    if "." in reference:
+        # Explicit datasource.table format
+        parts = reference.split(".", 1)
+        ds_name, table_name = parts
+    else:
+        # Just a table name - search all datasources
+        table_name = reference
+        ds_name = None
+
+        if config is None:
             raise ValueError(
-                f"Datasource '{ds_name}' not found. "
+                f"Table '{reference}' not found. "
                 "No config file exists. Run 'kontra init' to create one."
             )
+
+        # Find which datasource(s) have this table
+        matches = []
+        for ds_key, ds_data in config.datasources.items():
+            tables = ds_data.get("tables", {})
+            if table_name in tables:
+                matches.append(ds_key)
+
+        if len(matches) == 0:
+            # List all available tables
+            all_tables = []
+            for ds_key, ds_data in config.datasources.items():
+                tables = ds_data.get("tables", {})
+                for t in tables.keys():
+                    all_tables.append(f"{ds_key}.{t}")
+            tables_str = ", ".join(all_tables) if all_tables else "(none)"
+            raise ValueError(
+                f"Unknown table: '{reference}'. "
+                f"Available tables: {tables_str}"
+            )
+        elif len(matches) > 1:
+            matches_str = ", ".join(f"{m}.{table_name}" for m in matches)
+            raise ValueError(
+                f"Ambiguous table '{reference}' found in multiple datasources: {matches_str}. "
+                f"Use explicit 'datasource.table' format."
+            )
+        else:
+            ds_name = matches[0]
+
+    # At this point we have ds_name and table_name
+    if config is None:
+        raise ValueError(
+            f"Datasource '{ds_name}' not found. "
+            "No config file exists. Run 'kontra init' to create one."
+        )
 
     # Get datasource
     ds = config.get_datasource(ds_name)

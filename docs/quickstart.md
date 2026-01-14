@@ -156,26 +156,10 @@ Columns:
 
 ## Database Sources
 
-### PostgreSQL
+### Named Datasources (Recommended)
 
-Option 1: Environment variables (recommended)
-```bash
-export PGHOST=localhost
-export PGPORT=5432
-export PGUSER=kontra
-export PGPASSWORD=secret
-export PGDATABASE=mydb
+Define your datasources once in `.kontra/config.yml`:
 
-kontra validate contract.yml --data postgres:///public.users
-```
-
-Option 2: Full URI
-```bash
-kontra validate contract.yml \
-  --data postgres://user:pass@localhost:5432/mydb/public.users
-```
-
-Option 3: Named datasource (best)
 ```yaml
 # .kontra/config.yml
 datasources:
@@ -187,29 +171,50 @@ datasources:
     database: ${PGDATABASE}
     tables:
       users: public.users
+      orders: public.orders
+
+  warehouse:
+    type: sqlserver
+    host: ${MSSQL_HOST}
+    user: ${MSSQL_USER}
+    password: ${MSSQL_PASSWORD}
+    database: analytics
+    tables:
+      events: dbo.events
 ```
+
+Then use simple names:
 
 ```bash
-kontra validate contract.yml --data prod_db.users
+# Profile tables
+kontra scout users                    # Resolves to prod_db.users
+kontra scout orders
+kontra scout warehouse.events
+
+# Validate
+kontra validate contract.yml --data users
 ```
 
-### SQL Server
+### Direct URIs (Alternative)
 
+**PostgreSQL:**
 ```bash
-kontra validate contract.yml \
-  --data mssql://user:pass@localhost/mydb/dbo.users
+export PGHOST=localhost PGUSER=kontra PGPASSWORD=secret PGDATABASE=mydb
+kontra scout postgres:///public.users
 ```
 
-### S3/MinIO
+**SQL Server:**
+```bash
+kontra scout mssql://user:pass@localhost/mydb/dbo.users
+```
 
+**S3/MinIO:**
 ```bash
 export AWS_ACCESS_KEY_ID=your_key
 export AWS_SECRET_ACCESS_KEY=your_secret
+export AWS_ENDPOINT_URL=http://localhost:9000  # For MinIO
 
-# For MinIO
-export AWS_ENDPOINT_URL=http://localhost:9000
-
-kontra validate contract.yml --data s3://bucket/data.parquet
+kontra scout s3://bucket/data.parquet
 ```
 
 ## Execution Modes

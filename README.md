@@ -5,17 +5,17 @@
 Kontra validates datasets against declarative contracts. It combines metadata analysis, SQL pushdown, and Polars execution for performance. Built for developers who care about data quality without ceremony.
 
 ```bash
-# Initialize a project
+# Initialize project
 kontra init
 
-# Profile your data
+# Define datasources in .kontra/config.yml, then:
+kontra scout users                              # Profile a table
+kontra scout users --suggest-rules              # Generate contract
+kontra validate contracts/users.yml             # Validate
+
+# Or use local files directly
 kontra scout data.parquet
-
-# Generate a contract from profile
-kontra scout data.parquet --suggest-rules > contracts/data.yml
-
-# Validate
-kontra validate contracts/data.yml
+kontra validate contract.yml --data data.parquet
 ```
 
 ## Features
@@ -172,21 +172,29 @@ environments:
     pushdown: "on"
 ```
 
-Use named datasources:
+Then use simple names everywhere:
 ```bash
-kontra validate contract.yml --data prod_db.users
-kontra scout prod_db.orders
+kontra scout users                    # Profile prod_db.users
+kontra scout orders                   # Profile prod_db.orders
+kontra scout events                   # Profile local_data.events
+kontra validate contract.yml --data users
 ```
 
 ## Data Sources
 
-| Source | URI Format | Example |
-|--------|------------|---------|
+**Named datasources (recommended):**
+```bash
+kontra scout users                    # Looks up "users" in config
+kontra scout prod_db.orders           # Explicit: datasource.table
+```
+
+**Direct paths/URIs:**
+| Source | Format | Example |
+|--------|--------|---------|
 | Local file | Path | `data/users.parquet` |
 | S3 | `s3://bucket/key` | `s3://data-lake/users.parquet` |
 | PostgreSQL | `postgres://...` | `postgres://user:pass@host/db/schema.table` |
 | SQL Server | `mssql://...` | `mssql://user:pass@host/db/dbo.table` |
-| HTTP(S) | URL | `https://example.com/data.parquet` |
 
 ## Rules
 

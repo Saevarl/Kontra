@@ -529,3 +529,81 @@ datasources:
         monkeypatch.chdir(tmp_path)
         sources = list_datasources()
         assert sources == {}
+
+
+class TestResolveTableOnly:
+    """Tests for resolving just a table name (without datasource prefix)."""
+
+    def test_resolve_table_only(self, tmp_path, monkeypatch):
+        """Resolve just a table name when unique across datasources."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".kontra").mkdir()
+        (tmp_path / ".kontra" / "config.yml").write_text("""
+version: "1"
+datasources:
+  prod_db:
+    type: postgres
+    host: localhost
+    database: db
+    tables:
+      users: public.users
+      orders: public.orders
+""")
+        # "users" is unique, should resolve to prod_db.users
+        uri = resolve_datasource("users")
+        assert "localhost" in uri
+        assert "public.users" in uri
+
+    def test_resolve_table_only_ambiguous_raises(self, tmp_path, monkeypatch):
+        """Ambiguous table name (in multiple datasources) raises error."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".kontra").mkdir()
+        (tmp_path / ".kontra" / "config.yml").write_text("""
+version: "1"
+datasources:
+  prod_db:
+    type: postgres
+    host: localhost
+    database: db
+    tables:
+      users: public.users
+  staging_db:
+    type: postgres
+    host: localhost
+    database: staging
+    tables:
+      users: public.users
+""")
+        with pytest.raises(ValueError) as exc_info:
+            resolve_datasource("users")
+        assert "Ambiguous" in str(exc_info.value)
+        assert "prod_db.users" in str(exc_info.value)
+        assert "staging_db.users" in str(exc_info.value)
+
+    def test_resolve_table_only_not_found_raises(self, tmp_path, monkeypatch):
+        """Unknown table name raises error with available tables."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".kontra").mkdir()
+        (tmp_path / ".kontra" / "config.yml").write_text("""
+version: "1"
+datasources:
+  prod_db:
+    type: postgres
+    host: localhost
+    database: db
+    tables:
+      users: public.users
+      orders: public.orders
+""")
+        with pytest.raises(ValueError) as exc_info:
+            resolve_datasource("products")
+        assert "Unknown table" in str(exc_info.value)
+        assert "products" in str(exc_info.value)
+        assert "prod_db.users" in str(exc_info.value)
+
+    def test_resolve_table_only_no_config_raises(self, tmp_path, monkeypatch):
+        """Table lookup without config file raises error."""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError) as exc_info:
+            resolve_datasource("users")
+        assert "No config file exists" in str(exc_info.value)
