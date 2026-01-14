@@ -55,3 +55,15 @@ def register_default_executors() -> None:
     """
     # Local import triggers decorator side-effect
     from . import duckdb_sql  # noqa: F401
+
+    # PostgreSQL executor (optional - requires psycopg)
+    try:
+        from . import postgres_sql  # noqa: F401
+    except ImportError:
+        pass  # psycopg not installed, skip postgres executor
+
+    # SQL Server executor (optional - requires pymssql)
+    try:
+        from . import sqlserver_sql  # noqa: F401
+    except ImportError:
+        pass  # pymssql not installed, skip sqlserver executor

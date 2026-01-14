@@ -16,6 +16,8 @@ class BaseRule(ABC):
         self.params = params
         # rule_id is set by the factory (based on id/name/column)
         self.rule_id: str = name
+        # severity is set by the factory (from contract spec)
+        self.severity: str = "blocking"
     
     def __str__(self) -> str:
         return f"{self.name}({self.params})"

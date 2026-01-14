@@ -72,6 +72,7 @@ class RuleFactory:
                 seen_ids[rule_id] = idx
 
                 rule_instance.rule_id = rule_id
+                rule_instance.severity = spec.severity
                 rules.append(rule_instance)
             except ValueError:
                 raise  # Re-raise validation errors as-is

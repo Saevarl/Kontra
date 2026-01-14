@@ -1,0 +1,27 @@
+# Contract testing freshness rule
+name: users_freshness_test
+description: Test freshness validation
+
+dataset: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users"
+
+rules:
+  # This should PASS (created_at is recent - data was just created)
+  - name: freshness
+    id: freshness_7d
+    params:
+      column: created_at
+      max_age: "7d"
+
+  # This should also PASS (testing different time format)
+  - name: freshness
+    id: freshness_1w
+    params:
+      column: created_at
+      max_age: "1w"
+
+  # This should FAIL (1 second is too short for test data)
+  - name: freshness
+    id: freshness_1s
+    params:
+      column: created_at
+      max_age: "1s"

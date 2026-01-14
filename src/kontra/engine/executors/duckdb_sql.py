@@ -212,6 +212,54 @@ def _agg_max_rows(n: int, rule_id: str) -> str:
     return f"GREATEST(0, COUNT(*) - {int(n)}) AS {esc_ident(rule_id)}"
 
 
+def _agg_freshness(col: str, max_age_seconds: int, rule_id: str) -> str:
+    """
+    Aggregate expression for freshness rule in DuckDB.
+
+    Returns 0 if data is fresh (MAX(col) >= NOW() - interval), 1 otherwise.
+    """
+    return (
+        f"CASE WHEN MAX({esc_ident(col)}) >= "
+        f"(NOW() - INTERVAL '{int(max_age_seconds)} seconds') "
+        f"THEN 0 ELSE 1 END AS {esc_ident(rule_id)}"
+    )
+
+
+def _agg_range(col: str, min_val, max_val, rule_id: str) -> str:
+    """
+    Aggregate expression for range rule in DuckDB.
+
+    Counts values outside [min, max] range. NULLs are counted as failures.
+    """
+    conditions = []
+    if min_val is not None:
+        conditions.append(f"{esc_ident(col)} < {min_val}")
+    if max_val is not None:
+        conditions.append(f"{esc_ident(col)} > {max_val}")
+
+    out_of_range = " OR ".join(conditions) if conditions else "FALSE"
+
+    return (
+        f"SUM(CASE WHEN {esc_ident(col)} IS NULL OR ({out_of_range}) THEN 1 ELSE 0 END) "
+        f"AS {esc_ident(rule_id)}"
+    )
+
+
+def _agg_regex(col: str, pattern: str, rule_id: str) -> str:
+    """
+    Aggregate expression for regex rule in DuckDB.
+
+    Counts values that don't match the regex pattern. NULLs are counted as failures.
+    Uses DuckDB's regexp_matches() function.
+    """
+    escaped_pattern = pattern.replace("'", "''")
+    return (
+        f"SUM(CASE WHEN {esc_ident(col)} IS NULL "
+        f"OR NOT regexp_matches(CAST({esc_ident(col)} AS VARCHAR), '{escaped_pattern}') "
+        f"THEN 1 ELSE 0 END) AS {esc_ident(rule_id)}"
+    )
+
+
 def _assemble_single_row(selects: List[str]) -> str:
     if not selects:
         return "SELECT 0 AS __no_sql_rules__ LIMIT 1;"
@@ -239,6 +287,7 @@ def _results_from_single_row_map(values: Dict[str, Any]) -> List[Dict[str, Any]]
                 "message": "Passed" if failed_count == 0 else "Failed",
                 "severity": "ERROR",
                 "actions_executed": [],
+                "execution_source": "sql",
             }
         )
     return out
@@ -250,13 +299,17 @@ def _results_from_single_row_map(values: Dict[str, Any]) -> List[Dict[str, Any]]
 @register_executor("duckdb")
 class DuckDBSqlExecutor(SqlExecutor):
     """
-    DuckDB-based SQL pushdown executor (safe v1 rule set):
+    DuckDB-based SQL pushdown executor:
       - not_null(column)
       - min_rows(threshold)
       - max_rows(threshold)
+      - freshness(column, max_age_seconds)
+      - range(column, min, max)
     """
 
     name = "duckdb"
+
+    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex"}
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
@@ -264,8 +317,7 @@ class DuckDBSqlExecutor(SqlExecutor):
         scheme = (handle.scheme or "").lower()
         if scheme not in {"", "file", "s3", "http", "https"}:
             return False
-        supported_kinds = {"not_null", "min_rows", "max_rows"}
-        return any((s.get("kind") in supported_kinds) for s in (sql_specs or []))
+        return any((s.get("kind") in self.SUPPORTED_RULES) for s in (sql_specs or []))
 
     def compile(self, sql_specs: List[Dict[str, Any]]) -> str:
         selects: List[str] = []
@@ -282,6 +334,22 @@ class DuckDBSqlExecutor(SqlExecutor):
                 selects.append(_agg_min_rows(int(spec.get("threshold", 0)), rid))
             elif kind == "max_rows":
                 selects.append(_agg_max_rows(int(spec.get("threshold", 0)), rid))
+            elif kind == "freshness":
+                col = spec.get("column")
+                max_age_seconds = spec.get("max_age_seconds")
+                if isinstance(col, str) and col and isinstance(max_age_seconds, int):
+                    selects.append(_agg_freshness(col, max_age_seconds, rid))
+            elif kind == "range":
+                col = spec.get("column")
+                min_val = spec.get("min")
+                max_val = spec.get("max")
+                if isinstance(col, str) and col and (min_val is not None or max_val is not None):
+                    selects.append(_agg_range(col, min_val, max_val, rid))
+            elif kind == "regex":
+                col = spec.get("column")
+                pattern = spec.get("pattern")
+                if isinstance(col, str) and col and isinstance(pattern, str) and pattern:
+                    selects.append(_agg_regex(col, pattern, rid))
         return _assemble_single_row(selects)
 
     def execute(

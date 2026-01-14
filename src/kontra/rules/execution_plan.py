@@ -143,6 +143,9 @@ class RuleExecutionPlan:
           - vectorized pass for predicates
           - individual validation for fallback rules
         """
+        # Build rule_id -> severity mapping for predicates
+        rule_severity_map = self._build_severity_map()
+
         vec_results: List[Dict[str, Any]] = []
         if compiled.predicates:
             # Sum boolean violations per predicate in a single select pass
@@ -156,13 +159,18 @@ class RuleExecutionPlan:
                         "passed": failed_count == 0,
                         "failed_count": failed_count,
                         "message": p.message,
+                        "execution_source": "polars",
+                        "severity": rule_severity_map.get(p.rule_id, "blocking"),
                     }
                 )
 
         fb_results: List[Dict[str, Any]] = []
         for r in compiled.fallback_rules:
             try:
-                fb_results.append(r.validate(df))
+                result = r.validate(df)
+                result["execution_source"] = "polars"
+                result["severity"] = getattr(r, "severity", "blocking")
+                fb_results.append(result)
             except Exception as e:
                 fb_results.append(
                     {
@@ -170,11 +178,20 @@ class RuleExecutionPlan:
                         "passed": False,
                         "failed_count": int(df.height),
                         "message": f"Rule execution failed: {e}",
+                        "execution_source": "polars",
+                        "severity": getattr(r, "severity", "blocking"),
                     }
                 )
 
         # Deterministic order: predicates first, then fallbacks
         return vec_results + fb_results
+
+    def _build_severity_map(self) -> Dict[str, str]:
+        """Build a mapping from rule_id to severity for all rules."""
+        return {
+            getattr(r, "rule_id", r.name): getattr(r, "severity", "blocking")
+            for r in self.rules
+        }
 
     def execute(self, df: pl.DataFrame) -> List[Dict[str, Any]]:
         """Compile and execute in one step (Polars-only path)."""
@@ -185,11 +202,34 @@ class RuleExecutionPlan:
         """Aggregate pass/fail counts for reporters."""
         total = len(results)
         failed = sum(1 for r in results if not r.get("passed", False))
+
+        # Count failures by severity
+        blocking_failures = 0
+        warning_failures = 0
+        info_failures = 0
+
+        for r in results:
+            if not r.get("passed", False):
+                severity = r.get("severity", "blocking")
+                if severity == "blocking":
+                    blocking_failures += 1
+                elif severity == "warning":
+                    warning_failures += 1
+                elif severity == "info":
+                    info_failures += 1
+
+        # Validation passes if no blocking failures
+        # (warnings and info are reported but don't fail the pipeline)
+        passed = blocking_failures == 0
+
         return {
             "total_rules": total,
             "rules_failed": failed,
             "rules_passed": total - failed,
-            "passed": failed == 0,
+            "passed": passed,
+            "blocking_failures": blocking_failures,
+            "warning_failures": warning_failures,
+            "info_failures": info_failures,
         }
 
     # ------------------------ Hybrid/Residual Helpers -------------------------
@@ -284,16 +324,19 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
     """
     Return a tiny, backend-agnostic spec for SQL-capable rules.
 
-    v1 scope (keep it very small):
+    Supported rules:
       - not_null(column)
+      - unique(column)
       - min_rows(threshold)
       - max_rows(threshold)
+      - allowed_values(column, values)
 
     Notes
     -----
     - If a rule provides `to_sql_spec()`, that takes precedence.
     - We normalize namespaced rule names, e.g. "DATASET:not_null" → "not_null".
     - For min/max rows, accept both `value` and `threshold` to match existing contracts.
+    - Not all executors support all rules (DuckDB: 3, PostgreSQL: 5).
     """
     # Prefer a rule-provided spec
     to_sql = getattr(rule, "to_sql_spec", None)
@@ -319,6 +362,11 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
         if isinstance(col, str) and col:
             return {"kind": "not_null", "rule_id": rid, "column": col}
 
+    if name == "unique":
+        col = params.get("column")
+        if isinstance(col, str) and col:
+            return {"kind": "unique", "rule_id": rid, "column": col}
+
     if name == "min_rows":
         thr = params.get("value", params.get("threshold"))
         if isinstance(thr, int):
@@ -328,5 +376,11 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
         thr = params.get("value", params.get("threshold"))
         if isinstance(thr, int):
             return {"kind": "max_rows", "rule_id": rid, "threshold": int(thr)}
+
+    if name == "allowed_values":
+        col = params.get("column")
+        values = params.get("values", [])
+        if isinstance(col, str) and col and values:
+            return {"kind": "allowed_values", "rule_id": rid, "column": col, "values": list(values)}
 
     return None

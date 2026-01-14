@@ -107,6 +107,15 @@ class ContractLoader:
             params = r.get("params", {}) or {}
             if not isinstance(params, dict):
                 raise ValueError(f"Rule at index {i} has non-dict 'params'.")
-            rules.append(RuleSpec(name=r["name"], params=params))
+            rules.append(RuleSpec(
+                name=r["name"],
+                id=r.get("id"),
+                params=params,
+                severity=r.get("severity", "blocking"),
+            ))
 
-        return Contract(dataset=str(raw["dataset"]), rules=rules)
+        return Contract(
+            name=raw.get("name"),
+            dataset=str(raw["dataset"]),
+            rules=rules,
+        )

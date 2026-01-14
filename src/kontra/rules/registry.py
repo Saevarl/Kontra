@@ -17,3 +17,8 @@ def get_rule(name: str) -> Type[BaseRule]:
     if name not in RULE_REGISTRY:
         raise KeyError(f"Rule '{name}' not found in registry.")
     return RULE_REGISTRY[name]
+
+
+def get_all_rule_names() -> set:
+    """Returns all registered rule names."""
+    return set(RULE_REGISTRY.keys())

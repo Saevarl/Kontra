@@ -1,0 +1,67 @@
+# Sample contract for PostgreSQL validation testing
+name: users_contract
+description: Validation rules for the users table with severity levels
+
+dataset: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users"
+
+rules:
+  # BLOCKING: Critical data integrity rules
+  # These MUST pass or the pipeline fails
+
+  - name: not_null
+    params:
+      column: user_id
+    severity: blocking  # Primary key can't be null
+
+  - name: unique
+    params:
+      column: user_id
+    severity: blocking  # Primary key must be unique
+
+  - name: not_null
+    params:
+      column: username
+    severity: blocking  # Username is required
+
+  # WARNING: Important but non-critical
+  # Pipeline continues but issues are flagged
+
+  - name: allowed_values
+    params:
+      column: status
+      values:
+        - active
+        - inactive
+        - pending
+        - suspended
+    severity: warning  # New statuses should be reviewed but don't break pipeline
+
+  - name: not_null
+    params:
+      column: email
+    severity: warning  # Email is important but some legacy records may be missing it
+
+  # INFO: Observational rules
+  # Just logging, no action required
+
+  - name: allowed_values
+    params:
+      column: country_code
+      values:
+        - US
+        - UK
+        - DE
+        - FR
+        - JP
+    severity: info  # New countries are fine, just want to track expansion
+
+  # Dataset-level rules
+  - name: min_rows
+    params:
+      threshold: 1000
+    severity: blocking  # Must have minimum data
+
+  - name: max_rows
+    params:
+      threshold: 2000
+    severity: info  # Just monitoring growth

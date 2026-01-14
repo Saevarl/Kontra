@@ -5,6 +5,7 @@ import polars as pl
 
 from kontra.rules.base import BaseRule
 from kontra.rules.registry import register_rule
+from kontra.state.types import FailureMode
 
 
 @register_rule("dtype")
@@ -150,12 +151,22 @@ class DtypeRule(BaseRule):
         actual = df[column].dtype
         passed = actual in allowed
 
-        return {
+        result: Dict[str, Any] = {
             "rule_id": self.rule_id,
             "passed": bool(passed),
             "failed_count": 0 if passed else int(df.height),
             "message": "Passed" if passed else f"{column} expected {label}, found {self._dtype_label(actual)}",
         }
+
+        if not passed:
+            result["failure_mode"] = str(FailureMode.SCHEMA_DRIFT)
+            result["details"] = {
+                "expected_type": label,
+                "actual_type": self._dtype_label(actual),
+                "column": column,
+            }
+
+        return result
 
     def required_columns(self) -> Set[str]:
         # dtype check inspects the column’s dtype; ensure it is loaded (for projection).

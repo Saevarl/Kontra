@@ -1,0 +1,38 @@
+# Contract with intentional failures for testing
+name: users_contract_strict
+description: Strict validation rules (some will fail)
+
+dataset: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users"
+
+rules:
+  # This will PASS (username has no nulls)
+  - name: not_null
+    params:
+      column: username
+
+  # This will FAIL (email has ~2% nulls)
+  - name: not_null
+    params:
+      column: email
+
+  # This will PASS (user_id is unique)
+  - name: unique
+    params:
+      column: user_id
+
+  # This will FAIL (email has duplicates)
+  - name: unique
+    params:
+      column: email
+
+  # This will PASS
+  - name: min_rows
+    id: min_rows_1000
+    params:
+      threshold: 1000
+
+  # This will FAIL (only 1002 rows, not 5000)
+  - name: min_rows
+    id: min_rows_5000
+    params:
+      threshold: 5000

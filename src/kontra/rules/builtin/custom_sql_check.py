@@ -5,6 +5,7 @@ import duckdb
 
 from kontra.rules.base import BaseRule
 from kontra.rules.registry import register_rule
+from kontra.state.types import FailureMode
 
 @register_rule("custom_sql_check")
 class CustomSQLCheck(BaseRule):
@@ -18,16 +19,27 @@ class CustomSQLCheck(BaseRule):
                 "message": "Missing 'query' parameter",
             }
         try:
-            # duckdb.query_df expects pandas; convert from Polars.
-            pdf = df.to_pandas()
-            result = duckdb.query_df(pdf, "data", query).to_df()
+            # Use DuckDB's native Polars support (zero-copy)
+            con = duckdb.connect()
+            con.register("data", df)
+            result = con.execute(query).pl()
             failed_count = len(result)
-            return {
+
+            res: Dict[str, Any] = {
                 "rule_id": self.rule_id,
                 "passed": failed_count == 0,
                 "failed_count": failed_count,
                 "message": f"Custom SQL check failed for {failed_count} rows",
             }
+
+            if failed_count > 0:
+                res["failure_mode"] = str(FailureMode.CUSTOM_CHECK_FAILED)
+                res["details"] = {
+                    "query": query,
+                    "failed_row_count": failed_count,
+                }
+
+            return res
         except Exception as e:
             return {
                 "rule_id": self.rule_id,

@@ -1,10 +1,11 @@
 from __future__ import annotations
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 import polars as pl
 
 from kontra.rules.base import BaseRule
 from kontra.rules.registry import register_rule
 from kontra.rules.predicates import Predicate
+from kontra.state.types import FailureMode
 
 
 @register_rule("regex")
@@ -32,6 +33,12 @@ class RegexRule(BaseRule):
             ).fill_null(True)
             res = super()._failures(df, mask, f"{column} failed regex pattern {pattern}")
             res["rule_id"] = self.rule_id
+
+            # Add failure details
+            if res["failed_count"] > 0:
+                res["failure_mode"] = str(FailureMode.PATTERN_MISMATCH)
+                res["details"] = self._explain_failure(df, column, pattern, mask)
+
             return res
         except Exception as e:
             return {
@@ -40,6 +47,25 @@ class RegexRule(BaseRule):
                 "failed_count": int(df.height),
                 "message": f"Rule execution failed: {e}",
             }
+
+    def _explain_failure(
+        self, df: pl.DataFrame, column: str, pattern: str, mask: pl.Series
+    ) -> Dict[str, Any]:
+        """Generate detailed failure explanation."""
+        details: Dict[str, Any] = {
+            "pattern": pattern,
+        }
+
+        # Sample non-matching values (first 5)
+        failed_df = df.filter(mask)
+        if failed_df.height > 0:
+            sample_values: List[Any] = []
+            for val in failed_df[column].head(5):
+                sample_values.append(val)
+            if sample_values:
+                details["sample_mismatches"] = sample_values
+
+        return details
 
     def compile_predicate(self) -> Optional[Predicate]:
         column = self.params["column"]
@@ -55,3 +81,18 @@ class RegexRule(BaseRule):
             message=f"{column} failed regex pattern {pattern}",
             columns={column},
         )
+
+    def to_sql_spec(self) -> Optional[Dict[str, Any]]:
+        """Generate SQL pushdown specification for regex rule."""
+        column = self.params.get("column")
+        pattern = self.params.get("pattern")
+
+        if not column or not pattern:
+            return None
+
+        return {
+            "kind": "regex",
+            "rule_id": self.rule_id,
+            "column": column,
+            "pattern": pattern,
+        }

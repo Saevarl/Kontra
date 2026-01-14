@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Kontra_Test123!"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1434:1433"
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Kontra_Test123!" -C -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./setup.sh:/setup.sh:ro
+    command: >
+      bash -c "
+        /opt/mssql/bin/sqlservr &
+        sleep 30 &&
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Kontra_Test123!' -C -i /docker-entrypoint-initdb.d/init.sql &&
+        wait
+      "

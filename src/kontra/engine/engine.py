@@ -26,9 +26,14 @@ Principles
 """
 
 import os
-from typing import Any, Dict, List, Literal, Optional, Set
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Set, TYPE_CHECKING
 
 import polars as pl
+
+if TYPE_CHECKING:
+    from kontra.state.backends.base import StateBackend
+    from kontra.state.types import ValidationState
 import pyarrow as pa
 import pyarrow.fs as pafs  # <-- Added
 import pyarrow.parquet as pq
@@ -53,9 +58,11 @@ from kontra.rules.static_predicates import extract_static_predicates
 import kontra.rules.builtin.allowed_values  # noqa: F401
 import kontra.rules.builtin.custom_sql_check  # noqa: F401
 import kontra.rules.builtin.dtype  # noqa: F401
+import kontra.rules.builtin.freshness  # noqa: F401
 import kontra.rules.builtin.max_rows  # noqa: F401
 import kontra.rules.builtin.min_rows  # noqa: F401
 import kontra.rules.builtin.not_null  # noqa: F401
+import kontra.rules.builtin.range  # noqa: F401
 import kontra.rules.builtin.regex  # noqa: F401
 import kontra.rules.builtin.unique  # noqa: F401
 
@@ -149,6 +156,9 @@ class ValidationEngine:
         # Diagnostics
         show_plan: bool = False,
         explain_preplan: bool = False,
+        # State management
+        state_store: Optional["StateBackend"] = None,
+        save_state: bool = True,
     ):
         self.contract_path = str(contract_path)
         self.data_path = data_path
@@ -161,6 +171,11 @@ class ValidationEngine:
         self.csv_mode = csv_mode
         self.show_plan = show_plan
         self.explain_preplan = explain_preplan
+
+        # State management
+        self.state_store = state_store
+        self.save_state = save_state
+        self._last_state: Optional["ValidationState"] = None
 
         self.contract: Optional[Contract] = None
         self.df: Optional[pl.DataFrame] = None
@@ -175,7 +190,13 @@ class ValidationEngine:
         self._staging_tmpdir = None  # Track for cleanup in finally block
 
         try:
-            return self._run_impl(timers)
+            result = self._run_impl(timers)
+
+            # Save state if enabled
+            if self.save_state:
+                self._save_validation_state(result)
+
+            return result
         finally:
             # Cleanup staged temp directory (CSV -> Parquet staging)
             if self._staging_tmpdir is not None:
@@ -184,6 +205,141 @@ class ValidationEngine:
                 except Exception:
                     pass
                 self._staging_tmpdir = None
+
+    def _save_validation_state(self, result: Dict[str, Any]) -> None:
+        """Save validation state if a store is configured."""
+        try:
+            from kontra.state.types import ValidationState
+            from kontra.state.fingerprint import fingerprint_contract, fingerprint_dataset
+            from kontra.state.backends import get_default_store
+
+            # Get or create store
+            store = self.state_store
+            if store is None and self.save_state:
+                store = get_default_store()
+
+            if store is None:
+                return
+
+            # Generate fingerprints
+            contract_fp = fingerprint_contract(self.contract) if self.contract else "unknown"
+
+            source_uri = self.data_path or (self.contract.dataset if self.contract else "")
+            dataset_fp = None
+            try:
+                handle = DatasetHandle.from_uri(source_uri)
+                dataset_fp = fingerprint_dataset(handle)
+            except Exception:
+                pass
+
+            # Derive contract name (from contract, or from path)
+            contract_name = "unknown"
+            if self.contract:
+                contract_name = self.contract.name or Path(self.contract_path).stem
+
+            # Create state from result
+            state = ValidationState.from_validation_result(
+                result=result,
+                contract_fingerprint=contract_fp,
+                dataset_fingerprint=dataset_fp,
+                contract_name=contract_name,
+                dataset_uri=source_uri,
+            )
+
+            # Save
+            store.save(state)
+            self._last_state = state
+
+        except Exception as e:
+            # Don't fail validation if state save fails
+            if os.getenv("KONTRA_VERBOSE"):
+                print(f"Warning: Failed to save validation state: {e}")
+
+    def get_last_state(self) -> Optional["ValidationState"]:
+        """Get the state from the last validation run."""
+        return self._last_state
+
+    def diff_from_last(self) -> Optional[Dict[str, Any]]:
+        """
+        Compare current state to previous state.
+
+        Returns a dict with changes, or None if no previous state exists.
+        """
+        if self._last_state is None:
+            return None
+
+        try:
+            from kontra.state.backends import get_default_store
+
+            store = self.state_store or get_default_store()
+            previous = store.get_previous(
+                self._last_state.contract_fingerprint,
+                before=self._last_state.run_at,
+            )
+
+            if previous is None:
+                return None
+
+            # Build simple diff
+            return self._build_diff(previous, self._last_state)
+
+        except Exception:
+            return None
+
+    def _build_diff(
+        self,
+        before: "ValidationState",
+        after: "ValidationState",
+    ) -> Dict[str, Any]:
+        """Build a diff between two validation states."""
+        diff: Dict[str, Any] = {
+            "before_run_at": before.run_at.isoformat(),
+            "after_run_at": after.run_at.isoformat(),
+            "summary_changed": before.summary.passed != after.summary.passed,
+            "rules_changed": [],
+            "new_failures": [],
+            "resolved_failures": [],
+        }
+
+        # Index before rules by ID
+        before_rules = {r.rule_id: r for r in before.rules}
+        after_rules = {r.rule_id: r for r in after.rules}
+
+        # Find changes
+        for rule_id, after_rule in after_rules.items():
+            before_rule = before_rules.get(rule_id)
+
+            if before_rule is None:
+                # New rule
+                if not after_rule.passed:
+                    diff["new_failures"].append({
+                        "rule_id": rule_id,
+                        "failed_count": after_rule.failed_count,
+                    })
+            elif before_rule.passed != after_rule.passed:
+                # Status changed
+                if after_rule.passed:
+                    diff["resolved_failures"].append(rule_id)
+                else:
+                    diff["new_failures"].append({
+                        "rule_id": rule_id,
+                        "failed_count": after_rule.failed_count,
+                        "was_passing": True,
+                    })
+            elif before_rule.failed_count != after_rule.failed_count:
+                # Count changed
+                diff["rules_changed"].append({
+                    "rule_id": rule_id,
+                    "before_count": before_rule.failed_count,
+                    "after_count": after_rule.failed_count,
+                    "delta": after_rule.failed_count - before_rule.failed_count,
+                })
+
+        diff["has_regressions"] = len(diff["new_failures"]) > 0 or any(
+            r["delta"] > 0 for r in diff["rules_changed"]
+        )
+
+        return diff
 
     def _run_impl(self, timers: RunTimers) -> Dict[str, Any]:
         # 1) Contract
@@ -201,6 +357,9 @@ class ValidationEngine:
         plan = RuleExecutionPlan(rules)
         compiled_full = plan.compile()
         timers.compile_ms = now_ms() - t0
+
+        # Build rule_id -> severity mapping for injecting into preplan/SQL results
+        rule_severity_map = {r.rule_id: r.severity for r in rules}
 
         # Dataset handle (used across phases)
         source_uri = self.data_path or self.contract.dataset
@@ -258,6 +417,8 @@ class ValidationEngine:
                             "passed": True,
                             "failed_count": 0,
                             "message": "Proven by metadata (Parquet stats)",
+                            "execution_source": "metadata",
+                            "severity": rule_severity_map.get(rid, "blocking"),
                         }
                         handled_ids_meta.add(rid)
                         pass_meta += 1
@@ -267,6 +428,8 @@ class ValidationEngine:
                             "passed": False,
                             "failed_count": 1,
                             "message": "Failed: violation proven by Parquet metadata (null values detected)",
+                            "execution_source": "metadata",
+                            "severity": rule_severity_map.get(rid, "blocking"),
                         }
                         handled_ids_meta.add(rid)
                         fail_meta += 1
@@ -329,6 +492,88 @@ class ValidationEngine:
                     print(f"[INFO] Preplan skipped ({err_type}): {e}")
                 preplan_effective = False  # leave summary with effective=False
 
+        # PostgreSQL preplan (uses pg_stats metadata)
+        elif self.preplan in {"on", "auto"} and handle.scheme in ("postgres", "postgresql"):
+            try:
+                from kontra.preplan.postgres import preplan_postgres, can_preplan_postgres
+                if can_preplan_postgres(handle):
+                    t0 = now_ms()
+                    static_preds = extract_static_predicates(rules=rules)
+                    pre: PrePlan = preplan_postgres(
+                        handle=handle,
+                        required_columns=compiled_full.required_cols,
+                        predicates=static_preds,
+                    )
+                    preplan_analyze_ms = now_ms() - t0
+
+                    pass_meta = fail_meta = unknown = 0
+                    for rid, decision in pre.rule_decisions.items():
+                        if decision == "pass_meta":
+                            meta_results_by_id[rid] = {
+                                "rule_id": rid,
+                                "passed": True,
+                                "failed_count": 0,
+                                "message": "Proven by metadata (pg_stats)",
+                                "execution_source": "metadata",
+                                "severity": rule_severity_map.get(rid, "blocking"),
+                            }
+                            handled_ids_meta.add(rid)
+                            pass_meta += 1
+                        else:
+                            unknown += 1
+
+                    preplan_effective = True
+                    preplan_summary.update({
+                        "effective": True,
+                        "rules_pass_meta": pass_meta,
+                        "rules_fail_meta": fail_meta,
+                        "rules_unknown": unknown,
+                    })
+            except Exception as e:
+                if os.getenv("KONTRA_VERBOSE"):
+                    print(f"[INFO] PostgreSQL preplan skipped: {e}")
+
+        # SQL Server preplan (uses sys.columns metadata)
+        elif self.preplan in {"on", "auto"} and handle.scheme in ("mssql", "sqlserver"):
+            try:
+                from kontra.preplan.sqlserver import preplan_sqlserver, can_preplan_sqlserver
+                if can_preplan_sqlserver(handle):
+                    t0 = now_ms()
+                    static_preds = extract_static_predicates(rules=rules)
+                    pre: PrePlan = preplan_sqlserver(
+                        handle=handle,
+                        required_columns=compiled_full.required_cols,
+                        predicates=static_preds,
+                    )
+                    preplan_analyze_ms = now_ms() - t0
+
+                    pass_meta = fail_meta = unknown = 0
+                    for rid, decision in pre.rule_decisions.items():
+                        if decision == "pass_meta":
+                            meta_results_by_id[rid] = {
+                                "rule_id": rid,
+                                "passed": True,
+                                "failed_count": 0,
+                                "message": "Proven by metadata (SQL Server constraints)",
+                                "execution_source": "metadata",
+                                "severity": rule_severity_map.get(rid, "blocking"),
+                            }
+                            handled_ids_meta.add(rid)
+                            pass_meta += 1
+                        else:
+                            unknown += 1
+
+                    preplan_effective = True
+                    preplan_summary.update({
+                        "effective": True,
+                        "rules_pass_meta": pass_meta,
+                        "rules_fail_meta": fail_meta,
+                        "rules_unknown": unknown,
+                    })
+            except Exception as e:
+                if os.getenv("KONTRA_VERBOSE"):
+                    print(f"[INFO] SQL Server preplan skipped: {e}")
+
         # ------------------------------------------------------------------ #
         # 4) Materializer setup (orthogonal)
         materializer = pick_materializer(handle)
@@ -365,7 +610,12 @@ class ValidationEngine:
                 t0 = now_ms()
                 duck_out = executor.execute(handle, sql_plan_str, csv_mode=self.csv_mode)
                 push_execute_ms = now_ms() - t0
-                sql_results_by_id = {r["rule_id"]: r for r in duck_out.get("results", [])}
+
+                # Inject severity into SQL results
+                sql_results_raw = duck_out.get("results", [])
+                for r in sql_results_raw:
+                    r["severity"] = rule_severity_map.get(r.get("rule_id"), "blocking")
+                sql_results_by_id = {r["rule_id"]: r for r in sql_results_raw}
                 handled_ids_sql = set(sql_results_by_id.keys())
 
                 # Introspect
@@ -563,18 +813,92 @@ class ValidationEngine:
 
     def _report(self, summary: Dict[str, Any], results: List[Dict[str, Any]]) -> None:
         if summary["passed"]:
+            # Show warning/info counts if any
+            warning_info = ""
+            if summary.get("warning_failures", 0) > 0:
+                warning_info = f" ({summary['warning_failures']} warnings)"
+            elif summary.get("info_failures", 0) > 0:
+                warning_info = f" ({summary['info_failures']} info)"
+
             report_success(
                 f"{summary['dataset_name']} — PASSED "
-                f"({summary['rules_passed']} of {summary['total_rules']} rules)"
+                f"({summary['rules_passed']} of {summary['total_rules']} rules){warning_info}"
             )
         else:
+            # Show severity breakdown
+            blocking = summary.get("blocking_failures", summary["rules_failed"])
+            warning = summary.get("warning_failures", 0)
+            info = summary.get("info_failures", 0)
+
+            severity_info = f" ({blocking} blocking"
+            if warning > 0:
+                severity_info += f", {warning} warnings"
+            if info > 0:
+                severity_info += f", {info} info"
+            severity_info += ")"
+
             report_failure(
                 f"{summary['dataset_name']} — FAILED "
-                f"({summary['rules_failed']} of {summary['total_rules']} rules)"
+                f"({summary['rules_failed']} of {summary['total_rules']} rules){severity_info}"
             )
+
+        # Show all rule results with execution source
         for r in results:
-            if not r.get("passed", False):
-                print(f"  ❌ {r.get('rule_id', '<unknown>')}: {r.get('message', '')}")
+            source = r.get("execution_source", "polars")
+            source_tag = f" [{source}]" if source else ""
+            rule_id = r.get("rule_id", "<unknown>")
+            passed = r.get("passed", False)
+            severity = r.get("severity", "blocking")
+
+            # Severity tag for non-blocking failures
+            severity_tag = ""
+            if not passed and severity != "blocking":
+                severity_tag = f" [{severity}]"
+
+            if passed:
+                print(f"  ✅ {rule_id}{source_tag}")
+            else:
+                msg = r.get("message", "Failed")
+                failed_count = r.get("failed_count", 0)
+                # Include failure count if available
+                detail = f": {msg}"
+                if failed_count > 0:
+                    detail = f": {failed_count:,} failures"
+
+                # Use different icon for warning/info
+                icon = "❌" if severity == "blocking" else ("⚠️" if severity == "warning" else "ℹ️")
+                print(f"  {icon} {rule_id}{source_tag}{severity_tag}{detail}")
+
+                # Show detailed explanation if available
+                details = r.get("details")
+                if details:
+                    self._print_failure_details(details)
+
+    def _print_failure_details(self, details: Dict[str, Any]) -> None:
+        """Print detailed failure explanation."""
+        # Expected values (for allowed_values rule)
+        expected = details.get("expected")
+        if expected:
+            expected_preview = ", ".join(expected[:5])
+            if len(expected) > 5:
+                expected_preview += f" ... ({len(expected)} total)"
+            print(f"     Expected: {expected_preview}")
+
+        # Unexpected values (for allowed_values rule)
+        unexpected = details.get("unexpected_values")
+        if unexpected:
+            print("     Unexpected values:")
+            for uv in unexpected[:5]:
+                val = uv.get("value", "?")
+                count = uv.get("count", 0)
+                print(f"       - \"{val}\" ({count:,} rows)")
+            if len(unexpected) > 5:
+                print(f"       ... and {len(unexpected) - 5} more")
+
+        # Suggestion
+        suggestion = details.get("suggestion")
+        if suggestion:
+            print(f"     Suggestion: {suggestion}")
 
     # --------------------------------------------------------------------- #
 

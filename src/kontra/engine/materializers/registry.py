@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     from .base import BaseMaterializer as Materializer
     from .duckdb import DuckDBMaterializer  # noqa: F401
     from .polars_connector import PolarsConnectorMaterializer  # noqa: F401
+    from .postgres import PostgresMaterializer  # noqa: F401
+    from .sqlserver import SqlServerMaterializer  # noqa: F401
 
 
 # Registry: materializer_name -> ctor(handle) function
@@ -42,16 +44,35 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
     """
     Choose the best materializer for the given dataset handle.
 
-    Policy (v1.1 - Refactored):
-      - If the URI is remote (s3, http, etc.) AND the format is known
-        (parquet, csv), we *always* use the DuckDB materializer
-        for its superior I/O and column pruning.
-      - Otherwise, we fall back to the PolarsConnector materializer.
+    Policy (v1.3 - SQL Server support):
+      - PostgreSQL URIs use the PostgreSQL materializer.
+      - SQL Server URIs use the SQL Server materializer.
+      - Remote files (s3, http) with known formats use DuckDB materializer.
+      - Otherwise, fall back to PolarsConnector materializer.
 
-    This logic is now INDEPENDENT of the projection flag.
+    This logic is INDEPENDENT of the projection flag.
     """
-    # --- BUG FIX ---
-    # We no longer check `prefer_pruning`. We check the handle's scheme.
+    # PostgreSQL: use dedicated materializer
+    if handle.scheme in ("postgres", "postgresql"):
+        ctor = _MATS.get("postgres")
+        if ctor:
+            return ctor(handle)
+        raise RuntimeError(
+            "PostgreSQL materializer not registered. "
+            "Ensure psycopg is installed: pip install 'psycopg[binary]'"
+        )
+
+    # SQL Server: use dedicated materializer
+    if handle.scheme in ("mssql", "sqlserver"):
+        ctor = _MATS.get("sqlserver")
+        if ctor:
+            return ctor(handle)
+        raise RuntimeError(
+            "SQL Server materializer not registered. "
+            "Ensure pymssql is installed: pip install pymssql"
+        )
+
+    # Remote files with known formats: use DuckDB for efficient I/O
     is_remote = handle.scheme in ("s3", "http", "https")
     is_known_format = handle.format in ("parquet", "csv")
 
@@ -59,7 +80,6 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
         ctor = _MATS.get("duckdb")
         if ctor:
             return ctor(handle)
-    # --- END BUG FIX ---
 
     # Fallback for local files or unknown formats
     ctor = _MATS.get("polars-connector")
@@ -78,3 +98,15 @@ def register_default_materializers() -> None:
     # Local imports to trigger decorator side-effects
     from . import duckdb  # noqa: F401
     from . import polars_connector  # noqa: F401
+
+    # PostgreSQL materializer (optional - requires psycopg)
+    try:
+        from . import postgres  # noqa: F401
+    except ImportError:
+        pass  # psycopg not installed, skip postgres materializer
+
+    # SQL Server materializer (optional - requires pymssql)
+    try:
+        from . import sqlserver  # noqa: F401
+    except ImportError:
+        pass  # pymssql not installed, skip sqlserver materializer

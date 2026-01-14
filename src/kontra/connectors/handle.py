@@ -22,8 +22,8 @@ enrich it (e.g., SAS tokens for ADLS), we can extend `fs_opts` without touching
 the engine or materializers.
 """
 
-from dataclasses import dataclass
-from typing import Dict
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 import os
 from urllib.parse import urlparse
 
@@ -35,6 +35,8 @@ class DatasetHandle:
     path: str
     format: str
     fs_opts: Dict[str, str]
+    # PostgreSQL-specific: resolved connection parameters
+    db_params: Optional[Any] = field(default=None)
 
     # ------------------------------ Constructors ------------------------------
 
@@ -81,7 +83,24 @@ class DatasetHandle:
         # abfs/abfss (Azure) can be handled when we introduce the Azure materializer/executor.
         # Local `""`/`file` schemes: no fs_opts.
 
-        return DatasetHandle(uri=uri, scheme=scheme, path=path, format=fmt, fs_opts=fs_opts)
+        # PostgreSQL: resolve connection parameters from URI + environment
+        db_params = None
+        if scheme in ("postgres", "postgresql"):
+            from kontra.connectors.postgres import resolve_connection_params
+
+            db_params = resolve_connection_params(uri)
+            fmt = "postgres"
+
+        # SQL Server: resolve connection parameters from URI + environment
+        if scheme in ("mssql", "sqlserver"):
+            from kontra.connectors.sqlserver import resolve_connection_params as resolve_sqlserver_params
+
+            db_params = resolve_sqlserver_params(uri)
+            fmt = "sqlserver"
+
+        return DatasetHandle(
+            uri=uri, scheme=scheme, path=path, format=fmt, fs_opts=fs_opts, db_params=db_params
+        )
 
 
 # ------------------------------ Helpers ---------------------------------------

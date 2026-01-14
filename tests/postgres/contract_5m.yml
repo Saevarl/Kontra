@@ -1,0 +1,44 @@
+# Contract for 5M row benchmark test
+name: users_5m_benchmark
+description: Benchmark contract for 5 million rows
+
+dataset: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users_5m"
+
+rules:
+  # Row count check
+  - name: min_rows
+    params:
+      threshold: 4500000
+
+  # NOT NULL checks
+  - name: not_null
+    params:
+      column: user_id
+
+  - name: not_null
+    params:
+      column: username
+
+  - name: not_null
+    params:
+      column: age
+
+  - name: not_null
+    params:
+      column: status
+
+  # Unique checks
+  - name: unique
+    params:
+      column: user_id
+
+  # Allowed values
+  - name: allowed_values
+    params:
+      column: status
+      values: ["active", "inactive", "pending", "suspended"]
+
+  - name: allowed_values
+    params:
+      column: country_code
+      values: ["US", "UK", "DE", "FR", "JP"]
