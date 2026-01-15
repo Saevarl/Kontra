@@ -9,20 +9,46 @@ from kontra.state.types import FailureMode
 
 @register_rule("not_null")
 class NotNullRule(BaseRule):
+    """
+    Fails where column contains NULL values.
+
+    params:
+      - column: str (required) - Column to check
+      - include_nan: bool (optional, default: False) - Also treat NaN as null
+
+    Note: By default, NaN values are NOT considered null (Polars behavior).
+    Set include_nan=True to catch both NULL and NaN values.
+    """
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
+        include_nan = self.params.get("include_nan", False)
+
+        # Build mask for null (and optionally NaN) values
         mask = df[column].is_null()
-        res = super()._failures(df, mask, f"{column} contains null values")
+        if include_nan:
+            # For numeric columns, also check for NaN
+            col = df[column]
+            if col.dtype.is_float():
+                mask = mask | col.is_nan()
+
+        message = f"{column} contains null values"
+        if include_nan:
+            message = f"{column} contains null or NaN values"
+
+        res = super()._failures(df, mask, message)
         res["rule_id"] = self.rule_id
 
         # Add failure details
         if res["failed_count"] > 0:
             res["failure_mode"] = str(FailureMode.NULL_VALUES)
-            res["details"] = self._explain_failure(df, column, res["failed_count"])
+            res["details"] = self._explain_failure(df, column, res["failed_count"], include_nan)
 
         return res
 
-    def _explain_failure(self, df: pl.DataFrame, column: str, null_count: int) -> Dict[str, Any]:
+    def _explain_failure(
+        self, df: pl.DataFrame, column: str, null_count: int, include_nan: bool = False
+    ) -> Dict[str, Any]:
         """Generate detailed failure explanation."""
         total_rows = df.height
         null_rate = null_count / total_rows if total_rows > 0 else 0
@@ -32,6 +58,9 @@ class NotNullRule(BaseRule):
             "null_rate": round(null_rate, 4),
             "total_rows": total_rows,
         }
+
+        if include_nan:
+            details["includes_nan"] = True
 
         # Find sample row positions with nulls (first 5)
         if null_count > 0 and null_count <= 1000:
@@ -49,10 +78,21 @@ class NotNullRule(BaseRule):
 
     def compile_predicate(self) -> Optional[Predicate]:
         column = self.params["column"]
+        include_nan = self.params.get("include_nan", False)
+
         expr = pl.col(column).is_null()
+        message = f"{column} contains null values"
+
+        if include_nan:
+            # Note: is_nan() only works on float columns, but compile_predicate
+            # doesn't have access to the DataFrame schema. The expression will
+            # be evaluated at runtime where Polars handles type checking.
+            expr = expr | pl.col(column).is_nan()
+            message = f"{column} contains null or NaN values"
+
         return Predicate(
             rule_id=self.rule_id,
             expr=expr,
-            message=f"{column} contains null values",
+            message=message,
             columns={column},
         )

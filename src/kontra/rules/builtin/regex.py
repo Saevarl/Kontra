@@ -1,11 +1,13 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Optional
+import re
 import polars as pl
 
 from kontra.rules.base import BaseRule
 from kontra.rules.registry import register_rule
 from kontra.rules.predicates import Predicate
 from kontra.state.types import FailureMode
+from kontra.errors import RuleParameterError
 
 
 @register_rule("regex")
@@ -21,6 +23,20 @@ class RegexRule(BaseRule):
       - Uses vectorized `str.contains` (regex by default in this Polars version).
       - No `regex=`/`strict=` kwargs are passed to maintain compatibility.
     """
+
+    def __init__(self, name: str, params: Dict[str, Any]):
+        super().__init__(name, params)
+        # Validate regex pattern early to provide helpful error message
+        pattern = params.get("pattern", "")
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            pos_info = f" at position {e.pos}" if e.pos is not None else ""
+            raise RuleParameterError(
+                "regex",
+                "pattern",
+                f"Invalid regex pattern{pos_info}: {e.msg}\n  Pattern: {pattern}"
+            )
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]

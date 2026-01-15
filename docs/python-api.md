@@ -99,6 +99,7 @@ from kontra import rules
 
 # Column rules
 rules.not_null("column")
+rules.not_null("column", include_nan=True)  # Also catch NaN values
 rules.unique("column")
 rules.dtype("column", "int64")  # int64, float64, string, datetime, bool
 rules.range("column", min=0, max=100)
@@ -536,6 +537,74 @@ config.state_backend   # str - "local"
 
 ---
 
+## Service/Agent Support
+
+Functions designed for MCP servers, long-running services, and AI agents.
+
+### Health Check
+
+```python
+import kontra
+
+# Verify Kontra is working
+health = kontra.health()
+
+health["version"]       # str - e.g., "0.3.0"
+health["status"]        # str - "ok" or "config_not_found"
+health["config_found"]  # bool
+health["config_path"]   # str or None
+health["rule_count"]    # int - Number of registered rules
+health["rules"]         # list - Available rule names
+
+# Use in health endpoints
+if health["status"] == "ok":
+    print(f"Kontra {health['version']} ready with {health['rule_count']} rules")
+```
+
+### Rule Discovery
+
+```python
+# List all available validation rules
+rules = kontra.list_rules()
+
+for rule in rules:
+    print(f"{rule['name']} ({rule['scope']})")
+    print(f"  {rule['description']}")
+    print(f"  Params: {rule['params']}")
+
+# Example output:
+# not_null (column)
+#   Fails where column contains NULL values
+#   Params: {'column': 'required'}
+# range (column)
+#   Fails where column values are outside [min, max] range
+#   Params: {'column': 'required', 'min': 'optional', 'max': 'optional'}
+```
+
+### Config Path Injection
+
+By default, Kontra discovers config from the current working directory (`.kontra/config.yml`).
+For services that don't run from a project directory, set the config path explicitly:
+
+```python
+import kontra
+
+# Set config path for service use
+kontra.set_config("/etc/kontra/config.yml")
+
+# All subsequent calls use this config
+result = kontra.validate(df, rules=[...])
+profile = kontra.scout("prod_db.users")
+
+# Check current setting
+path = kontra.get_config_path()  # "/etc/kontra/config.yml"
+
+# Reset to auto-discovery
+kontra.set_config(None)
+```
+
+---
+
 ## Output Formats
 
 ### JSON
@@ -737,11 +806,20 @@ llm_context = f"""
 | `kontra.list_datasources()` | List configured datasources |
 | `kontra.config(env=None)` | Get effective configuration |
 
+### Service/Agent Support
+
+| Function | Description |
+|----------|-------------|
+| `kontra.health()` | Health check (version, config status, rule count) |
+| `kontra.list_rules()` | List available rules with descriptions |
+| `kontra.set_config(path)` | Set config path for service use |
+| `kontra.get_config_path()` | Get current config path override |
+
 ### Rules Helpers
 
 | Function | Description |
 |----------|-------------|
-| `rules.not_null(column)` | Column has no nulls |
+| `rules.not_null(column, include_nan=False)` | Column has no nulls (optionally NaN) |
 | `rules.unique(column)` | Column values are unique |
 | `rules.dtype(column, type)` | Column has expected type |
 | `rules.range(column, min, max)` | Values within range |

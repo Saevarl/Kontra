@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 def not_null(
     column: str,
     severity: str = "blocking",
+    include_nan: bool = False,
 ) -> Dict[str, Any]:
     """
     Column must not contain null values.
@@ -25,13 +26,22 @@ def not_null(
     Args:
         column: Column name to check
         severity: "blocking" | "warning" | "info"
+        include_nan: If True, also treat NaN as null (default: False)
+
+    Note:
+        By default, NaN values are NOT considered null (Polars behavior).
+        Set include_nan=True to catch both NULL and NaN values in float columns.
 
     Returns:
         Rule dict for use with kontra.validate()
     """
+    params: Dict[str, Any] = {"column": column}
+    if include_nan:
+        params["include_nan"] = True
+
     return {
         "name": "not_null",
-        "params": {"column": column},
+        "params": params,
         "severity": severity,
     }
 

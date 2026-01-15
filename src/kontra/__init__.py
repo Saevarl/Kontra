@@ -34,6 +34,7 @@ from kontra.version import VERSION as __version__
 # Type imports
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
+import os
 import polars as pl
 
 if TYPE_CHECKING:
@@ -356,35 +357,40 @@ def diff(
     """
     from kontra.state.backends import get_default_store
     from kontra.state.types import StateDiff
+    from kontra.state.fingerprint import fingerprint_contract
+    from kontra.config.loader import ContractLoader
 
     store = get_default_store()
     if store is None:
         return None
 
-    # Get states
+    # Resolve contract to fingerprint
     try:
-        states = store.list_states(contract)
+        # If it's a file path, load contract and compute semantic fingerprint
+        if os.path.isfile(contract):
+            contract_obj = ContractLoader.from_path(contract)
+            contract_fp = fingerprint_contract(contract_obj)
+        else:
+            # Assume it's a contract name - search stored states
+            # Look through all contracts for matching name
+            contract_fp = None
+            for fp in store.list_contracts():
+                history = store.get_history(fp, limit=1)
+                if history and history[0].contract_name == contract:
+                    contract_fp = fp
+                    break
+
+            if contract_fp is None:
+                return None
+
+        # Get history for this contract
+        states = store.get_history(contract_fp, limit=100)
         if len(states) < 2:
             return None
 
-        # Get before and after states
-        after_state = store.get_state(contract)  # Latest
-        if after_state is None:
-            return None
-
-        # Find before state
-        if before:
-            before_state = store.get_state(contract, run_id=before)
-        elif since:
-            # Parse since and find appropriate state
-            # TODO: Implement time-based lookup
-            before_state = states[-2] if len(states) > 1 else None
-        else:
-            # Compare to previous
-            before_state = states[-2] if len(states) > 1 else None
-
-        if before_state is None:
-            return None
+        # states are newest first, so [0] is latest, [1] is previous
+        after_state = states[0]
+        before_state = states[1]
 
         # Compute diff
         state_diff = StateDiff.compute(before_state, after_state)
@@ -610,6 +616,184 @@ def config(env: Optional[str] = None) -> KontraConfig:
 
 
 # =============================================================================
+# Service/Agent Support Functions
+# =============================================================================
+
+# Global config path override for service/agent use
+_config_path_override: Optional[str] = None
+
+
+def set_config(path: Optional[str]) -> None:
+    """
+    Set config file path for service/agent use.
+
+    By default, Kontra discovers config from cwd (.kontra/config.yml).
+    For long-running services or agents, use this to set an explicit path.
+
+    Args:
+        path: Path to config.yml (or None to reset to auto-discovery)
+
+    Example:
+        kontra.set_config("/etc/kontra/config.yml")
+        result = kontra.validate(df, rules=[...])
+
+        # Reset to default behavior
+        kontra.set_config(None)
+    """
+    global _config_path_override
+    _config_path_override = path
+
+
+def get_config_path() -> Optional[str]:
+    """
+    Get the current config path override.
+
+    Returns:
+        The overridden config path, or None if using auto-discovery.
+    """
+    return _config_path_override
+
+
+def list_rules() -> List[Dict[str, Any]]:
+    """
+    List all available validation rules.
+
+    For agents and integrations that need to discover what rules exist.
+
+    Returns:
+        List of rule info dicts with name, description, params
+
+    Example:
+        rules = kontra.list_rules()
+        for rule in rules:
+            print(f"{rule['name']}: {rule['description']}")
+    """
+    from kontra.rules.registry import RULE_REGISTRY
+
+    # Rule metadata - manually maintained for quality descriptions
+    # This is better than parsing docstrings which may be inconsistent
+    RULE_METADATA = {
+        "not_null": {
+            "description": "Fails where column contains NULL values (optionally NaN)",
+            "params": {"column": "required", "include_nan": "optional (default: False)"},
+            "scope": "column",
+        },
+        "unique": {
+            "description": "Fails where column contains duplicate values",
+            "params": {"column": "required"},
+            "scope": "column",
+        },
+        "allowed_values": {
+            "description": "Fails where column contains values not in allowed list",
+            "params": {"column": "required", "values": "required (list)"},
+            "scope": "column",
+        },
+        "range": {
+            "description": "Fails where column values are outside [min, max] range",
+            "params": {"column": "required", "min": "optional", "max": "optional"},
+            "scope": "column",
+        },
+        "regex": {
+            "description": "Fails where column values don't match regex pattern",
+            "params": {"column": "required", "pattern": "required"},
+            "scope": "column",
+        },
+        "dtype": {
+            "description": "Fails if column data type doesn't match expected type",
+            "params": {"column": "required", "expected": "required"},
+            "scope": "column",
+        },
+        "min_rows": {
+            "description": "Fails if dataset has fewer than threshold rows",
+            "params": {"threshold": "required (int)"},
+            "scope": "dataset",
+        },
+        "max_rows": {
+            "description": "Fails if dataset has more than threshold rows",
+            "params": {"threshold": "required (int)"},
+            "scope": "dataset",
+        },
+        "freshness": {
+            "description": "Fails if timestamp column is older than max_age",
+            "params": {"column": "required", "max_age": "required (e.g., '24h', '7d')"},
+            "scope": "column",
+        },
+        "custom_sql_check": {
+            "description": "Escape hatch: run arbitrary SQL that returns violation count",
+            "params": {"sql": "required", "threshold": "optional (default: 0)"},
+            "scope": "dataset",
+        },
+    }
+
+    result = []
+    for name in sorted(RULE_REGISTRY.keys()):
+        info = {"name": name}
+
+        # Add metadata if available
+        if name in RULE_METADATA:
+            meta = RULE_METADATA[name]
+            info["description"] = meta.get("description", "")
+            info["params"] = meta.get("params", {})
+            info["scope"] = meta.get("scope", "unknown")
+        else:
+            # Fallback for rules not in metadata
+            info["description"] = f"Validation rule: {name}"
+            info["params"] = {}
+            info["scope"] = "unknown"
+
+        result.append(info)
+
+    return result
+
+
+def health() -> Dict[str, Any]:
+    """
+    Health check for service/agent use.
+
+    Returns version, config status, and available rules.
+    Use this to verify Kontra is properly installed and configured.
+
+    Returns:
+        Dict with version, config_found, config_path, rule_count, status
+
+    Example:
+        health = kontra.health()
+        if health["status"] == "ok":
+            print(f"Kontra {health['version']} ready")
+        else:
+            print(f"Issue: {health['status']}")
+    """
+    from kontra.rules.registry import RULE_REGISTRY
+    from kontra.config.settings import find_config_file
+    from pathlib import Path
+
+    result: Dict[str, Any] = {
+        "version": __version__,
+        "status": "ok",
+    }
+
+    # Check config
+    if _config_path_override:
+        config_path = Path(_config_path_override)
+        result["config_path"] = str(config_path)
+        result["config_found"] = config_path.exists()
+        if not config_path.exists():
+            result["status"] = "config_not_found"
+    else:
+        found = find_config_file()
+        result["config_path"] = str(found) if found else None
+        result["config_found"] = found is not None
+
+    # Rule count
+    result["rule_count"] = len(RULE_REGISTRY)
+
+    # List available rules
+    result["rules"] = sorted(RULE_REGISTRY.keys())
+
+    return result
+
+
+# =============================================================================
 # Exports
 # =============================================================================
 
@@ -633,6 +817,11 @@ __all__ = [
     "resolve",
     "config",
     "list_datasources",
+    # Service/Agent support
+    "set_config",
+    "get_config_path",
+    "list_rules",
+    "health",
     # Result types
     "ValidationResult",
     "RuleResult",

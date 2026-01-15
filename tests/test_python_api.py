@@ -359,6 +359,28 @@ class TestScoutFunction:
             profile = kontra.scout(sample_df, preset=preset)
             assert profile.row_count == 5
 
+    def test_profile_to_llm(self, sample_df):
+        """DatasetProfile.to_llm() returns token-optimized string."""
+        profile = kontra.scout(sample_df, preset="standard")
+
+        llm_output = profile.to_llm()
+
+        assert isinstance(llm_output, str)
+        assert "PROFILE" in llm_output
+        assert "rows=" in llm_output or str(profile.row_count) in llm_output
+        # Should include column info
+        assert "COLUMNS" in llm_output or "id" in llm_output
+
+    def test_profile_to_llm_with_nulls(self, df_with_nulls):
+        """DatasetProfile.to_llm() includes null info."""
+        profile = kontra.scout(df_with_nulls, preset="standard")
+
+        llm_output = profile.to_llm()
+
+        assert isinstance(llm_output, str)
+        # Should mention nulls for columns that have them
+        assert "null" in llm_output.lower()
+
 
 # =============================================================================
 # Suggestions Tests
@@ -545,6 +567,75 @@ class TestDiffFunction:
         result = kontra.diff("nonexistent_contract")
         assert result is None
 
+    def test_diff_with_history(self, sample_df, tmp_path, monkeypatch):
+        """diff returns Diff object when history exists."""
+        from kontra import rules
+        from kontra.api.results import Diff
+
+        # Set up temp directory as cwd for state storage
+        monkeypatch.chdir(tmp_path)
+
+        # Create a contract file
+        contract_path = tmp_path / "test_contract.yml"
+        contract_path.write_text("""
+name: test_diff_contract
+datasource: inline
+rules:
+  - name: not_null
+    params: { column: id }
+  - name: min_rows
+    params: { threshold: 1 }
+""")
+
+        # Run validation twice to create history
+        result1 = kontra.validate(sample_df, str(contract_path), save=True)
+        result2 = kontra.validate(sample_df, str(contract_path), save=True)
+
+        # Both should pass
+        assert result1.passed
+        assert result2.passed
+
+        # Now diff should return a Diff object
+        diff = kontra.diff(str(contract_path))
+
+        # Should return a Diff (not None)
+        assert diff is not None
+        assert isinstance(diff, Diff)
+
+        # Should have expected attributes
+        assert hasattr(diff, "has_changes")
+        assert hasattr(diff, "regressed")
+
+    def test_diff_to_llm(self, sample_df, tmp_path, monkeypatch):
+        """diff().to_llm() returns token-optimized string."""
+        # Set up temp directory as cwd for state storage
+        monkeypatch.chdir(tmp_path)
+
+        # Create a contract file
+        contract_path = tmp_path / "test_contract.yml"
+        contract_path.write_text("""
+name: test_diff_llm_contract
+datasource: inline
+rules:
+  - name: min_rows
+    params: { threshold: 1 }
+""")
+
+        # Run validation twice
+        kontra.validate(sample_df, str(contract_path), save=True)
+        kontra.validate(sample_df, str(contract_path), save=True)
+
+        # Get diff
+        diff = kontra.diff(str(contract_path))
+        assert diff is not None
+
+        # to_llm should return a string
+        llm_output = diff.to_llm()
+        assert isinstance(llm_output, str)
+        assert len(llm_output) > 0
+        # Should contain some expected content
+        assert "Diff" in llm_output or "diff" in llm_output.lower()
+
 
 # =============================================================================
 # Scout Diff Tests
@@ -601,6 +692,110 @@ environments:
         result = kontra.list_datasources()
         # May return empty dict or None depending on config state
         assert result is None or isinstance(result, dict)
+
+
+# =============================================================================
+# Service/Agent Support Tests
+# =============================================================================
+
+
+class TestServiceAgentSupport:
+    """Tests for service/agent support functions."""
+
+    def test_health_returns_dict(self):
+        """health() returns dict with expected keys."""
+        result = kontra.health()
+
+        assert isinstance(result, dict)
+        assert "version" in result
+        assert "status" in result
+        assert "rule_count" in result
+        assert "rules" in result
+        assert "config_found" in result
+
+    def test_health_version_matches(self):
+        """health() version matches __version__."""
+        result = kontra.health()
+        assert result["version"] == kontra.__version__
+
+    def test_health_rules_list(self):
+        """health() includes list of available rules."""
+        result = kontra.health()
+
+        assert isinstance(result["rules"], list)
+        assert "not_null" in result["rules"]
+        assert "unique" in result["rules"]
+        assert result["rule_count"] == len(result["rules"])
+
+    def test_list_rules_returns_list(self):
+        """list_rules() returns list of rule info dicts."""
+        result = kontra.list_rules()
+
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+        # Each rule should have expected keys
+        for rule in result:
+            assert "name" in rule
+            assert "description" in rule
+            assert "params" in rule
+            assert "scope" in rule
+
+    def test_list_rules_includes_all_rules(self):
+        """list_rules() includes all 10 built-in rules."""
+        result = kontra.list_rules()
+        rule_names = [r["name"] for r in result]
+
+        expected = [
+            "not_null", "unique", "allowed_values", "range",
+            "regex", "dtype", "min_rows", "max_rows",
+            "freshness", "custom_sql_check"
+        ]
+
+        for expected_rule in expected:
+            assert expected_rule in rule_names, f"Missing rule: {expected_rule}"
+
+    def test_list_rules_has_descriptions(self):
+        """list_rules() provides meaningful descriptions."""
+        result = kontra.list_rules()
+
+        for rule in result:
+            # Description should be non-empty
+            assert rule["description"], f"Empty description for {rule['name']}"
+            # Description should describe what the rule does
+            assert len(rule["description"]) > 10, f"Description too short for {rule['name']}"
+
+    def test_set_config_and_get_config_path(self):
+        """set_config() and get_config_path() work together."""
+        # Initially should be None
+        original = kontra.get_config_path()
+
+        try:
+            # Set a custom path
+            kontra.set_config("/tmp/test-config.yml")
+            assert kontra.get_config_path() == "/tmp/test-config.yml"
+
+            # Reset
+            kontra.set_config(None)
+            assert kontra.get_config_path() is None
+        finally:
+            # Restore original state
+            kontra.set_config(original)
+
+    def test_set_config_affects_health(self):
+        """set_config() affects health() output."""
+        original = kontra.get_config_path()
+
+        try:
+            # Set a nonexistent config
+            kontra.set_config("/nonexistent/config.yml")
+
+            health = kontra.health()
+            assert health["config_path"] == "/nonexistent/config.yml"
+            assert health["config_found"] is False
+            assert health["status"] == "config_not_found"
+        finally:
+            kontra.set_config(original)
 
 
 # =============================================================================

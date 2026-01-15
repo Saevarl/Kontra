@@ -177,6 +177,24 @@ src/kontra/
 
 7. **Named Datasources**: Define datasources in `.kontra/config.yml`, reference as `prod_db.users` in contracts or CLI.
 
+## Common Pitfalls (Lessons Learned)
+
+These patterns caused bugs in the past. Avoid them:
+
+1. **NaN vs NULL**: Polars treats NaN and NULL differently. `is_null()` does NOT catch NaN. For float columns that might have NaN, use `include_nan=True` parameter on `not_null` rule, or explicitly check with `is_nan()`.
+
+2. **Fingerprint consistency**: Use `fingerprint_contract(contract_obj)` (semantic, based on name+rules) not `fingerprint_contract_file(path)` (file hash). The engine uses semantic fingerprints, so lookups must too.
+
+3. **Test all code paths**: Features like `stats='profile'` were broken because no test exercised that path. Every CLI flag and parameter combination needs a test.
+
+4. **Validate inputs early**: Bad regex patterns should fail at rule construction, not during batch execution where errors are harder to trace. Add validation in `__init__` for complex parameters.
+
+5. **`.to_llm()` on all public types**: Any type that might be returned to integrations (MCP, agents) needs a `to_llm()` method. Check: `ValidationResult`, `DatasetProfile`, `Diff`, `RuleResult`.
+
+6. **Service vs CLI patterns**: CLI discovers config from cwd. Services need explicit config injection via `kontra.set_config(path)`. Don't assume cwd-based discovery works everywhere.
+
+7. **Document edge cases**: If a rule has non-obvious behavior (like `allowed_values` treating NULL as failure even if NULL is in the list), document it explicitly in docstrings and rules.md.
+
 ## Data Sources
 
 | Source | URI Format | Example |

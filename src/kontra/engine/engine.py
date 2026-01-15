@@ -517,7 +517,7 @@ class ValidationEngine:
             if self.stats_mode == "summary":
                 stats["dataset"] = basic_summary(self.df)
             elif self.stats_mode == "profile":
-                stats["dataset"] = profile_for(self.df)
+                stats["dataset"] = profile_for(self.df, self.df.columns)
 
             result["stats"] = stats
 

@@ -195,6 +195,35 @@ class DatasetProfile:
                 return col
         return None
 
+    def to_llm(self) -> str:
+        """Token-optimized format for LLM context."""
+        lines = []
+        lines.append(f"PROFILE: {self.source_uri}")
+        lines.append(f"rows={self.row_count:,} cols={self.column_count}")
+        if self.sampled:
+            lines.append(f"(sampled: {self.sample_size:,} rows)")
+
+        lines.append("")
+        lines.append("COLUMNS:")
+        for col in self.columns[:20]:  # Limit to 20 columns
+            parts = [f"  {col.name} ({col.dtype})"]
+            if col.null_count > 0:
+                parts.append(f"nulls={col.null_count:,} ({col.null_rate:.1%})")
+            if col.distinct_count is not None:
+                parts.append(f"distinct={col.distinct_count:,}")
+            if col.numeric:
+                if col.numeric.min is not None and col.numeric.max is not None:
+                    parts.append(f"range=[{col.numeric.min}, {col.numeric.max}]")
+            if col.top_values:
+                top = col.top_values[0]
+                parts.append(f"top='{top.value}'({top.count:,})")
+            lines.append(" ".join(parts))
+
+        if len(self.columns) > 20:
+            lines.append(f"  ... +{len(self.columns) - 20} more columns")
+
+        return "\n".join(lines)
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "DatasetProfile":
         """Create from dictionary."""

@@ -35,6 +35,12 @@ Fails if the specified column contains any NULL values.
 - name: not_null
   params:
     column: user_id
+
+# Also catch NaN values in float columns
+- name: not_null
+  params:
+    column: price
+    include_nan: true
 ```
 
 ### Parameters
@@ -42,12 +48,22 @@ Fails if the specified column contains any NULL values.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `column` | string | Yes | Column to check |
+| `include_nan` | boolean | No | Also treat NaN as null (default: false) |
+
+### NaN vs NULL
+
+By default, `not_null` only catches NULL values, not NaN. This matches Polars behavior where NaN and NULL are distinct:
+
+- **NULL**: Missing/unknown value
+- **NaN**: "Not a Number" - result of invalid float operations (e.g., `0/0`)
+
+If your data might contain NaN values that should be treated as missing, use `include_nan: true`.
 
 ### Execution
 
-- **Parquet preplan**: Uses row-group null counts (instant)
+- **Parquet preplan**: Uses row-group null counts (instant, NaN not detected)
 - **SQL pushdown**: `SUM(CASE WHEN col IS NULL THEN 1 ELSE 0 END)`
-- **Polars**: `df[col].is_null().sum()`
+- **Polars**: `df[col].is_null().sum()` (or `| is_nan()` if include_nan)
 
 ---
 
