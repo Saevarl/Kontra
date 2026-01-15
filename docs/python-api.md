@@ -76,11 +76,31 @@ suggestions.save("contracts/generated.yml")
 # Named datasource (from .kontra/config.yml)
 result = kontra.validate("prod_db.users", "contracts/users.yml")
 
+# Named datasource with inline rules
+result = kontra.validate("prod_db.orders", rules=[
+    rules.not_null("order_id"),
+    rules.range("quantity", min=1),
+    rules.allowed_values("status", ["pending", "shipped", "delivered"]),
+])
+
 # Direct URI
 result = kontra.validate(
     "postgres://user:pass@host/db/public.users",
     rules=[rules.not_null("id")]
 )
+```
+
+Named datasources are defined in `.kontra/config.yml`:
+
+```yaml
+datasources:
+  prod_db:
+    type: postgres
+    host: localhost
+    database: myapp
+    tables:
+      users: public.users
+      orders: public.orders
 ```
 
 ## Available Rules

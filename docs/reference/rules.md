@@ -271,6 +271,18 @@ Condition format: `column_name operator value`
 - Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`
 - Values: `'string'`, `123`, `true`, `false`, `null`
 
+**Multiple conditions on same column:** If you have multiple `conditional_not_null` rules for the same column with different conditions, add an explicit `id` to avoid rule ID collisions:
+
+```yaml
+- name: conditional_not_null
+  id: shipped_needs_date
+  params: { column: shipping_date, when: "status == 'shipped'" }
+
+- name: conditional_not_null
+  id: delivered_needs_date
+  params: { column: shipping_date, when: "status == 'delivered'" }
+```
+
 ---
 
 ### custom_sql_check
@@ -292,7 +304,7 @@ Escape hatch for custom SQL. Returns violation count.
 
 Use `{table}` placeholder. Query must return single integer.
 
-**Note:** Only works with DuckDB (local files). No SQL pushdown to remote databases.
+**Limitation:** This rule executes via DuckDB on local files (Parquet, CSV). It does **not** push SQL to remote databases (PostgreSQL, SQL Server). For database sources, use the other built-in rules or query the database directly.
 
 ---
 
