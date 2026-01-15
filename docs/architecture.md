@@ -52,12 +52,12 @@ Merge results (deterministic order: preplan → SQL → Polars) → Report
 
 Kontra uses a hybrid execution model that automatically selects the fastest path for each rule.
 
-**All tiers produce semantically equivalent pass/fail outcomes.** The tier affects *how* the measurement is obtained, not *whether* violations exist.
+**All tiers agree on whether violations exist.** The tier affects *how* the measurement is obtained, not *what* is measured.
 
 - **SQL and Polars**: Return exact violation counts
-- **Metadata preplan**: Can only prove "pass" (0 violations) or "fail" (≥1 violation). When preplan detects violations, it reports `failed_count: 1` to indicate "at least one" - the exact count requires a scan
+- **Metadata preplan**: Can only determine "violations exist" or "no violations". When violations exist, it reports `failed_count: 1` as a lower bound (≥1), not an exact count
 
-This means if you need exact violation counts, disable preplan (`--preplan off`). For pass/fail decisions, all tiers agree.
+For exact violation counts, disable preplan (`--preplan off`).
 
 ### Tier 1: Metadata Preplan
 
