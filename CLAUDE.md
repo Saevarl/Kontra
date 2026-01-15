@@ -89,7 +89,7 @@ src/kontra/
 │   └── sqlserver.py       # SQL Server stats queries
 ├── reporters/             # JSON & Rich output
 ├── rules/
-│   ├── builtin/           # 10 built-in rules
+│   ├── builtin/           # 12 built-in rules
 │   ├── base.py            # BaseRule abstract class
 │   ├── factory.py         # Rule instantiation
 │   └── execution_plan.py  # CompiledPlan
@@ -110,8 +110,9 @@ src/kontra/
 
 **Rule ID derivation** (in `factory.py`): explicit ID → use as-is; column param exists → `COL:{column}:{name}`; else → `DATASET:{name}`
 
-**Built-in Rules** (10):
+**Built-in Rules** (12):
 - Column: `not_null`, `unique`, `allowed_values`, `range`, `regex`, `dtype`
+- Cross-column: `compare`, `conditional_not_null`
 - Dataset: `min_rows`, `max_rows`, `freshness`, `custom_sql_check`
 
 **Materializers**: Load data with column projection. DuckDBMaterializer handles Parquet/CSV/S3, PostgresMaterializer and SQLServerMaterializer for databases.
@@ -212,12 +213,72 @@ These patterns caused bugs in the past. Avoid them:
 
 ## Documentation
 
-- `docs/quickstart.md` - Getting started guide
-- `docs/python-api.md` - Python library API reference
-- `docs/config.md` - Configuration system
-- `docs/rules.md` - Rule reference
-- `docs/architecture.md` - Technical architecture
-- `docs/KONTRA_REFERENCE.md` - Complete reference guide
+Structure by audience:
+
+```
+README.md                      # Evaluator pitch only
+docs/
+├── getting-started.md         # New users (happy path)
+├── python-api.md              # Library users
+├── reference/
+│   ├── rules.md               # All rules (flat, exhaustive)
+│   ├── config.md              # Configuration reference
+│   └── architecture.md        # Contributors
+└── advanced/
+    ├── state-and-diff.md      # History, diff, state backends
+    ├── agents-and-llms.md     # to_llm(), MCP, services
+    └── performance.md         # Execution model, preplan, pushdown
+```
+
+Key rule: **No document may explain a caveat before demonstrating a successful use.**
+
+## Documentation Standards
+
+### Core Rule
+
+**No document may explain a caveat before demonstrating a successful use.**
+
+### Audience Separation
+
+| Audience | Doc | What they need |
+|----------|-----|----------------|
+| Evaluator | README.md | "What is this? Should I care?" |
+| New user | getting-started.md | Happy path to success |
+| Python dev | python-api.md | Library usage |
+| Advanced | advanced/* | State, agents, execution model |
+| Contributor | reference/* | Exhaustive reference |
+
+Don't collapse audiences. An evaluator should never see execution tiers. A new user should never encounter preplan semantics.
+
+### What Belongs Where
+
+| Topic | Where it goes |
+|-------|---------------|
+| Execution tiers, preplan semantics | `advanced/performance.md` |
+| State backends, diff mechanics | `advanced/state-and-diff.md` |
+| to_llm(), MCP, health checks | `advanced/agents-and-llms.md` |
+| NULL semantics, rule edge cases | `reference/rules.md` |
+| Exhaustive option tables | `reference/config.md` |
+
+### Technical Honesty
+
+These facts must be documented (in advanced/reference docs):
+
+1. Preplan returns `failed_count: 1` for any failure—not exact counts
+2. Scout suggestions are heuristic starting points, not ground truth
+3. NULL semantics vary by rule
+4. `freshness` is time-dependent (not deterministic)
+5. SQL dialects (DuckDB, PostgreSQL, SQL Server) may differ on edge cases
+6. DuckDB is a core dependency
+
+### Documentation Checklist
+
+When adding a new feature:
+
+- [ ] Happy path example in appropriate doc
+- [ ] Caveats in advanced/ or reference/ (not in getting-started)
+- [ ] Python API helpers added if applicable
+- [ ] Rule count updated if adding rules
 
 ## Roadmap
 

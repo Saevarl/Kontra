@@ -33,6 +33,8 @@ from kontra.engine.sql_utils import (
     agg_freshness,
     agg_range,
     agg_regex,
+    agg_compare,
+    agg_conditional_not_null,
     exists_not_null,
     results_from_row,
 )
@@ -81,7 +83,7 @@ class SqlServerSqlExecutor(SqlExecutor):
 
     name = "sqlserver"
 
-    SUPPORTED_RULES = {"not_null", "unique", "min_rows", "max_rows", "allowed_values", "freshness", "range", "regex"}
+    SUPPORTED_RULES = {"not_null", "unique", "min_rows", "max_rows", "allowed_values", "freshness", "range", "regex", "compare", "conditional_not_null"}
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
@@ -188,6 +190,33 @@ class SqlServerSqlExecutor(SqlExecutor):
                 pattern = spec.get("pattern")
                 if isinstance(col, str) and col and isinstance(pattern, str) and pattern:
                     aggregate_selects.append(agg_regex(col, pattern, rule_id, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "compare":
+                # Phase 2: Compare two columns
+                left = spec.get("left")
+                right = spec.get("right")
+                op = spec.get("op")
+                if (isinstance(left, str) and left and
+                    isinstance(right, str) and right and
+                    isinstance(op, str) and op):
+                    aggregate_selects.append(agg_compare(left, right, op, rule_id, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "conditional_not_null":
+                # Phase 2: Check column is not null when condition is met
+                col = spec.get("column")
+                when_column = spec.get("when_column")
+                when_op = spec.get("when_op")
+                when_value = spec.get("when_value")  # Can be None
+                if (isinstance(col, str) and col and
+                    isinstance(when_column, str) and when_column and
+                    isinstance(when_op, str) and when_op):
+                    aggregate_selects.append(
+                        agg_conditional_not_null(col, when_column, when_op, when_value, rule_id, DIALECT)
+                    )
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 

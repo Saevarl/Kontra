@@ -78,6 +78,10 @@ class FailureMode(str, Enum):
     # Custom rule failures
     CUSTOM_CHECK_FAILED = "custom_check_failed"  # custom_sql_check failed
 
+    # Cross-column failures
+    COMPARISON_FAILED = "comparison_failed"  # Compare rule failed
+    CONDITIONAL_NULL = "conditional_null"  # Conditional not-null failed
+
     def __str__(self) -> str:
         return self.value
 

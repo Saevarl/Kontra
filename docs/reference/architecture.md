@@ -1,11 +1,11 @@
-# Kontra Architecture Guide
+# Architecture Reference
 
-This document explains how Kontra works internally, for contributors and those curious about the design.
+Internal design for contributors. For usage docs, see [Getting Started](../getting-started.md).
 
 ## Design Principles
 
-1. **Zero-friction start**: One command from data to validation
-2. **Intelligent defaults**: Infer what "good" looks like from the data itself
+1. **Measurement, not decision**: Kontra returns violation counts; consumers interpret them
+2. **Semantic honesty**: Different execution tiers have different guarantees (documented, not hidden)
 3. **Speed over ceremony**: Metadata-first, scan only when necessary
 4. **Agentic-first**: Built for LLM integration from the ground up
 5. **Progressive disclosure**: Simple surface, infinite depth
@@ -50,14 +50,21 @@ Merge results (deterministic order: preplan → SQL → Polars) → Report
 
 ## Three-Tier Execution
 
-Kontra uses a hybrid execution model that automatically selects the fastest path for each rule.
+Kontra uses a hybrid execution model with three semantically distinct tiers:
 
-**All tiers agree on whether violations exist.** The tier affects *how* the measurement is obtained, not *what* is measured.
+| Tier | What It Returns | Guarantees | Limitations |
+|------|-----------------|------------|-------------|
+| **Metadata (Preplan)** | Binary: 0 or ≥1 | Instant, no data scan | No exact counts; depends on metadata quality |
+| **SQL Pushdown** | Exact count | Database does the work | Dialect-specific behavior |
+| **Polars** | Exact count | Full Python regex, precise | Requires loading data |
 
-- **SQL and Polars**: Return exact violation counts
-- **Metadata preplan**: Can only determine "violations exist" or "no violations". When violations exist, it reports `failed_count: 1` as a lower bound (≥1), not an exact count
+**All tiers agree on whether violations exist.** A rule that passes in preplan will pass in SQL and Polars. But:
 
-For exact violation counts, disable preplan (`--preplan off`).
+- **Preplan returns `failed_count: 1` for any failure**—not an exact count. It means "≥1 violation exists".
+- **Preplan depends on metadata quality.** Parquet writers vary; pg_stats may be stale.
+- **SQL dialects differ.** DuckDB, PostgreSQL, and SQL Server may behave differently for edge cases.
+
+For exact violation counts, use `--preplan off`.
 
 ### Tier 1: Metadata Preplan
 
@@ -92,10 +99,16 @@ SELECT
 FROM schema.table;
 ```
 
-Supported for:
-- DuckDB (local Parquet/CSV files, S3)
-- PostgreSQL
-- SQL Server
+**Which SQL dialect?**
+
+| Data Source | SQL Engine |
+|-------------|------------|
+| Local Parquet/CSV | DuckDB |
+| S3 Parquet | DuckDB |
+| `postgres://` URI | PostgreSQL |
+| `mssql://` URI | SQL Server |
+
+DuckDB is a core dependency, installed automatically. It powers local file execution and is used even when you don't explicitly connect to a database.
 
 **Execution source**: `sql`
 
@@ -151,7 +164,7 @@ src/kontra/
 │   ├── factory.py    # Rule instantiation
 │   ├── registry.py   # Rule registration
 │   ├── execution_plan.py  # CompiledPlan
-│   └── builtin/      # 10 built-in rules
+│   └── builtin/      # 12 built-in rules
 ├── scout/            # Dataset profiling
 │   ├── profiler.py   # ScoutProfiler
 │   ├── suggest.py    # Rule inference
@@ -243,6 +256,35 @@ Kontra guarantees deterministic execution:
 1. **Result order**: preplan → SQL → Polars (always)
 2. **Rule ID derivation**: Stable based on name + column
 3. **No random sampling**: Consistent across runs
+
+**Exception**: The `freshness` rule is time-dependent. Its result depends on when you run it, not just the data content.
+
+## Limitations & Guarantees
+
+Kontra makes explicit what it does and does not guarantee:
+
+### What Kontra Guarantees
+
+- **Tier agreement on pass/fail**: If preplan says "pass", SQL and Polars will agree
+- **Deterministic results**: Same input → same output (except `freshness`)
+- **Stable rule IDs**: Rule identifiers are derived consistently
+
+### What Kontra Does Not Guarantee
+
+- **Exact counts from preplan**: Metadata returns "≥1 violation", not exact counts
+- **Metadata availability**: Parquet row-group stats depend on the writer; pg_stats depends on ANALYZE
+- **Identical SQL behavior**: DuckDB, PostgreSQL, and SQL Server may differ on edge cases (collation, regex)
+- **Scout suggestion quality**: Auto-generated rules are heuristic, may overfit to sample data
+
+### Data Source Dependencies
+
+| Source | Dependency | Notes |
+|--------|------------|-------|
+| Parquet | DuckDB (built-in) | Always available |
+| CSV | DuckDB (built-in) | Always available |
+| PostgreSQL | `kontra[postgres]` | Requires psycopg |
+| SQL Server | `kontra[sqlserver]` | Requires pymssql |
+| S3 | `kontra[s3]` | Requires s3fs |
 
 ## Adding a New Rule
 

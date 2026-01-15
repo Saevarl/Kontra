@@ -79,6 +79,8 @@ data/
 tmp/
 temp/
 
-# --- Ideas Backlog ---
-# Personal ideas/brainstorming (not tracked)
+# --- Internal Planning Docs ---
+# Keep locally, not in public repo
 docs/ideas-backlog.md
+docs/ROADMAP.md
+docs/KONTRA_REFERENCE.md

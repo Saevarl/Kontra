@@ -1,6 +1,6 @@
-# Kontra Configuration Guide
+# Configuration Reference
 
-Kontra uses a project-level configuration file to manage defaults, datasources, and environments.
+Project-level configuration for defaults, datasources, and environments.
 
 ## Quick Start
 
@@ -242,9 +242,11 @@ kontra validate contract.yml
 
 | Setting | Values | Default | Description |
 |---------|--------|---------|-------------|
-| `preplan` | on, off, auto | auto | Parquet metadata preflight |
-| `pushdown` | on, off, auto | auto | SQL pushdown to database |
+| `preplan` | on, off, auto | auto | Metadata preflight |
+| `pushdown` | on, off, auto | auto | SQL pushdown |
 | `projection` | on, off | on | Column pruning |
+
+See [Performance](../advanced/performance.md) for execution details.
 
 ### Output
 

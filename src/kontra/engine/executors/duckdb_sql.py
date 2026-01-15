@@ -260,6 +260,64 @@ def _agg_regex(col: str, pattern: str, rule_id: str) -> str:
     )
 
 
+# SQL comparison operators
+_SQL_OP_MAP = {
+    ">": ">",
+    ">=": ">=",
+    "<": "<",
+    "<=": "<=",
+    "==": "=",
+    "!=": "<>",
+}
+
+
+def _agg_compare(left: str, right: str, op: str, rule_id: str) -> str:
+    """
+    Aggregate expression for compare rule in DuckDB.
+
+    Counts rows where either column is NULL or comparison fails.
+    """
+    l = esc_ident(left)
+    r = esc_ident(right)
+    sql_op = _SQL_OP_MAP.get(op, op)
+    return (
+        f"SUM(CASE WHEN {l} IS NULL OR {r} IS NULL "
+        f"OR NOT ({l} {sql_op} {r}) THEN 1 ELSE 0 END) AS {esc_ident(rule_id)}"
+    )
+
+
+def _agg_conditional_not_null(
+    column: str, when_column: str, when_op: str, when_value: Any, rule_id: str
+) -> str:
+    """
+    Aggregate expression for conditional_not_null rule in DuckDB.
+
+    Counts rows where condition is TRUE AND column is NULL.
+    """
+    col = esc_ident(column)
+    when_col = esc_ident(when_column)
+    sql_op = _SQL_OP_MAP.get(when_op, when_op)
+
+    # Handle NULL value in condition
+    if when_value is None:
+        if when_op == "==":
+            condition = f"{when_col} IS NULL"
+        elif when_op == "!=":
+            condition = f"{when_col} IS NOT NULL"
+        else:
+            condition = "1=0"
+    else:
+        val = lit_str(str(when_value)) if isinstance(when_value, str) else str(when_value)
+        if isinstance(when_value, bool):
+            val = "TRUE" if when_value else "FALSE"
+        condition = f"{when_col} {sql_op} {val}"
+
+    return (
+        f"SUM(CASE WHEN ({condition}) AND {col} IS NULL THEN 1 ELSE 0 END) "
+        f"AS {esc_ident(rule_id)}"
+    )
+
+
 def _assemble_single_row(selects: List[str]) -> str:
     if not selects:
         return "SELECT 0 AS __no_sql_rules__ LIMIT 1;"
@@ -309,7 +367,7 @@ class DuckDBSqlExecutor(SqlExecutor):
 
     name = "duckdb"
 
-    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex"}
+    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex", "compare", "conditional_not_null"}
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
@@ -350,6 +408,23 @@ class DuckDBSqlExecutor(SqlExecutor):
                 pattern = spec.get("pattern")
                 if isinstance(col, str) and col and isinstance(pattern, str) and pattern:
                     selects.append(_agg_regex(col, pattern, rid))
+            elif kind == "compare":
+                left = spec.get("left")
+                right = spec.get("right")
+                op = spec.get("op")
+                if (isinstance(left, str) and left and
+                    isinstance(right, str) and right and
+                    isinstance(op, str) and op in _SQL_OP_MAP):
+                    selects.append(_agg_compare(left, right, op, rid))
+            elif kind == "conditional_not_null":
+                col = spec.get("column")
+                when_column = spec.get("when_column")
+                when_op = spec.get("when_op")
+                when_value = spec.get("when_value")  # Can be None
+                if (isinstance(col, str) and col and
+                    isinstance(when_column, str) and when_column and
+                    isinstance(when_op, str) and when_op in _SQL_OP_MAP):
+                    selects.append(_agg_conditional_not_null(col, when_column, when_op, when_value, rid))
         return _assemble_single_row(selects)
 
     def execute(

@@ -217,6 +217,94 @@ def exists_not_null(
 # Result Parsing
 # =============================================================================
 
+# SQL comparison operators
+SQL_OP_MAP = {
+    ">": ">",
+    ">=": ">=",
+    "<": "<",
+    "<=": "<=",
+    "==": "=",
+    "!=": "<>",
+}
+
+
+def agg_compare(
+    left: str,
+    right: str,
+    op: str,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    Count rows where the comparison fails or either column is NULL.
+
+    Args:
+        left: Left column name
+        right: Right column name
+        op: Comparison operator (>, >=, <, <=, ==, !=)
+        rule_id: Rule identifier for alias
+        dialect: SQL dialect
+
+    Returns:
+        SQL aggregate expression
+    """
+    l = esc_ident(left, dialect)
+    r_col = esc_ident(right, dialect)
+    r_id = esc_ident(rule_id, dialect)
+    sql_op = SQL_OP_MAP.get(op, op)
+
+    # Count failures: NULL in either column OR comparison is false
+    return (
+        f"SUM(CASE WHEN {l} IS NULL OR {r_col} IS NULL "
+        f"OR NOT ({l} {sql_op} {r_col}) THEN 1 ELSE 0 END) AS {r_id}"
+    )
+
+
+def agg_conditional_not_null(
+    column: str,
+    when_column: str,
+    when_op: str,
+    when_value: Any,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    Count rows where column is NULL when condition is met.
+
+    Args:
+        column: Column that must not be null
+        when_column: Column in the condition
+        when_op: Condition operator
+        when_value: Condition value
+        rule_id: Rule identifier for alias
+        dialect: SQL dialect
+
+    Returns:
+        SQL aggregate expression
+    """
+    col = esc_ident(column, dialect)
+    when_col = esc_ident(when_column, dialect)
+    r_id = esc_ident(rule_id, dialect)
+    sql_op = SQL_OP_MAP.get(when_op, when_op)
+
+    # Handle NULL value in condition
+    if when_value is None:
+        if when_op == "==":
+            condition = f"{when_col} IS NULL"
+        elif when_op == "!=":
+            condition = f"{when_col} IS NOT NULL"
+        else:
+            condition = "1=0"  # Other operators with NULL -> always false
+    else:
+        val = lit_value(when_value, dialect)
+        condition = f"{when_col} {sql_op} {val}"
+
+    # Count failures: condition is TRUE AND column is NULL
+    return (
+        f"SUM(CASE WHEN ({condition}) AND {col} IS NULL THEN 1 ELSE 0 END) AS {r_id}"
+    )
+
+
 # Mapping from rule kind to failure_mode
 RULE_KIND_TO_FAILURE_MODE = {
     "not_null": "null_values",
@@ -229,6 +317,8 @@ RULE_KIND_TO_FAILURE_MODE = {
     "regex": "pattern_mismatch",
     "dtype": "schema_drift",
     "custom_sql_check": "custom_check_failed",
+    "compare": "comparison_failed",
+    "conditional_not_null": "conditional_null",
 }
 
 

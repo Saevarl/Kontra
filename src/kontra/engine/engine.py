@@ -68,6 +68,8 @@ import kontra.rules.builtin.not_null  # noqa: F401
 import kontra.rules.builtin.range  # noqa: F401
 import kontra.rules.builtin.regex  # noqa: F401
 import kontra.rules.builtin.unique  # noqa: F401
+import kontra.rules.builtin.compare  # noqa: F401
+import kontra.rules.builtin.conditional_not_null  # noqa: F401
 
 
 # --------------------------------------------------------------------------- #

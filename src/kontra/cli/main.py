@@ -161,6 +161,8 @@ def _handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool)
     import kontra.rules.builtin.range  # noqa: F401
     import kontra.rules.builtin.regex  # noqa: F401
     import kontra.rules.builtin.unique  # noqa: F401
+    import kontra.rules.builtin.compare  # noqa: F401
+    import kontra.rules.builtin.conditional_not_null  # noqa: F401
 
     checks_passed = 0
     checks_failed = 0

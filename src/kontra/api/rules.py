@@ -256,6 +256,68 @@ def custom_sql_check(
     return _build_rule("custom_sql_check", {"sql": sql}, severity, id)
 
 
+def compare(
+    left: str,
+    right: str,
+    op: str,
+    severity: str = "blocking",
+    id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Compare two columns using a comparison operator.
+
+    Args:
+        left: Left column name
+        right: Right column name
+        op: Comparison operator: ">", ">=", "<", "<=", "==", "!="
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (use when applying multiple compare rules)
+
+    Note:
+        Rows where either column is NULL are counted as failures.
+        You cannot meaningfully compare NULL values.
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Example:
+        # Ensure end_date >= start_date
+        rules.compare("end_date", "start_date", ">=")
+    """
+    return _build_rule("compare", {"left": left, "right": right, "op": op}, severity, id)
+
+
+def conditional_not_null(
+    column: str,
+    when: str,
+    severity: str = "blocking",
+    id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Column must not be NULL when a condition is met.
+
+    Args:
+        column: Column that must not be null
+        when: Condition expression (e.g., "status == 'shipped'")
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (use when applying multiple rules)
+
+    Condition syntax:
+        column_name operator value
+
+        Supported operators: ==, !=, >, >=, <, <=
+        Supported values: 'string', 123, 123.45, true, false, null
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Example:
+        # shipping_date must not be null when status is 'shipped'
+        rules.conditional_not_null("shipping_date", "status == 'shipped'")
+    """
+    return _build_rule("conditional_not_null", {"column": column, "when": when}, severity, id)
+
+
 # Module-level access for `from kontra import rules` then `rules.not_null(...)`
 class _RulesModule:
     """
@@ -274,6 +336,8 @@ class _RulesModule:
     max_rows = staticmethod(max_rows)
     freshness = staticmethod(freshness)
     custom_sql_check = staticmethod(custom_sql_check)
+    compare = staticmethod(compare)
+    conditional_not_null = staticmethod(conditional_not_null)
 
     def __repr__(self) -> str:
         return "<kontra.rules module>"
