@@ -180,4 +180,64 @@ result = kontra.validate(df, rules=kontra.suggest_rules(kontra.scout(df)).to_dic
 
 ---
 
+## Pipeline Validation Decorator
+
+**Status**: Backlog (likely roadmap soon)
+
+Inject validation into data pipelines without boilerplate. Inspired by Pandera's `@pa.check_output`.
+
+```python
+@kontra.validate(contract="users.yml", on_fail="raise")
+def load_users() -> pl.DataFrame:
+    return pl.read_parquet("...")
+
+# Or with inline rules
+@kontra.validate(rules=[rules.not_null("id"), rules.min_rows(100)])
+def fetch_orders() -> pl.DataFrame:
+    return db.query("SELECT * FROM orders")
+```
+
+### Behavior Options
+
+- `on_fail="raise"` - Raise `ValidationError` on blocking failures
+- `on_fail="warn"` - Log warning, return data anyway
+- `on_fail="return_result"` - Return `(df, ValidationResult)` tuple
+
+### Implementation
+
+Pure syntactic sugar - decorator wraps function and calls `kontra.validate()` on return value. No engine changes needed.
+
+---
+
+## Class-Based Contracts (KontraModel)
+
+**Status**: Backlog (needs design thought)
+
+Pydantic-style contract definition for developers who prefer Python over YAML.
+
+```python
+from kontra import KontraModel, Field
+
+class UserContract(KontraModel):
+    user_id: int = Field(rules=[NotNull(), Unique()])
+    email: str = Field(rules=[NotNull()])
+
+    class Config:
+        datasource = "prod_db.users"
+
+result = UserContract.validate()
+```
+
+### Open Questions
+
+1. Build custom or leverage Pydantic? (Don't recreate Pydantic)
+2. Could use `pydantic.BaseModel` with custom field validators?
+3. How to handle dtype inference from type hints?
+
+### Implementation
+
+Compiles down to existing `RuleSpec` objects. No engine changes needed.
+
+---
+
 *Last updated: 2026-01-15*
