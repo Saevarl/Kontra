@@ -48,7 +48,7 @@ def sample_contract(tmp_path, sample_parquet):
     """Create a sample contract file."""
     contract = f"""
 name: test_contract
-dataset: {sample_parquet}
+datasource: {sample_parquet}
 
 rules:
   - name: not_null
@@ -68,7 +68,7 @@ def failing_contract(tmp_path, sample_parquet):
     """Create a contract that will fail validation."""
     contract = f"""
 name: failing_contract
-dataset: {sample_parquet}
+datasource: {sample_parquet}
 
 rules:
   - name: min_rows
@@ -195,7 +195,7 @@ class TestValidate:
         contract = tmp_path / "contract.yml"
         contract.write_text("""
 name: test
-dataset: placeholder.parquet
+datasource: placeholder.parquet
 
 rules:
   - name: min_rows

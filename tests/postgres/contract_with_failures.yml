@@ -2,7 +2,7 @@
 name: users_contract_strict
 description: Strict validation rules (some will fail)
 
-dataset: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users"
+datasource: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users"
 
 rules:
   # This will PASS (username has no nulls)

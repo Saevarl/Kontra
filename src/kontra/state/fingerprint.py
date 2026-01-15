@@ -60,7 +60,7 @@ def fingerprint_contract(
         })
 
     if include_dataset:
-        canonical["dataset"] = contract.dataset
+        canonical["datasource"] = contract.datasource
 
     # Generate stable JSON string
     json_str = json.dumps(canonical, sort_keys=True, separators=(",", ":"))

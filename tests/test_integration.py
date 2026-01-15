@@ -68,7 +68,7 @@ class TestValidationEngineIntegration:
         contract = tmp_path / "contract.yml"
         contract.write_text(f"""
 name: test_contract
-dataset: {parquet_file}
+datasource: {parquet_file}
 
 rules:
   - name: not_null
@@ -108,7 +108,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text(f"""
 name: failing_contract
-dataset: {parquet}
+datasource: {parquet}
 
 rules:
   - name: not_null
@@ -132,7 +132,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text(f"""
 name: csv_contract
-dataset: {csv_file}
+datasource: {csv_file}
 
 rules:
   - name: min_rows
@@ -155,7 +155,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text("""
 name: override_contract
-dataset: nonexistent.parquet
+datasource: nonexistent.parquet
 
 rules:
   - name: min_rows
@@ -178,7 +178,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text(f"""
 name: stats_contract
-dataset: {parquet_file}
+datasource: {parquet_file}
 
 rules:
   - name: min_rows
@@ -202,7 +202,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text(f"""
 name: no_preplan_contract
-dataset: {parquet_file}
+datasource: {parquet_file}
 
 rules:
   - name: min_rows
@@ -225,7 +225,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text(f"""
 name: no_pushdown_contract
-dataset: {parquet_file}
+datasource: {parquet_file}
 
 rules:
   - name: range
@@ -413,7 +413,7 @@ class TestRuleExecutionIntegration:
         contract = tmp_path / "all_rules_contract.yml"
         contract.write_text(f"""
 name: all_rules_test
-dataset: {parquet}
+datasource: {parquet}
 
 rules:
   - name: not_null
@@ -479,7 +479,7 @@ rules:
         contract = tmp_path / "warning_contract.yml"
         contract.write_text(f"""
 name: warning_test
-dataset: {parquet}
+datasource: {parquet}
 
 rules:
   - name: not_null
@@ -517,7 +517,7 @@ class TestDataFrameModeIntegration:
         contract = tmp_path / "contract.yml"
         contract.write_text("""
 name: df_test
-dataset: placeholder
+datasource: placeholder
 
 rules:
   - name: not_null
@@ -549,7 +549,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text("""
 name: pandas_test
-dataset: placeholder
+datasource: placeholder
 
 rules:
   - name: not_null
@@ -582,7 +582,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text("""
 name: failing_df_test
-dataset: placeholder
+datasource: placeholder
 
 rules:
   - name: not_null
@@ -613,7 +613,7 @@ class TestPublicAPIIntegration:
         contract = tmp_path / "contract.yml"
         contract.write_text("""
 name: api_test
-dataset: placeholder
+datasource: placeholder
 
 rules:
   - name: min_rows
@@ -633,7 +633,7 @@ rules:
         contract = tmp_path / "contract.yml"
         contract.write_text(f"""
 name: path_api_test
-dataset: {parquet_file}
+datasource: {parquet_file}
 
 rules:
   - name: min_rows

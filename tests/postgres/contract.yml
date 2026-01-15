@@ -2,7 +2,7 @@
 name: users_contract
 description: Validation rules for the users table with severity levels
 
-dataset: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users"
+datasource: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users"
 
 rules:
   # BLOCKING: Critical data integrity rules

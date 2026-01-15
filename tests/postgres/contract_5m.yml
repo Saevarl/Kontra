@@ -2,7 +2,7 @@
 name: users_5m_benchmark
 description: Benchmark contract for 5 million rows
 
-dataset: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users_5m"
+datasource: "postgres://kontra:kontra_test@localhost:5433/kontra_test/public.users_5m"
 
 rules:
   # Row count check

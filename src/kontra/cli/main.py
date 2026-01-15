@@ -190,7 +190,7 @@ def _handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool)
         raise typer.Exit(code=EXIT_CONFIG_ERROR)
 
     # 2. Check dataset URI is parseable
-    dataset_uri = data_path or contract.dataset
+    dataset_uri = data_path or contract.datasource
     try:
         handle = DatasetHandle.from_uri(dataset_uri)
         scheme_info = f" ({handle.scheme})" if handle.scheme else ""

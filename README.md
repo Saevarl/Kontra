@@ -83,7 +83,7 @@ Or write manually:
 ```yaml
 # contracts/users.yml
 name: users_quality
-dataset: data/users.parquet
+datasource: data/users.parquet
 
 rules:
   - name: not_null

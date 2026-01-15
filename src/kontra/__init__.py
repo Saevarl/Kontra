@@ -182,7 +182,7 @@ def validate(
     if isinstance(data, str):
         dataset = data
     elif engine.contract:
-        dataset = engine.contract.dataset or engine.contract.name or "dataframe"
+        dataset = engine.contract.datasource or engine.contract.name or "dataframe"
 
     # Wrap in ValidationResult
     return ValidationResult.from_engine_result(raw_result, dataset=dataset)

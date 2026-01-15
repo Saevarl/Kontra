@@ -21,7 +21,7 @@ class TestContractLoaderBasic:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: test_contract
-dataset: data.parquet
+datasource: data.parquet
 
 rules:
   - name: not_null
@@ -35,7 +35,7 @@ rules:
         contract = ContractLoader.from_path(contract_file)
 
         assert contract.name == "test_contract"
-        assert contract.dataset == "data.parquet"
+        assert contract.datasource == "data.parquet"
         assert len(contract.rules) == 2
 
     def test_from_path_file_not_found(self, tmp_path):
@@ -48,7 +48,7 @@ rules:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: uri_test
-dataset: data.parquet
+datasource: data.parquet
 rules: []
 """)
 
@@ -60,7 +60,7 @@ rules: []
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: string_test
-dataset: data.parquet
+datasource: data.parquet
 rules: []
 """)
 
@@ -76,15 +76,15 @@ rules: []
 class TestContractValidation:
     """Tests for contract validation."""
 
-    def test_missing_dataset(self, tmp_path):
-        """Raise error when dataset is missing."""
+    def test_missing_datasource(self, tmp_path):
+        """Raise error when datasource is missing."""
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
-name: no_dataset
+name: no_datasource
 rules: []
 """)
 
-        with pytest.raises(ValueError, match="missing required key: 'dataset'"):
+        with pytest.raises(ValueError, match="missing required key: 'datasource'"):
             ContractLoader.from_path(contract_file)
 
     def test_invalid_yaml_not_mapping(self, tmp_path):
@@ -103,7 +103,7 @@ rules: []
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: bad_rules
-dataset: data.parquet
+datasource: data.parquet
 rules: not_a_list
 """)
 
@@ -115,7 +115,7 @@ rules: not_a_list
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: bad_rule
-dataset: data.parquet
+datasource: data.parquet
 rules:
   - not_a_mapping
 """)
@@ -128,7 +128,7 @@ rules:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: missing_name
-dataset: data.parquet
+datasource: data.parquet
 rules:
   - params:
       column: id
@@ -142,7 +142,7 @@ rules:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: bad_params
-dataset: data.parquet
+datasource: data.parquet
 rules:
   - name: not_null
     params: not_a_dict
@@ -165,7 +165,7 @@ class TestRuleParsing:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: rule_id
-dataset: data.parquet
+datasource: data.parquet
 rules:
   - name: not_null
     id: custom_id
@@ -181,7 +181,7 @@ rules:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: default_severity
-dataset: data.parquet
+datasource: data.parquet
 rules:
   - name: not_null
     params:
@@ -196,7 +196,7 @@ rules:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: custom_severity
-dataset: data.parquet
+datasource: data.parquet
 rules:
   - name: not_null
     params:
@@ -212,7 +212,7 @@ rules:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: empty_params
-dataset: data.parquet
+datasource: data.parquet
 rules:
   - name: min_rows
 """)
@@ -225,7 +225,7 @@ rules:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: multiple_rules
-dataset: data.parquet
+datasource: data.parquet
 rules:
   - name: not_null
     params: { column: id }
@@ -256,7 +256,7 @@ class TestEdgeCases:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: no_rules
-dataset: data.parquet
+datasource: data.parquet
 rules: []
 """)
 
@@ -268,7 +268,7 @@ rules: []
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: null_rules
-dataset: data.parquet
+datasource: data.parquet
 """)
 
         contract = ContractLoader.from_path(contract_file)
@@ -278,7 +278,7 @@ dataset: data.parquet
         """Contract without name."""
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
-dataset: data.parquet
+datasource: data.parquet
 rules: []
 """)
 
@@ -290,12 +290,12 @@ rules: []
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: uri_dataset
-dataset: s3://bucket/data.parquet
+datasource: s3://bucket/data.parquet
 rules: []
 """)
 
         contract = ContractLoader.from_path(contract_file)
-        assert contract.dataset == "s3://bucket/data.parquet"
+        assert contract.datasource == "s3://bucket/data.parquet"
 
 
 # =============================================================================
@@ -398,7 +398,7 @@ class TestFromUri:
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: local_test
-dataset: data.parquet
+datasource: data.parquet
 rules: []
 """)
 

@@ -324,7 +324,7 @@ Executes a custom SQL query for validation. The query should return a single int
 ```yaml
 name: users_quality_contract
 description: Quality checks for users table
-dataset: postgres://user:pass@localhost/db/public.users
+datasource: postgres://user:pass@localhost/db/public.users
 
 rules:
   # Structural checks

@@ -102,7 +102,7 @@ kontra validate <contract.yml> [OPTIONS]
 ### Example Contract
 
 ```yaml
-dataset: "postgres://kontra:secret@localhost:5432/mydb/public.users"
+datasource: "postgres://kontra:secret@localhost:5432/mydb/public.users"
 
 rules:
   - name: not_null

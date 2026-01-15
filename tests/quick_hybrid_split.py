@@ -7,7 +7,7 @@ import polars as pl
 from contra.engine.engine import ValidationEngine
 
 CONTRACT_TEMPLATE = """
-dataset: "{dataset}"
+datasource: "{dataset}"
 
 rules:
   - name: not_null

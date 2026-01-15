@@ -305,7 +305,7 @@ kontra config show -o json
 
 Before (in contract):
 ```yaml
-dataset: postgres://user:pass@host:5432/mydb/public.users
+datasource: postgres://user:pass@host:5432/mydb/public.users
 ```
 
 After (in config):
@@ -324,7 +324,7 @@ datasources:
 
 ```yaml
 # contract.yml
-dataset: prod_db.users
+datasource: prod_db.users
 ```
 
 Direct URIs still work for backward compatibility:

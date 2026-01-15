@@ -46,7 +46,7 @@ def sample_contract(tmp_path):
     contract = tmp_path / "contract.yml"
     contract.write_text("""
 name: test_contract
-dataset: placeholder
+datasource: placeholder
 
 rules:
   - name: not_null
@@ -839,7 +839,7 @@ class TestExplainExtended:
         contract = tmp_path / "contract.yml"
         contract.write_text("""
 name: test
-dataset: placeholder
+datasource: placeholder
 rules:
   - name: not_null
     params:

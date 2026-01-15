@@ -74,6 +74,27 @@ import kontra.rules.builtin.unique  # noqa: F401
 # Helpers
 # --------------------------------------------------------------------------- #
 
+def _resolve_datasource_uri(reference: str) -> str:
+    """
+    Resolve a datasource reference to a concrete URI.
+
+    Tries to resolve named datasources (e.g., "prod_db.users") through config.
+    Falls back to returning the reference as-is if not found in config.
+
+    Args:
+        reference: Named datasource ("prod_db.users") or direct URI/path
+
+    Returns:
+        Resolved URI (e.g., "postgres://host/db/public.users" or "./data.parquet")
+    """
+    try:
+        from kontra.config.settings import resolve_datasource
+        return resolve_datasource(reference)
+    except (ValueError, ImportError):
+        # Not a named datasource or config not available - use as-is
+        return reference
+
+
 def _is_s3_uri(val: str | None) -> bool:
     return isinstance(val, str) and val.lower().startswith("s3://")
 
@@ -280,7 +301,8 @@ class ValidationEngine:
             # Generate fingerprints
             contract_fp = fingerprint_contract(self.contract) if self.contract else "unknown"
 
-            source_uri = self.data_path or (self.contract.dataset if self.contract else "")
+            source_ref = self.data_path or (self.contract.datasource if self.contract else "")
+            source_uri = _resolve_datasource_uri(source_ref) if source_ref else ""
             dataset_fp = None
             try:
                 handle = DatasetHandle.from_uri(source_uri)
@@ -450,7 +472,7 @@ class ValidationEngine:
 
         # Summary (use the plan's summary method for consistency)
         summary = plan.summary(all_results)
-        summary["dataset_name"] = self.contract.dataset if self.contract else "dataframe"
+        summary["dataset_name"] = self.contract.datasource if self.contract else "dataframe"
         engine_label = "polars (dataframe mode)"
 
         # Report
@@ -564,7 +586,8 @@ class ValidationEngine:
             return self._run_dataframe_mode(timers, rules, plan, compiled_full, rule_severity_map)
 
         # Dataset handle (used across phases)
-        source_uri = self.data_path or self.contract.dataset
+        source_ref = self.data_path or self.contract.datasource
+        source_uri = _resolve_datasource_uri(source_ref)
         handle = DatasetHandle.from_uri(source_uri)
 
         # ------------------------------------------------------------------ #
@@ -899,7 +922,7 @@ class ValidationEngine:
 
         # 8) Summary
         summary = plan.summary(results)
-        summary["dataset_name"] = self.contract.dataset
+        summary["dataset_name"] = self.contract.datasource
         engine_label = (
             f"{materializer_name}+polars "
             f"(preplan:{'on' if preplan_effective else 'off'}, "
@@ -969,7 +992,7 @@ class ValidationEngine:
                 "run_meta": {
                     "phases_ms": phases_ms,
                     "duration_ms_total": sum(phases_ms.values()),
-                    "dataset_path": self.data_path or self.contract.dataset,
+                    "dataset_path": self.data_path or self.contract.datasource,
                     "contract_path": self.contract_path,
                     "engine": engine_label,
                     "materializer": materializer_name,
@@ -1001,7 +1024,7 @@ class ValidationEngine:
                         stats["io"] = io
 
         out: Dict[str, Any] = {
-            "dataset": self.contract.dataset,
+            "dataset": self.contract.datasource,
             "results": results,
             "summary": summary,
         }

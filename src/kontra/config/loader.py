@@ -90,10 +90,11 @@ class ContractLoader:
         if not isinstance(raw, dict):
             raise ValueError(
                 f"Invalid or empty contract YAML at {source}. "
-                "Expected a mapping with keys like 'dataset' and 'rules'."
+                "Expected a mapping with keys like 'datasource' and 'rules'."
             )
-        if "dataset" not in raw:
-            raise ValueError("Contract is missing required key: 'dataset'.")
+        # Accept both 'datasource' (new) and 'dataset' (deprecated, for backwards compat)
+        if "datasource" not in raw and "dataset" not in raw:
+            raise ValueError("Contract is missing required key: 'datasource'.")
         rules_raw = raw.get("rules", []) or []
         if not isinstance(rules_raw, list):
             raise ValueError("Contract 'rules' must be a list.")
@@ -114,8 +115,10 @@ class ContractLoader:
                 severity=r.get("severity", "blocking"),
             ))
 
+        # Use 'datasource' if present, otherwise fall back to 'dataset' for backwards compat
+        datasource_value = raw.get("datasource") or raw.get("dataset")
         return Contract(
             name=raw.get("name"),
-            dataset=str(raw["dataset"]),
+            datasource=str(datasource_value),
             rules=rules,
         )

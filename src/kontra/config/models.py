@@ -1,5 +1,5 @@
-# src/contra/config/models.py
-from pydantic import BaseModel, Field
+# src/kontra/config/models.py
+from pydantic import BaseModel, Field, model_validator
 from typing import Dict, Any, List, Literal, Optional
 
 class RuleSpec(BaseModel):
@@ -15,8 +15,26 @@ class RuleSpec(BaseModel):
     )
 
 class Contract(BaseModel):
+    """
+    Data contract specification.
+
+    The `datasource` field can be:
+    - A named datasource from config: "prod_db.users"
+    - A file path: "./data/users.parquet"
+    - A URI: "s3://bucket/users.parquet", "postgres:///public.users"
+    """
     name: Optional[str] = Field(default=None, description="Contract name (optional, used for identification).")
-    dataset: str
-    rules: List[RuleSpec]
+    datasource: str = Field(..., description="Data source: named datasource, path, or URI.")
+    rules: List[RuleSpec] = Field(default_factory=list)
+
+    # Backwards compatibility: accept 'dataset' as alias for 'datasource'
+    @model_validator(mode="before")
+    @classmethod
+    def handle_dataset_alias(cls, data: Any) -> Any:
+        """Accept 'dataset' as deprecated alias for 'datasource'."""
+        if isinstance(data, dict):
+            if "dataset" in data and "datasource" not in data:
+                data["datasource"] = data.pop("dataset")
+        return data
 
 
