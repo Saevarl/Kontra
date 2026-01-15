@@ -219,33 +219,6 @@ These patterns caused bugs in the past. Avoid them:
 - `docs/architecture.md` - Technical architecture
 - `docs/KONTRA_REFERENCE.md` - Complete reference guide
 
-## Roadmap / Backlog
+## Roadmap
 
-### Instant Roadmap (Do Soon)
-
-1. **Cross-Column Rules** - Table stakes for data quality
-   ```yaml
-   - name: compare
-     params: { left: end_date, right: start_date, op: ">=" }
-
-   - name: conditional_not_null
-     params: { column: shipping_date, when: "status == 'shipped'" }
-   ```
-
-2. **dbt Integration** - Separate package `kontra-dbt`, run contracts as post-hooks
-
-### Idea Backlog
-
-- **Referential Integrity** (`foreign_key` rule) - Needs multi-table execution model design
-- **Statistical Range Rule** - Explicit baseline_mean/std, not dynamic. Must be deterministic.
-- **Schema Evolution in Scout** - Enhance `scout_diff` to surface schema changes
-- **Sampling for Large Datasets** - Opt-in for billion-row tables
-- **Airflow/Dagster Operators** - Convenience wrappers (users can DIY with Python API)
-- **GitHub Actions** - Convenience (CLI already works in CI)
-- **OpenLineage/DataHub** - Enterprise lineage integration
-
-### Not Doing
-
-- **Alerting (Slack/PagerDuty)** - "Kontra measures, consumers decide"
-- **ML-based Anomaly Detection** - Non-deterministic, breaks "same inputs → same outputs"
-- **Great Expectations Migration** - Complex mapping, not worth maintenance burden
+See `docs/ROADMAP.md` for planned features, future ideas, and explicit non-goals.

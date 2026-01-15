@@ -31,7 +31,25 @@
 
 ## Planned
 
-### v0.4 — Profile Storage & Custom SQL Pushdown
+### v0.4 — Cross-Column Rules & dbt Integration
+
+**Cross-column validation** (table stakes)
+```yaml
+# Compare two columns
+- name: compare
+  params: { left: end_date, right: start_date, op: ">=" }
+
+# Conditional not-null
+- name: conditional_not_null
+  params: { column: shipping_date, when: "status == 'shipped'" }
+```
+
+**dbt integration** - Separate package `kontra-dbt`
+- [ ] Run contracts as dbt post-hooks
+- [ ] Auto-discover models → datasources
+- [ ] `dbt run` triggers validation
+
+### v0.5 — Profile Storage & Custom SQL Pushdown
 
 **Database persistence for Scout profiles**
 - [ ] PostgreSQL backend for profile storage
@@ -43,7 +61,7 @@
 - [ ] Auto-detect source type, execute SQL in-place
 - [ ] Fallback to DuckDB+Polars for file sources
 
-### v0.5 — Agent Power Features
+### v0.6 — Agent Power Features
 
 **Contract mutation proposals**
 ```bash
@@ -63,10 +81,9 @@ kontra validate contract.yml --only not_null,unique
 kontra validate contract.yml --columns user_id,email
 ```
 
-### v0.6 — Integrations
+### v0.7 — Integrations
 
 - [ ] More data sources: Snowflake, BigQuery, MySQL
-- [ ] Notifications: Slack, email on failure
 - [ ] Observability: OpenTelemetry, Prometheus metrics
 - [ ] CI/CD: GitHub Action
 
@@ -74,11 +91,22 @@ kontra validate contract.yml --columns user_id,email
 
 ## Future Ideas
 
-- **AI rule suggestions** - LLM suggests rules from profile
-- **Schema evolution tracking** - Alert on schema changes
-- **Anomaly detection** - Statistical rules that learn from history
-- **Web UI** - Dashboard for validation history
+- **Referential integrity** - `foreign_key` rule checking IDs exist in reference tables
+- **Statistical range rule** - Explicit baseline_mean/std bounds (deterministic, not ML)
+- **Schema evolution in Scout** - Enhance `scout_diff` to surface schema changes
+- **Sampling for large datasets** - Opt-in for billion-row tables
+- **Airflow/Dagster operators** - Convenience wrappers (Python API already works)
+- **OpenLineage/DataHub** - Enterprise lineage integration
+- **Web UI** - Dashboard for validation history (optional, keep core lightweight)
 - **VS Code extension** - Inline contract editing
+
+## Not Doing
+
+These are explicitly out of scope for Kontra:
+
+- **Alerting (Slack/PagerDuty)** - "Kontra measures, consumers decide." Use exit codes + CI/CD.
+- **ML-based anomaly detection** - Non-deterministic, breaks "same inputs → same outputs"
+- **Great Expectations migration** - Complex mapping, not worth the maintenance burden
 
 ---
 
