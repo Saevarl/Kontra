@@ -213,22 +213,26 @@ kontra scout prod_db.orders           # Explicit: datasource.table
 
 ## Severity Levels
 
+Severity is metadata attached to rules. Consumers decide how to interpret it.
+
 ```yaml
 rules:
   - name: not_null
     params: { column: user_id }
-    severity: blocking   # Fails validation (exit code 1)
+    severity: blocking   # CLI: exit code 1 if violations > 0
 
   - name: allowed_values
     params:
       column: status
       values: [active, inactive]
-    severity: warning    # Warns but passes (exit code 0)
+    severity: warning    # CLI: reported but exit code 0
 
   - name: range
     params: { column: optional_score, min: 0 }
-    severity: info       # Informational only
+    severity: info       # CLI: informational only
 ```
+
+The CLI interprets `blocking` failures as exit code 1. Other consumers (CI systems, agents, dashboards) may interpret severity differently.
 
 ## Python API
 
@@ -324,12 +328,12 @@ SQL pushdown: compile=5 ms, execute=45 ms
 Projection [on]: 4/12 (req/avail) (pruned)
 ```
 
-## Exit Codes
+## Exit Codes (CLI)
 
 | Code | Meaning |
 |------|---------|
-| 0 | All blocking rules passed |
-| 1 | Validation failed (data quality issue) |
+| 0 | No blocking rule violations |
+| 1 | Blocking rule has violations |
 | 2 | Configuration error (contract/file not found) |
 | 3 | Runtime error (unexpected failure) |
 

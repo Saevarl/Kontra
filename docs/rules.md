@@ -2,6 +2,8 @@
 
 Kontra provides 10 built-in validation rules for common data quality checks. Each rule can be executed via three tiers: metadata preplan, SQL pushdown, or Polars execution.
 
+**How rules work:** Each rule measures violations and returns a count. When we say a rule "fails if X", we mean the rule reports violations when X is true. Whether violations constitute "failure" depends on how the consumer (CLI, CI, agent) interprets severity. See [Architecture Guide](architecture.md#core-concepts) for details.
+
 ## Rule Support Matrix
 
 | Rule | Description | DuckDB | PostgreSQL | SQL Server | Parquet Preplan |
@@ -18,6 +20,10 @@ Kontra provides 10 built-in validation rules for common data quality checks. Eac
 | `custom_sql_check` | User SQL | Polars | - | - | - |
 
 *SQL Server regex uses PATINDEX with limited pattern support.
+
+**Execution tier notes:**
+- **SQL/Polars**: Return exact violation counts
+- **Metadata (Preplan)**: Can only prove pass (0 violations) or fail (≥1 violation). Reports `failed_count: 1` for any failure. Use `--preplan off` for exact counts.
 
 ---
 
@@ -289,7 +295,7 @@ Checks that a column has the expected data type.
 
 ## custom_sql_check
 
-Executes a custom SQL query for validation. The query should return a single integer value representing the count of failures.
+Escape hatch for custom validation logic. Unlike declarative rules, this directly executes your SQL and reports the returned count as violations.
 
 ```yaml
 - name: custom_sql_check

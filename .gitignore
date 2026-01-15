@@ -78,3 +78,7 @@ data/
 *.temp
 tmp/
 temp/
+
+# --- Ideas Backlog ---
+# Personal ideas/brainstorming (not tracked)
+docs/ideas-backlog.md

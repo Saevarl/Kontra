@@ -124,4 +124,60 @@ Wait for clear use case before implementing.
 
 ---
 
-*Last updated: 2026-01-13*
+## Unique Rule Semantic Mismatch
+
+**Status**: Bug/Design Decision
+
+Discovered in tier equivalence testing - `unique` rule has different semantics between SQL and Polars:
+
+- **PostgreSQL SQL**: `COUNT(*) - COUNT(DISTINCT col)` = counts "extra rows beyond unique"
+- **Polars**: `is_duplicated().sum()` = counts "all rows participating in duplicates"
+
+For data with user_ids `[0-99, 0, 1, 2]`:
+- SQL returns 3 (103 total - 100 distinct = 3 extra)
+- Polars returns 6 (0, 1, 2 each appear twice = 6 rows)
+
+### Options
+
+1. **Change Polars to match SQL**: Count extra rows, not all duplicate rows
+2. **Change SQL to match Polars**: Use window function to count all duplicate rows
+3. **Document as intentional**: Different semantics, user picks based on need
+
+Currently masked because DuckDB doesn't support unique pushdown (falls back to Polars).
+
+---
+
+## Scout → Validate One-Liner
+
+**Status**: Backlog
+
+Convenience API for profiling data, generating rules, and validating in one pass without reading data twice.
+
+### Current State
+
+```python
+# Works but reads data twice
+result = kontra.validate(df, rules=kontra.suggest_rules(kontra.scout(df)).to_dict())
+```
+
+### Proposed Options
+
+1. **Single function**: `kontra.validate_with_suggestions(data, preset="standard")`
+2. **Expose DataFrame from profile**: `profile._df` or `profile.dataframe` for reuse
+3. **Pipeline builder**: `kontra.pipeline(data).scout().suggest().validate()`
+
+### Technical Notes
+
+- Scout already materializes the DataFrame internally
+- Could cache/expose it for subsequent validate call
+- Pipeline approach enables lazy chaining
+
+### Open Questions
+
+1. Should suggestions be filtered by confidence before validation?
+2. Return both profile and result, or just result?
+3. CLI equivalent: `kontra validate --auto-contract data.parquet`?
+
+---
+
+*Last updated: 2026-01-15*

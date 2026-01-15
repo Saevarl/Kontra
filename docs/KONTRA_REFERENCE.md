@@ -318,6 +318,8 @@ Kontra can use this to **prove rules without reading data**:
 | `min_rows` | If `total_rows >= threshold` → PASS |
 | `max_rows` | If `total_rows <= threshold` → PASS |
 
+**Note:** Preplan can prove PASS (0 violations) or FAIL (violations exist), but cannot determine exact violation counts. When preplan detects violations, it reports `failed_count: 1` to indicate "at least one". For exact counts, use `--preplan off`.
+
 **PostgreSQL** has `pg_stats` (populated by `ANALYZE`):
 - `reltuples` - estimated row count
 - `null_frac` - fraction of nulls per column (0.0 = no nulls)

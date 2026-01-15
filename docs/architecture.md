@@ -10,6 +10,31 @@ This document explains how Kontra works internally, for contributors and those c
 4. **Agentic-first**: Built for LLM integration from the ground up
 5. **Progressive disclosure**: Simple surface, infinite depth
 
+## Core Concepts
+
+**Kontra is a measurement engine, not a decision engine.**
+
+A **rule** is a deterministic function that measures a property of a dataset and returns a violation count.
+
+When executed, a rule produces:
+
+- A **violation count** (how many rows/values violate the property)
+- **Execution metadata** (which tier resolved it, timing)
+- **Classification hints** (severity tag)
+
+Kontra does not decide what constitutes "failure" or trigger alerts. Those decisions belong to the consuming system—whether that's the CLI, a CI pipeline, an agent, or a dashboard.
+
+This separation matters:
+
+| Concept | Engine responsibility | Consumer responsibility |
+|---------|----------------------|------------------------|
+| Violation count | Measure it | Decide if it's acceptable |
+| Severity | Attach as metadata | Interpret (block pipeline, warn, ignore) |
+| Exit codes | Not applicable | CLI maps blocking failures → exit 1 |
+| Thresholds | Not applicable | Consumer defines acceptable violation % |
+
+The Kontra CLI is one consumer of the engine. Other consumers may interpret results differently.
+
 ## Execution Flow
 
 ```
@@ -25,7 +50,14 @@ Merge results (deterministic order: preplan → SQL → Polars) → Report
 
 ## Three-Tier Execution
 
-Kontra uses a hybrid execution model that automatically selects the fastest path for each rule:
+Kontra uses a hybrid execution model that automatically selects the fastest path for each rule.
+
+**All tiers produce semantically equivalent pass/fail outcomes.** The tier affects *how* the measurement is obtained, not *whether* violations exist.
+
+- **SQL and Polars**: Return exact violation counts
+- **Metadata preplan**: Can only prove "pass" (0 violations) or "fail" (≥1 violation). When preplan detects violations, it reports `failed_count: 1` to indicate "at least one" - the exact count requires a scan
+
+This means if you need exact violation counts, disable preplan (`--preplan off`). For pass/fail decisions, all tiers agree.
 
 ### Tier 1: Metadata Preplan
 

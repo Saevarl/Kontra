@@ -162,10 +162,13 @@ for rule in result.rules:
     rule.rule_id       # str - e.g., "COL:user_id:not_null"
     rule.name          # str - e.g., "not_null"
     rule.passed        # bool
-    rule.failed_count  # int - Number of failing rows
+    rule.failed_count  # int - Number of failing rows (see note below)
     rule.message       # str - Human-readable message
     rule.severity      # str - "blocking" | "warning" | "info"
     rule.source        # str - "metadata" | "sql" | "polars"
+
+# Note: When rule.source == "metadata" (preplan), failed_count is 1 for any
+# failure (meaning "at least one violation"). For exact counts, use preplan="off".
 
 # Filter results
 result.blocking_failures   # List of failed blocking rules
