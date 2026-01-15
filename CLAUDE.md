@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Kontra is a developer-first data quality validation engine. It validates datasets (Parquet, CSV, PostgreSQL, SQL Server) against contracts defined in YAML, supporting local files, S3/cloud storage, and database tables. The engine uses a hybrid execution model combining metadata-only analysis, SQL pushdown, and Polars-based execution.
+Kontra is a developer-first data quality **measurement engine**. It measures dataset properties against declarative rules, returning violation counts and metadata. Consumers (CLI, CI, agents) interpret results—Kontra measures, it doesn't decide.
+
+Supports Parquet, CSV, PostgreSQL, SQL Server, local files, and S3. Uses a hybrid execution model: metadata preplan → SQL pushdown → Polars.
 
 ## Key Commands
 
@@ -143,8 +145,9 @@ src/kontra/
 - Use `@pytest.mark.slow` for tests with 1M+ rows
 - Use `@pytest.mark.integration` for end-to-end tests
 - Determinism tests verify identical inputs produce identical outputs
+- Tier equivalence tests verify all execution paths agree on violation existence
 - CLI tests use `typer.testing.CliRunner`
-- Coverage: ~70% with 319+ tests
+- 430+ tests
 
 ### Test Files
 
@@ -155,19 +158,24 @@ src/kontra/
 - `tests/test_config_settings.py` - Configuration system tests
 - `tests/test_scout.py` - ScoutProfiler tests
 - `tests/test_state.py` - State management tests
+- `tests/test_tier_equivalence.py` - Verify all tiers agree on violation existence
 - `tests/test_rules_*.py` - Individual rule tests
 
 ## Key Patterns
 
-1. **Deterministic execution**: Result order is fixed (preplan → SQL → Polars). Rule IDs are stable.
+1. **Measurement, not decision**: Kontra returns violation counts. Severity is metadata. Consumers interpret what counts as "failure".
 
-2. **Graceful fallback**: SQL pushdown failure silently continues with Polars execution.
+2. **Tier equivalence**: All execution tiers (preplan, SQL, Polars) agree on whether violations exist. Preplan reports `failed_count: 1` as lower bound; SQL/Polars return exact counts.
 
-3. **CSV handling modes** (`--csv-mode`): `auto` tries DuckDB, falls back to staging CSV→Parquet; `duckdb` uses DuckDB only; `parquet` forces staging.
+3. **Deterministic execution**: Result order is fixed (preplan → SQL → Polars). Rule IDs are stable.
 
-4. **Environment variables**: `KONTRA_VERBOSE` for detailed errors, `KONTRA_IO_DEBUG` for I/O metrics. AWS credentials via standard env vars. PostgreSQL via `PGHOST`, `PGUSER`, etc.
+4. **Graceful fallback**: SQL pushdown failure silently continues with Polars execution.
 
-5. **Named Datasources**: Define datasources in `.kontra/config.yml`, reference as `prod_db.users` in contracts or CLI.
+5. **CSV handling modes** (`--csv-mode`): `auto` tries DuckDB, falls back to staging CSV→Parquet; `duckdb` uses DuckDB only; `parquet` forces staging.
+
+6. **Environment variables**: `KONTRA_VERBOSE` for detailed errors, `KONTRA_IO_DEBUG` for I/O metrics. AWS credentials via standard env vars. PostgreSQL via `PGHOST`, `PGUSER`, etc.
+
+7. **Named Datasources**: Define datasources in `.kontra/config.yml`, reference as `prod_db.users` in contracts or CLI.
 
 ## Data Sources
 
