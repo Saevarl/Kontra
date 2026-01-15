@@ -137,12 +137,13 @@ class RuleExecutionPlan:
             counts = counts_df.row(0, named=True)
             for p in compiled.predicates:
                 failed_count = int(counts[p.rule_id])
+                passed = failed_count == 0
                 vec_results.append(
                     {
                         "rule_id": p.rule_id,
-                        "passed": failed_count == 0,
+                        "passed": passed,
                         "failed_count": failed_count,
-                        "message": p.message,
+                        "message": "Passed" if passed else p.message,
                         "execution_source": "polars",
                         "severity": rule_severity_map.get(p.rule_id, "blocking"),
                     }

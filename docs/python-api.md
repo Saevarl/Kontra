@@ -113,6 +113,10 @@ rules.freshness("column", max_age="24h")  # 24h, 7d, 1w
 
 # All rules accept optional severity
 rules.not_null("email", severity="warning")  # "blocking" | "warning" | "info"
+
+# Multiple rules on same column: use id parameter to disambiguate
+rules.range("score", min=0, max=100, id="score_full_range")
+rules.range("score", min=80, max=100, id="score_strict_range")
 ```
 
 ### Validation Options
@@ -816,6 +820,8 @@ llm_context = f"""
 | `kontra.get_config_path()` | Get current config path override |
 
 ### Rules Helpers
+
+All rules accept optional `severity` ("blocking" | "warning" | "info") and `id` (custom rule ID) parameters.
 
 | Function | Description |
 |----------|-------------|

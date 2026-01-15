@@ -433,6 +433,34 @@ def scout_diff(
 # =============================================================================
 
 
+def _resolve_contract_fingerprint(contract: str, store: Any) -> Optional[str]:
+    """
+    Resolve a contract name or path to its fingerprint.
+
+    Args:
+        contract: Contract name or file path
+        store: State store instance
+
+    Returns:
+        Contract fingerprint or None if not found
+    """
+    from kontra.state.fingerprint import fingerprint_contract
+    from kontra.config.loader import ContractLoader
+
+    # If it's a file path, load contract and compute semantic fingerprint
+    if os.path.isfile(contract):
+        contract_obj = ContractLoader.from_path(contract)
+        return fingerprint_contract(contract_obj)
+
+    # Assume it's a contract name - search stored states
+    for fp in store.list_contracts():
+        history = store.get_history(fp, limit=1)
+        if history and history[0].contract_name == contract:
+            return fp
+
+    return None
+
+
 def list_runs(contract: str) -> List[Dict[str, Any]]:
     """
     List past validation runs for a contract.
@@ -450,10 +478,15 @@ def list_runs(contract: str) -> List[Dict[str, Any]]:
         return []
 
     try:
-        states = store.list_states(contract)
+        contract_fp = _resolve_contract_fingerprint(contract, store)
+        if contract_fp is None:
+            return []
+
+        states = store.get_history(contract_fp, limit=100)
         return [
             {
-                "id": s.contract_fingerprint,
+                "id": s.run_at.isoformat(),
+                "fingerprint": s.contract_fingerprint,
                 "timestamp": s.run_at,
                 "passed": s.summary.passed,
                 "total_rules": s.summary.total_rules,
@@ -488,7 +521,26 @@ def get_run(
         return None
 
     try:
-        state = store.get_state(contract, run_id=run_id)
+        contract_fp = _resolve_contract_fingerprint(contract, store)
+        if contract_fp is None:
+            return None
+
+        # Get history and find specific run or latest
+        states = store.get_history(contract_fp, limit=100)
+        if not states:
+            return None
+
+        state = None
+        if run_id:
+            # Find specific run by timestamp ID
+            for s in states:
+                if s.run_at.isoformat() == run_id:
+                    state = s
+                    break
+        else:
+            # Get latest (first in list, newest first)
+            state = states[0]
+
         if state is None:
             return None
 
@@ -536,7 +588,11 @@ def has_runs(contract: str) -> bool:
         return False
 
     try:
-        states = store.list_states(contract)
+        contract_fp = _resolve_contract_fingerprint(contract, store)
+        if contract_fp is None:
+            return False
+
+        states = store.get_history(contract_fp, limit=1)
         return len(states) > 0
     except Exception as e:
         log_exception(_logger, "Failed to check runs", e)

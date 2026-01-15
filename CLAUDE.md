@@ -183,7 +183,7 @@ These patterns caused bugs in the past. Avoid them:
 
 1. **NaN vs NULL**: Polars treats NaN and NULL differently. `is_null()` does NOT catch NaN. For float columns that might have NaN, use `include_nan=True` parameter on `not_null` rule, or explicitly check with `is_nan()`.
 
-2. **Fingerprint consistency**: Use `fingerprint_contract(contract_obj)` (semantic, based on name+rules) not `fingerprint_contract_file(path)` (file hash). The engine uses semantic fingerprints, so lookups must too.
+2. **Fingerprint consistency**: Use `fingerprint_contract(contract_obj)` (semantic, based on name+rules) not `fingerprint_contract_file(path)` (file hash). The engine uses semantic fingerprints, so lookups must too. All history/state functions must resolve contract names to fingerprints first.
 
 3. **Test all code paths**: Features like `stats='profile'` were broken because no test exercised that path. Every CLI flag and parameter combination needs a test.
 
@@ -194,6 +194,10 @@ These patterns caused bugs in the past. Avoid them:
 6. **Service vs CLI patterns**: CLI discovers config from cwd. Services need explicit config injection via `kontra.set_config(path)`. Don't assume cwd-based discovery works everywhere.
 
 7. **Document edge cases**: If a rule has non-obvious behavior (like `allowed_values` treating NULL as failure even if NULL is in the list), document it explicitly in docstrings and rules.md.
+
+8. **Differentiate pass/fail messages**: Rule messages should say "Passed" when passing, not the failure description. The vectorized execution path (`execution_plan.py`) must check `passed` before setting the message.
+
+9. **API completeness**: If a parameter exists in dict format (like `id` for rules), the helper functions should support it too. Users shouldn't need to fall back to dict format for common use cases.
 
 ## Data Sources
 
