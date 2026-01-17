@@ -72,6 +72,7 @@ Desktop.ini
 # --- Local Data ---
 # Large data files for local testing
 data/
+*.parquet
 
 # --- Temporary Files ---
 *.tmp
@@ -84,3 +85,11 @@ temp/
 docs/ideas-backlog.md
 docs/ROADMAP.md
 docs/KONTRA_REFERENCE.md
+
+# --- Internal Root Docs ---
+# Development notes, not for public repo
+ADVERSARIAL_FINDINGS.md
+BUGCHECKLIST.md
+CODE_QUALITY_FIXES.md
+FEEDBACK.md
+KONTRA_FEEDBACK.md
