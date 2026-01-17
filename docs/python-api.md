@@ -200,6 +200,16 @@ result = kontra.validate(..., sample=10, sample_budget=100)  # More samples
 result = kontra.validate(..., sample=0)  # Disable sampling
 ```
 
+For token efficiency (e.g., when working with LLMs), limit which columns appear in samples:
+
+```python
+# Only include specific columns in samples
+result = kontra.validate(..., sample_columns=["id", "email", "status"])
+
+# Only include columns relevant to each rule (+ _row_index)
+result = kontra.validate(..., sample_columns="relevant")
+```
+
 For more samples than cached, use `sample_failures()`:
 
 ```python
@@ -207,6 +217,57 @@ samples = result.sample_failures("COL:email:not_null", n=20)
 ```
 
 **Note**: For database connections (BYOC), keep the connection open until done with `sample_failures()`.
+
+### Pipeline Validation Decorator
+
+Validate data returned from functions with the `@kontra.validate_decorator`:
+
+```python
+import kontra
+from kontra import rules
+
+@kontra.validate_decorator(
+    rules=[rules.not_null("id"), rules.unique("email")],
+    on_fail="raise",  # "raise" | "warn" | "return_result"
+)
+def load_users():
+    return pl.read_parquet("users.parquet")
+
+# Call as normal - validation happens automatically
+users = load_users()  # Raises ValidationError if validation fails
+```
+
+**`on_fail` modes:**
+
+| Mode | Behavior |
+|------|----------|
+| `"raise"` | Raise `ValidationError` on blocking failures (default) |
+| `"warn"` | Log warning, return data anyway |
+| `"return_result"` | Return `(data, ValidationResult)` tuple |
+
+```python
+# Warn but don't fail
+@kontra.validate_decorator(rules=[...], on_fail="warn")
+def fetch_data():
+    ...
+
+# Get validation result alongside data
+@kontra.validate_decorator(rules=[...], on_fail="return_result")
+def get_orders():
+    ...
+
+data, result = get_orders()
+if not result.passed:
+    print(f"Validation issues: {result.failed_count}")
+```
+
+Works with contract files too:
+
+```python
+@kontra.validate_decorator(contract="contracts/users.yml", on_fail="raise")
+def load_users():
+    return pl.read_parquet("users.parquet")
+```
 
 ## Available Rules
 
@@ -224,6 +285,7 @@ rules.regex("column", r"^[A-Z]{2}\d{4}$")
 # Cross-column checks
 rules.compare("end_date", "start_date", ">=")
 rules.conditional_not_null("shipping_date", when="status == 'shipped'")
+rules.conditional_range("discount", when="tier == 'premium'", min=10, max=50)
 
 # Dataset checks
 rules.min_rows(1000)
@@ -242,8 +304,15 @@ result = kontra.validate("data.parquet", rules=[...])
 
 # Status
 result.passed          # bool
+result.total_rows      # int - row count of validated dataset
 result.total_rules     # int
 result.failed_count    # int
+
+# Calculate failure fractions (LLM-friendly)
+for rule in result.rules:
+    if rule.failed_count > 0:
+        fraction = rule.failed_count / result.total_rows
+        print(f"{rule.rule_id}: {fraction:.2%} of rows failed")
 
 # Iterate rules
 for rule in result.rules:
@@ -355,6 +424,7 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 | `kontra.scout(data, **opts)` | Profile data |
 | `kontra.suggest_rules(profile)` | Generate rules from profile |
 | `kontra.diff(contract, **opts)` | Compare validation runs |
+| `@kontra.validate_decorator(...)` | Decorator for pipeline validation |
 
 ### History Functions
 
@@ -368,7 +438,7 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 
 | Type | Key Properties |
 |------|----------------|
-| `ValidationResult` | `passed`, `rules`, `blocking_failures`, `warnings`, `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
+| `ValidationResult` | `passed`, `total_rows`, `rules`, `blocking_failures`, `warnings`, `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
 | `FailureSamples` | `count`, `rule_id`, `to_dict()`, `to_json()`, `to_llm()` (iterable) |
 | `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column`, `samples`, `samples_source`, `samples_reason` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
@@ -388,12 +458,25 @@ from kontra.errors import (
     ContractParseError,
     DataNotFoundError,
     ConnectionError,
+    DuplicateRuleIdError,
 )
+from kontra import ValidationError  # raised by @validate_decorator
 
 try:
     result = kontra.validate("data.parquet", "contract.yml")
 except ContractNotFoundError as e:
     print(f"Contract not found: {e}")
+except DuplicateRuleIdError as e:
+    # Multiple rules with same auto-generated ID
+    print(f"Duplicate rule ID: {e.rule_id}")
+    print(f"Add explicit 'id' field to distinguish rules")
 except KontraError as e:
     print(f"Kontra error: {e}")
+
+# ValidationError from decorator
+try:
+    users = load_users()  # decorated function
+except ValidationError as e:
+    print(f"Validation failed: {e}")
+    print(f"Failed rules: {len(e.result.blocking_failures)}")
 ```

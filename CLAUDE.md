@@ -103,7 +103,7 @@ src/kontra/
 │   └── sqlserver.py       # SQL Server stats queries
 ├── reporters/             # JSON & Rich output
 ├── rules/
-│   ├── builtin/           # 12 built-in rules
+│   ├── builtin/           # 13 built-in rules
 │   ├── base.py            # BaseRule abstract class
 │   ├── factory.py         # Rule instantiation
 │   └── execution_plan.py  # CompiledPlan
@@ -124,9 +124,9 @@ src/kontra/
 
 **Rule ID derivation** (in `factory.py`): explicit ID → use as-is; column param exists → `COL:{column}:{name}`; else → `DATASET:{name}`
 
-**Built-in Rules** (12):
+**Built-in Rules** (13):
 - Column: `not_null`, `unique`, `allowed_values`, `range`, `regex`, `dtype`
-- Cross-column: `compare`, `conditional_not_null`
+- Cross-column: `compare`, `conditional_not_null`, `conditional_range`
 - Dataset: `min_rows`, `max_rows`, `freshness`, `custom_sql_check`
 
 **Materializers**: Load data with column projection. DuckDBMaterializer handles Parquet/CSV/S3, PostgresMaterializer and SQLServerMaterializer for databases.

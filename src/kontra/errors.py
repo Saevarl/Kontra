@@ -135,6 +135,53 @@ class RuleParameterError(RuleError):
         )
 
 
+class DuplicateRuleIdError(RuleError):
+    """Duplicate rule ID detected in contract.
+
+    This error occurs when multiple rules resolve to the same ID.
+    The automatic ID format is:
+      - COL:{column}:{rule_name} for column-based rules
+      - DATASET:{rule_name} for dataset-level rules
+    """
+
+    def __init__(
+        self,
+        rule_id: str,
+        rule_name: str,
+        rule_index: int,
+        conflict_index: int,
+        column: Optional[str] = None,
+    ):
+        self.rule_id = rule_id
+        self.rule_name = rule_name
+        self.rule_index = rule_index
+        self.conflict_index = conflict_index
+        self.column = column
+
+        # Build suggestion with example
+        if column:
+            example = (
+                f"    - name: {rule_name}\n"
+                f"      id: {column}_{rule_name}_v2  # Choose a unique ID\n"
+                f"      params:\n"
+                f"        column: {column}"
+            )
+        else:
+            example = (
+                f"    - name: {rule_name}\n"
+                f"      id: {rule_name}_v2  # Choose a unique ID"
+            )
+
+        super().__init__(
+            f"Duplicate rule ID '{rule_id}' in contract",
+            context=f"Rule at index {rule_index} conflicts with rule at index {conflict_index}",
+            suggestions=[
+                "Multiple rules resolved to the same ID",
+                f"Add an explicit 'id' field to distinguish rules:\n\n{example}",
+            ],
+        )
+
+
 # =============================================================================
 # Connection Errors
 # =============================================================================
@@ -360,6 +407,86 @@ class UnknownEnvironmentError(ConfigError):
                 "Or remove the --env flag to use defaults",
             ],
         )
+
+
+# =============================================================================
+# State Errors
+# =============================================================================
+
+
+class StateError(KontraError):
+    """Base class for state-related errors."""
+
+    pass
+
+
+class StateCorruptedError(StateError):
+    """State files are corrupted or unreadable."""
+
+    def __init__(self, contract: str, error: str):
+        super().__init__(
+            f"State data is corrupted for contract '{contract}': {error}",
+            suggestions=[
+                "Delete the corrupted state files in .kontra/state/",
+                "Run 'kontra validate' again to regenerate state",
+                "Check if state files were modified externally",
+            ],
+        )
+
+
+class StateNotFoundError(StateError):
+    """No state history exists for the contract."""
+
+    def __init__(self, contract: str):
+        super().__init__(
+            f"No validation history found for contract '{contract}'",
+            suggestions=[
+                "Run 'kontra validate' at least twice to generate history for diff",
+                "Check the contract name is correct",
+            ],
+        )
+
+
+# =============================================================================
+# Validation Errors
+# =============================================================================
+
+
+class ValidationError(KontraError):
+    """
+    Raised when validation fails in a decorated function.
+
+    This error is raised by the @kontra.validate() decorator when
+    on_fail="raise" and the decorated function returns data that
+    fails blocking validation rules.
+
+    Attributes:
+        result: The ValidationResult with details about failures
+    """
+
+    def __init__(self, result: "ValidationResult", message: Optional[str] = None):
+        from kontra.api.results import ValidationResult  # noqa: F811
+
+        self.result = result
+        if message is None:
+            blocking = [r for r in result.rules if not r.passed and r.severity == "blocking"]
+            message = (
+                f"Validation failed: {len(blocking)} blocking rule(s) failed "
+                f"({result.failed_count} total violations)"
+            )
+        # Don't use suggestions for this - the message is clear
+        super().__init__(message)
+
+    def _format(self) -> str:
+        # Override to not add "Try:" section
+        return self.message
+
+
+# Type hint for ValidationResult (avoid circular import)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kontra.api.results import ValidationResult
 
 
 # =============================================================================

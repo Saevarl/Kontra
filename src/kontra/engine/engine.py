@@ -70,6 +70,7 @@ import kontra.rules.builtin.regex  # noqa: F401
 import kontra.rules.builtin.unique  # noqa: F401
 import kontra.rules.builtin.compare  # noqa: F401
 import kontra.rules.builtin.conditional_not_null  # noqa: F401
+import kontra.rules.builtin.conditional_range  # noqa: F401
 
 
 # --------------------------------------------------------------------------- #
@@ -478,6 +479,7 @@ class ValidationEngine:
         # Summary (use the plan's summary method for consistency)
         summary = plan.summary(all_results)
         summary["dataset_name"] = self.contract.datasource if self.contract else "dataframe"
+        summary["total_rows"] = int(self.df.height) if self.df is not None else 0
         engine_label = "polars (dataframe mode)"
 
         # Report
@@ -609,6 +611,7 @@ class ValidationEngine:
         preplan_row_groups: Optional[List[int]] = None
         preplan_columns: Optional[List[str]] = None
         preplan_analyze_ms = 0
+        preplan_total_rows: Optional[int] = None  # Track row count from preplan metadata
         preplan_summary: Dict[str, Any] = {
             "enabled": self.preplan in {"on", "auto"},
             "effective": False,
@@ -675,6 +678,7 @@ class ValidationEngine:
                 preplan_row_groups = list(pre.manifest_row_groups or [])
                 preplan_columns = list(pre.manifest_columns or [])
                 preplan_effective = True
+                preplan_total_rows = pre.stats.get("total_rows")
 
                 rg_total = pre.stats.get("rg_total", None)
                 rg_kept = len(preplan_row_groups)
@@ -934,6 +938,15 @@ class ValidationEngine:
         # 8) Summary
         summary = plan.summary(results)
         summary["dataset_name"] = self.contract.datasource
+        # Row count priority: SQL executor > DataFrame > preplan metadata > 0
+        if sql_row_count is not None:
+            summary["total_rows"] = int(sql_row_count)
+        elif self.df is not None:
+            summary["total_rows"] = int(self.df.height)
+        elif preplan_total_rows is not None:
+            summary["total_rows"] = int(preplan_total_rows)
+        else:
+            summary["total_rows"] = 0
         engine_label = (
             f"{materializer_name}+polars "
             f"(preplan:{'on' if preplan_effective else 'off'}, "

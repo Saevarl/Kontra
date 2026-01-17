@@ -305,6 +305,63 @@ def agg_conditional_not_null(
     )
 
 
+def agg_conditional_range(
+    column: str,
+    when_column: str,
+    when_op: str,
+    when_value: Any,
+    min_val: Any,
+    max_val: Any,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    Count rows where column is outside range when condition is met.
+
+    Args:
+        column: Column to check range
+        when_column: Column in the condition
+        when_op: Condition operator
+        when_value: Condition value
+        min_val: Minimum allowed value (inclusive)
+        max_val: Maximum allowed value (inclusive)
+        rule_id: Rule identifier for alias
+        dialect: SQL dialect
+
+    Returns:
+        SQL aggregate expression
+    """
+    col = esc_ident(column, dialect)
+    when_col = esc_ident(when_column, dialect)
+    r_id = esc_ident(rule_id, dialect)
+    sql_op = SQL_OP_MAP.get(when_op, when_op)
+
+    # Handle NULL value in condition
+    if when_value is None:
+        if when_op == "==":
+            condition = f"{when_col} IS NULL"
+        elif when_op == "!=":
+            condition = f"{when_col} IS NOT NULL"
+        else:
+            condition = "1=0"  # Other operators with NULL -> always false
+    else:
+        val = lit_value(when_value, dialect)
+        condition = f"{when_col} {sql_op} {val}"
+
+    # Build range violation part: NULL OR outside range
+    range_parts = [f"{col} IS NULL"]
+    if min_val is not None:
+        range_parts.append(f"{col} < {min_val}")
+    if max_val is not None:
+        range_parts.append(f"{col} > {max_val}")
+    range_violation = " OR ".join(range_parts)
+
+    # Count failures: condition is TRUE AND (column is NULL OR outside range)
+    return (
+        f"SUM(CASE WHEN ({condition}) AND ({range_violation}) THEN 1 ELSE 0 END) AS {r_id}"
+    )
+
+
 # Mapping from rule kind to failure_mode
 RULE_KIND_TO_FAILURE_MODE = {
     "not_null": "null_values",
@@ -319,6 +376,7 @@ RULE_KIND_TO_FAILURE_MODE = {
     "custom_sql_check": "custom_check_failed",
     "compare": "comparison_failed",
     "conditional_not_null": "conditional_null",
+    "conditional_range": "conditional_range_violation",
 }
 
 

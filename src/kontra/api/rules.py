@@ -128,8 +128,12 @@ def range(
         Rule dict for use with kontra.validate()
 
     Raises:
-        ValueError: If min > max
+        ValueError: If neither min nor max is provided, or if min > max
     """
+    # Validate at least one bound is provided
+    if min is None and max is None:
+        raise ValueError("range rule: at least one of 'min' or 'max' must be provided")
+
     # Validate min <= max
     if min is not None and max is not None and min > max:
         raise ValueError(f"range rule: min ({min}) must be <= max ({max})")
@@ -331,6 +335,52 @@ def conditional_not_null(
     return _build_rule("conditional_not_null", {"column": column, "when": when}, severity, id)
 
 
+def conditional_range(
+    column: str,
+    when: str,
+    min: Optional[Union[int, float]] = None,
+    max: Optional[Union[int, float]] = None,
+    severity: str = "blocking",
+    id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Column must be within range when a condition is met.
+
+    Args:
+        column: Column to check range
+        when: Condition expression (e.g., "customer_type == 'premium'")
+        min: Minimum allowed value (inclusive)
+        max: Maximum allowed value (inclusive)
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (use when applying multiple rules)
+
+    At least one of `min` or `max` must be provided.
+
+    Condition syntax:
+        column_name operator value
+
+        Supported operators: ==, !=, >, >=, <, <=
+        Supported values: 'string', 123, 123.45, true, false, null
+
+    When the condition is TRUE:
+        - NULL in column = failure (can't compare NULL)
+        - Value outside [min, max] = failure
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Example:
+        # discount_percent must be between 10 and 50 for premium customers
+        rules.conditional_range("discount_percent", "customer_type == 'premium'", min=10, max=50)
+    """
+    params = {"column": column, "when": when}
+    if min is not None:
+        params["min"] = min
+    if max is not None:
+        params["max"] = max
+    return _build_rule("conditional_range", params, severity, id)
+
+
 # Module-level access for `from kontra import rules` then `rules.not_null(...)`
 class _RulesModule:
     """
@@ -351,6 +401,7 @@ class _RulesModule:
     custom_sql_check = staticmethod(custom_sql_check)
     compare = staticmethod(compare)
     conditional_not_null = staticmethod(conditional_not_null)
+    conditional_range = staticmethod(conditional_range)
 
     def __repr__(self) -> str:
         return "<kontra.rules module>"

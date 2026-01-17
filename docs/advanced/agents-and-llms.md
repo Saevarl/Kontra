@@ -19,7 +19,7 @@ print(result.to_llm())
 # VALIDATION: my_contract FAILED
 # BLOCKING: COL:email:not_null (523 nulls), COL:status:allowed_values (12 invalid)
 # WARNING: COL:age:range (3 out of bounds)
-# PASSED: 12 rules
+# PASSED: 13 rules
 
 # Profile
 profile = kontra.scout("data.parquet")

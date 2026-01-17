@@ -283,6 +283,7 @@ class ValidationResult:
     Properties:
         passed: True if all blocking rules passed
         dataset: Dataset name/path
+        total_rows: Number of rows in the validated dataset
         total_rules: Total number of rules evaluated
         passed_count: Number of rules that passed
         failed_count: Number of blocking rules that failed
@@ -294,10 +295,15 @@ class ValidationResult:
 
     Methods:
         sample_failures(rule_id, n=5): Get sample of failing rows for a rule
+
+    Note:
+        Consumers can compute failure fractions per rule:
+        `rule.failed_count / result.total_rows`
     """
 
     passed: bool
     dataset: str
+    total_rows: int
     total_rules: int
     passed_count: int
     failed_count: int
@@ -342,6 +348,7 @@ class ValidationResult:
         rule_objects: Optional[List[Any]] = None,
         sample: int = 5,
         sample_budget: int = 50,
+        sample_columns: Optional[Union[List[str], str]] = None,
     ) -> "ValidationResult":
         """Create from ValidationEngine.run() result dict.
 
@@ -352,6 +359,7 @@ class ValidationResult:
             rule_objects: Rule objects for sample_failures() predicates
             sample: Per-rule sample cap (0 to disable)
             sample_budget: Global sample cap across all rules
+            sample_columns: Columns to include in samples (None=all, list=specific, "relevant"=rule columns)
         """
         summary = result.get("summary", {})
         results_list = result.get("results", [])
@@ -367,10 +375,14 @@ class ValidationResult:
         blocking_failed = sum(1 for r in rules if not r.passed and r.severity == "blocking")
         warning_failed = sum(1 for r in rules if not r.passed and r.severity == "warning")
 
+        # Extract total_rows from summary
+        total_rows = summary.get("total_rows", 0)
+
         # Create instance first (need it for sampling methods)
         instance = cls(
             passed=summary.get("passed", blocking_failed == 0),
             dataset=summary.get("dataset_name", dataset),
+            total_rows=total_rows,
             total_rules=total,
             passed_count=passed_count,
             failed_count=blocking_failed,
@@ -384,7 +396,7 @@ class ValidationResult:
 
         # Perform eager sampling if enabled
         if sample > 0 and rule_objects is not None:
-            instance._perform_eager_sampling(sample, sample_budget, rule_objects)
+            instance._perform_eager_sampling(sample, sample_budget, rule_objects, sample_columns)
 
         return instance
 
@@ -393,12 +405,19 @@ class ValidationResult:
         per_rule_cap: int,
         global_budget: int,
         rule_objects: List[Any],
+        sample_columns: Optional[Union[List[str], str]] = None,
     ) -> None:
         """
         Populate samples for each rule (eager sampling).
 
         Allocates samples to worst offenders first (highest failed_count).
         Respects per-rule cap and global budget.
+
+        Args:
+            per_rule_cap: Max samples per rule
+            global_budget: Total samples across all rules
+            rule_objects: Rule objects for predicates
+            sample_columns: Columns to include (None=all, list=specific, "relevant"=rule columns)
         """
         import polars as pl
 
@@ -465,9 +484,12 @@ class ValidationResult:
             # Calculate how many samples to get
             n = min(per_rule_cap, remaining_budget)
 
+            # Determine columns to include in samples
+            cols_to_include = self._resolve_sample_columns(sample_columns, rule_obj)
+
             # Try to get samples
             try:
-                samples = self._collect_samples_for_rule(rule_obj, predicate, n)
+                samples = self._collect_samples_for_rule(rule_obj, predicate, n, cols_to_include)
                 rule_result.samples = samples
                 # Only set samples_source if not already set (e.g., for metadata tier upgrade)
                 if rule_result.samples_source is None:
@@ -529,16 +551,67 @@ class ValidationResult:
 
         return True  # Default to sampleable
 
+    def _resolve_sample_columns(
+        self,
+        sample_columns: Optional[Union[List[str], str]],
+        rule_obj: Any,
+    ) -> Optional[List[str]]:
+        """
+        Resolve sample_columns to a list of column names.
+
+        Args:
+            sample_columns: None (all), list of names, or "relevant"
+            rule_obj: Rule object for "relevant" mode
+
+        Returns:
+            List of column names to include, or None for all columns
+        """
+        if sample_columns is None:
+            return None
+
+        if isinstance(sample_columns, list):
+            return sample_columns
+
+        if sample_columns == "relevant":
+            # Get columns from rule's required_columns() if available
+            cols = set()
+            if hasattr(rule_obj, "required_columns"):
+                cols.update(rule_obj.required_columns())
+
+            # Also check params for column names (required_columns() may be incomplete)
+            if hasattr(rule_obj, "params"):
+                params = rule_obj.params
+                if "column" in params:
+                    cols.add(params["column"])
+                if "left" in params:
+                    cols.add(params["left"])
+                if "right" in params:
+                    cols.add(params["right"])
+                if "when_column" in params:
+                    cols.add(params["when_column"])
+
+            return list(cols) if cols else None
+
+        # Unknown value - return all columns
+        return None
+
     def _collect_samples_for_rule(
         self,
         rule_obj: Any,
         predicate: Any,
         n: int,
+        columns: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Collect sample rows for a single rule.
 
         Uses the existing sampling infrastructure (SQL pushdown, Parquet predicate, etc.)
+
+        Args:
+            rule_obj: Rule object
+            predicate: Polars expression for filtering
+            n: Number of samples to collect
+            columns: Columns to include (None = all)
         """
         import polars as pl
 
@@ -552,13 +625,14 @@ class ValidationResult:
 
         # Check if SQL pushdown already filtered
         if "_row_index" in df.columns:
-            return df.head(n).to_dicts()
+            result_df = df.head(n)
+            return self._apply_column_projection(result_df, columns)
 
         # For Polars path, filter with predicate
         # Special case: unique rule - add duplicate count
         if getattr(rule_obj, "name", None) == "unique":
             column = rule_obj.params.get("column")
-            return (
+            result_df = (
                 df.with_row_index("_row_index")
                 .with_columns(
                     pl.col(column).count().over(column).alias("_duplicate_count")
@@ -566,21 +640,61 @@ class ValidationResult:
                 .filter(predicate)
                 .sort("_duplicate_count", descending=True)
                 .head(n)
-                .to_dicts()
             )
+            # For unique rule, always include _duplicate_count
+            if columns is not None:
+                columns = list(columns) + ["_duplicate_count"]
+            return self._apply_column_projection(result_df, columns)
         else:
-            return (
+            result_df = (
                 df.with_row_index("_row_index")
                 .filter(predicate)
                 .head(n)
-                .to_dicts()
             )
+            return self._apply_column_projection(result_df, columns)
+
+    def _apply_column_projection(
+        self,
+        df: Any,
+        columns: Optional[List[str]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Apply column projection to a DataFrame before converting to dicts.
+
+        Always includes _row_index if present.
+
+        Args:
+            df: Polars DataFrame
+            columns: Columns to include (None = all)
+
+        Returns:
+            List of row dicts
+        """
+        if columns is None:
+            return df.to_dicts()
+
+        # Always include _row_index and _duplicate_count if present
+        cols_to_select = set(columns)
+        if "_row_index" in df.columns:
+            cols_to_select.add("_row_index")
+        if "_duplicate_count" in df.columns:
+            cols_to_select.add("_duplicate_count")
+
+        # Only select columns that exist in the DataFrame
+        available_cols = set(df.columns)
+        cols_to_select = cols_to_select & available_cols
+
+        if not cols_to_select:
+            return df.to_dicts()
+
+        return df.select(sorted(cols_to_select)).to_dicts()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
             "passed": self.passed,
             "dataset": self.dataset,
+            "total_rows": self.total_rows,
             "total_rules": self.total_rules,
             "passed_count": self.passed_count,
             "failed_count": self.failed_count,
@@ -598,7 +712,7 @@ class ValidationResult:
         Token-optimized format for LLM context.
 
         Example output:
-            VALIDATION: my_contract FAILED
+            VALIDATION: my_contract FAILED (1000 rows)
             BLOCKING: COL:email:not_null (523 nulls), COL:status:allowed_values (12 invalid)
             WARNING: COL:age:range (3 out of bounds)
             PASSED: 15 rules
@@ -606,7 +720,8 @@ class ValidationResult:
         lines = []
 
         status = "PASSED" if self.passed else "FAILED"
-        lines.append(f"VALIDATION: {self.dataset} {status}")
+        rows_str = f" ({self.total_rows:,} rows)" if self.total_rows > 0 else ""
+        lines.append(f"VALIDATION: {self.dataset} {status}{rows_str}")
 
         # Blocking failures
         blocking = self.blocking_failures

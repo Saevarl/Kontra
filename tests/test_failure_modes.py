@@ -321,3 +321,291 @@ class TestCustomSqlCheckFailureMode:
         details = result["details"]
         assert details["failed_row_count"] == 2  # -5 and -3
         assert "query" in details
+
+
+class TestDuplicateRuleIdError:
+    """Tests for duplicate rule ID detection and error messages."""
+
+    def test_duplicate_rule_id_raises_error(self):
+        """Duplicate rule IDs raise DuplicateRuleIdError."""
+        import kontra
+        from kontra import rules
+        from kontra.errors import DuplicateRuleIdError
+
+        df = pl.DataFrame({"email": ["a@b.com", "c@d.com"]})
+
+        # Two not_null rules on the same column without explicit IDs
+        with pytest.raises(DuplicateRuleIdError) as exc_info:
+            kontra.validate(df, rules=[
+                rules.not_null("email"),
+                rules.not_null("email"),  # Duplicate
+            ], save=False)
+
+        error = exc_info.value
+        assert error.rule_id == "COL:email:not_null"
+        assert error.rule_name == "not_null"
+        assert error.column == "email"
+
+    def test_duplicate_rule_id_error_message(self):
+        """DuplicateRuleIdError has helpful error message."""
+        import kontra
+        from kontra import rules
+        from kontra.errors import DuplicateRuleIdError
+
+        df = pl.DataFrame({"email": ["a@b.com"]})
+
+        with pytest.raises(DuplicateRuleIdError) as exc_info:
+            kontra.validate(df, rules=[
+                rules.not_null("email"),
+                rules.not_null("email"),
+            ], save=False)
+
+        error_str = str(exc_info.value)
+        assert "COL:email:not_null" in error_str
+        assert "id:" in error_str  # Suggests adding explicit ID
+        assert "index" in error_str.lower()  # Shows which rules conflict
+
+    def test_explicit_id_avoids_collision(self):
+        """Explicit IDs prevent collision errors."""
+        import kontra
+        from kontra import rules
+
+        df = pl.DataFrame({"email": ["a@b.com", "c@d.com"]})
+
+        # Same rule type on same column, but with explicit IDs
+        result = kontra.validate(df, rules=[
+            rules.not_null("email", id="email_not_null_1"),
+            rules.not_null("email", id="email_not_null_2"),
+        ], save=False)
+
+        assert result.passed
+        assert len(result.rules) == 2
+        assert result.rules[0].rule_id == "email_not_null_1"
+        assert result.rules[1].rule_id == "email_not_null_2"
+
+    def test_duplicate_dataset_rule_id(self):
+        """Duplicate dataset-level rule IDs are detected."""
+        import kontra
+        from kontra.errors import DuplicateRuleIdError
+
+        df = pl.DataFrame({"id": list(range(10))})
+
+        # Two min_rows rules without explicit IDs
+        with pytest.raises(DuplicateRuleIdError) as exc_info:
+            kontra.validate(df, rules=[
+                {"name": "min_rows", "params": {"value": 5}},
+                {"name": "min_rows", "params": {"value": 10}},
+            ], save=False)
+
+        error = exc_info.value
+        assert error.rule_id == "DATASET:min_rows"
+        assert error.column is None  # Dataset-level rule
+
+    def test_duplicate_in_contract_file(self, tmp_path):
+        """Duplicate rule IDs in YAML contract raise error."""
+        import kontra
+        from kontra.errors import DuplicateRuleIdError
+
+        contract_path = tmp_path / "contract.yml"
+        contract_path.write_text("""
+name: test_contract
+datasource: placeholder
+rules:
+  - name: not_null
+    params:
+      column: email
+  - name: not_null
+    params:
+      column: email
+""")
+
+        df = pl.DataFrame({"email": ["a@b.com"]})
+
+        with pytest.raises(DuplicateRuleIdError):
+            kontra.validate(df, contract=str(contract_path), save=False)
+
+
+class TestUniqueNullHandling:
+    """Tests for unique rule NULL handling (BUG-002 fix)."""
+
+    def test_unique_nulls_not_treated_as_duplicates(self):
+        """NULLs should not be treated as duplicates (SQL semantics)."""
+        from kontra.rules.builtin.unique import UniqueRule
+
+        df = pl.DataFrame({"v": [None, None, None]})
+        rule = UniqueRule("unique", {"column": "v"})
+        result = rule.validate(df)
+
+        # Per SQL semantics: NULL != NULL, so no duplicates
+        assert result["passed"] is True
+        assert result["failed_count"] == 0
+
+    def test_unique_still_catches_real_duplicates(self):
+        """Real duplicate values should still be caught."""
+        from kontra.rules.builtin.unique import UniqueRule
+
+        df = pl.DataFrame({"v": ["a", "a", "b", None, None]})
+        rule = UniqueRule("unique", {"column": "v"})
+        result = rule.validate(df)
+
+        # "a" is duplicated (2 rows), but NULLs are ignored
+        assert result["passed"] is False
+        assert result["failed_count"] == 2  # Both rows with "a" are failures
+
+    def test_unique_all_nulls_passes(self):
+        """Column with all NULLs should pass unique check."""
+        import kontra
+        from kontra import rules
+
+        df = pl.DataFrame({"v": [None, None, None, None, None]})
+        result = kontra.validate(df, rules=[rules.unique("v")], save=False)
+
+        assert result.passed is True
+
+
+class TestFreshnessErrorMessages:
+    """Tests for freshness rule error messages (BUG-007 fix)."""
+
+    def test_freshness_non_datetime_column_gives_clear_error(self):
+        """freshness rule should give clear error for non-datetime column."""
+        from kontra.rules.builtin.freshness import FreshnessRule
+
+        df = pl.DataFrame({"value": [1, 2, 3]})  # Integer column
+        rule = FreshnessRule("freshness", {"column": "value", "max_age": "24h"})
+        result = rule.validate(df)
+
+        assert result["passed"] is False
+        # Should have clear error, not raw Python exception
+        assert "datetime" in result["message"].lower()
+        assert "Rule execution failed" not in result["message"]
+        assert "Int64" in result["message"]  # Shows actual type
+
+    def test_freshness_string_column_that_cant_be_parsed(self):
+        """freshness rule handles unparseable string column gracefully."""
+        from kontra.rules.builtin.freshness import FreshnessRule
+
+        df = pl.DataFrame({"value": ["not", "a", "date"]})
+        rule = FreshnessRule("freshness", {"column": "value", "max_age": "24h"})
+        result = rule.validate(df)
+
+        assert result["passed"] is False
+        # Should mention it can't be parsed as datetime
+        assert "cannot be parsed" in result["message"].lower() or "datetime" in result["message"].lower()
+
+
+class TestEmptyInputHandling:
+    """Tests for empty input handling."""
+
+    def test_empty_list_with_dataset_rules_works(self):
+        """Empty list with dataset-level rules should work."""
+        import kontra
+        from kontra import rules
+
+        # min_rows should fail on empty list
+        result = kontra.validate([], rules=[rules.min_rows(1)], save=False)
+        assert result.passed is False
+        assert result.failed_count == 1
+
+        # max_rows should pass on empty list
+        result = kontra.validate([], rules=[rules.max_rows(100)], save=False)
+        assert result.passed is True
+
+    def test_non_empty_list_works(self):
+        """Non-empty list should work normally."""
+        import kontra
+        from kontra import rules
+
+        data = [{"id": 1}, {"id": 2}]
+        result = kontra.validate(data, rules=[rules.not_null("id")], save=False)
+
+        assert result.passed is True
+
+
+class TestStateCorruptedError:
+    """Tests for StateCorruptedError (BUG-006 fix)."""
+
+    def test_state_corrupted_error_exists(self):
+        """StateCorruptedError is available from kontra."""
+        import kontra
+        from kontra.errors import StateCorruptedError
+
+        assert StateCorruptedError is not None
+        # Should be able to instantiate
+        err = StateCorruptedError("test_contract", "test error")
+        assert "test_contract" in str(err)
+        assert "corrupted" in str(err).lower()
+
+    def test_state_corrupted_error_exported(self):
+        """StateCorruptedError is exported from kontra module."""
+        import kontra
+
+        assert hasattr(kontra, "StateCorruptedError")
+
+
+class TestCustomSqlCheckFix:
+    """Tests for custom_sql_check fix (BUG-001 from first round)."""
+
+    def test_custom_sql_check_accepts_sql_param(self):
+        """custom_sql_check should accept 'sql' parameter (documented name)."""
+        import kontra
+        from kontra import rules
+
+        df = pl.DataFrame({"value": [10, 20, 30]})
+        result = kontra.validate(df, rules=[
+            rules.custom_sql_check(sql="SELECT * FROM data WHERE value > 25")
+        ], save=False)
+
+        # Should find 1 row (value=30 > 25)
+        assert result.rules[0].failed_count == 1
+
+    def test_custom_sql_check_table_substitution(self):
+        """custom_sql_check should substitute {table} with 'data'."""
+        import kontra
+        from kontra import rules
+
+        df = pl.DataFrame({"value": [10, 20, 30]})
+        result = kontra.validate(df, rules=[
+            rules.custom_sql_check(sql="SELECT * FROM {table} WHERE value < 15")
+        ], save=False)
+
+        # Should find 1 row (value=10 < 15)
+        assert result.rules[0].failed_count == 1
+
+
+class TestRangeValidationFix:
+    """Tests for range rule validation fix (BUG-004 from first round)."""
+
+    def test_range_no_bounds_raises_error(self):
+        """range rule with no min/max should raise error at construction."""
+        from kontra import rules
+
+        with pytest.raises(ValueError) as exc_info:
+            rules.range("value")  # No min or max
+
+        assert "min" in str(exc_info.value).lower()
+        assert "max" in str(exc_info.value).lower()
+
+    def test_range_rule_class_no_bounds_raises_error(self):
+        """RangeRule class should also raise error at construction."""
+        from kontra.rules.builtin.range import RangeRule
+        from kontra.errors import RuleParameterError
+
+        with pytest.raises(RuleParameterError):
+            RangeRule("range", {"column": "value"})  # No min or max
+
+
+class TestDtypeValidationFix:
+    """Tests for dtype rule validation fix (BUG-005 from first round)."""
+
+    def test_dtype_unknown_type_raises_error(self):
+        """dtype rule with unknown type should raise error at construction."""
+        from kontra.rules.builtin.dtype import DtypeRule
+        from kontra.errors import RuleParameterError
+
+        with pytest.raises(RuleParameterError) as exc_info:
+            DtypeRule("dtype", {"column": "value", "type": "unknown_type"})
+
+        error_str = str(exc_info.value)
+        assert "unknown_type" in error_str
+        # Should list valid types
+        assert "int64" in error_str or "Valid types" in error_str

@@ -318,6 +318,52 @@ def _agg_conditional_not_null(
     )
 
 
+def _agg_conditional_range(
+    column: str,
+    when_column: str,
+    when_op: str,
+    when_value: Any,
+    min_val: Any,
+    max_val: Any,
+    rule_id: str,
+) -> str:
+    """
+    Aggregate expression for conditional_range rule in DuckDB.
+
+    Counts rows where condition is TRUE AND (column is NULL OR outside range).
+    """
+    col = esc_ident(column)
+    when_col = esc_ident(when_column)
+    sql_op = _SQL_OP_MAP.get(when_op, when_op)
+
+    # Handle NULL value in condition
+    if when_value is None:
+        if when_op == "==":
+            condition = f"{when_col} IS NULL"
+        elif when_op == "!=":
+            condition = f"{when_col} IS NOT NULL"
+        else:
+            condition = "1=0"
+    else:
+        val = lit_str(str(when_value)) if isinstance(when_value, str) else str(when_value)
+        if isinstance(when_value, bool):
+            val = "TRUE" if when_value else "FALSE"
+        condition = f"{when_col} {sql_op} {val}"
+
+    # Build range violation part
+    range_parts = [f"{col} IS NULL"]
+    if min_val is not None:
+        range_parts.append(f"{col} < {min_val}")
+    if max_val is not None:
+        range_parts.append(f"{col} > {max_val}")
+    range_violation = " OR ".join(range_parts)
+
+    return (
+        f"SUM(CASE WHEN ({condition}) AND ({range_violation}) THEN 1 ELSE 0 END) "
+        f"AS {esc_ident(rule_id)}"
+    )
+
+
 def _assemble_single_row(selects: List[str]) -> str:
     if not selects:
         return "SELECT 0 AS __no_sql_rules__ LIMIT 1;"
@@ -367,7 +413,7 @@ class DuckDBSqlExecutor(SqlExecutor):
 
     name = "duckdb"
 
-    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex", "compare", "conditional_not_null"}
+    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex", "compare", "conditional_not_null", "conditional_range"}
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
@@ -425,6 +471,18 @@ class DuckDBSqlExecutor(SqlExecutor):
                     isinstance(when_column, str) and when_column and
                     isinstance(when_op, str) and when_op in _SQL_OP_MAP):
                     selects.append(_agg_conditional_not_null(col, when_column, when_op, when_value, rid))
+            elif kind == "conditional_range":
+                col = spec.get("column")
+                when_column = spec.get("when_column")
+                when_op = spec.get("when_op")
+                when_value = spec.get("when_value")  # Can be None
+                min_val = spec.get("min")
+                max_val = spec.get("max")
+                if (isinstance(col, str) and col and
+                    isinstance(when_column, str) and when_column and
+                    isinstance(when_op, str) and when_op in _SQL_OP_MAP and
+                    (min_val is not None or max_val is not None)):
+                    selects.append(_agg_conditional_range(col, when_column, when_op, when_value, min_val, max_val, rid))
         return _assemble_single_row(selects)
 
     def execute(

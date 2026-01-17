@@ -39,6 +39,7 @@ from kontra.engine.sql_utils import (
     agg_range,
     agg_compare,
     agg_conditional_not_null,
+    agg_conditional_range,
     exists_not_null,
     results_from_row,
 )
@@ -127,7 +128,7 @@ class SqlServerSqlExecutor(SqlExecutor):
 
     # Note: regex is NOT supported because PATINDEX uses LIKE-style wildcards, not regex.
     # Regex rules fall back to Polars execution which handles them correctly.
-    SUPPORTED_RULES = {"not_null", "unique", "min_rows", "max_rows", "allowed_values", "freshness", "range", "compare", "conditional_not_null"}
+    SUPPORTED_RULES = {"not_null", "unique", "min_rows", "max_rows", "allowed_values", "freshness", "range", "compare", "conditional_not_null", "conditional_range"}
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
@@ -266,6 +267,24 @@ class SqlServerSqlExecutor(SqlExecutor):
                     isinstance(when_op, str) and when_op):
                     aggregate_selects.append(
                         agg_conditional_not_null(col, when_column, when_op, when_value, rule_id, DIALECT)
+                    )
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "conditional_range":
+                # Phase 2: Check column is in range when condition is met
+                col = spec.get("column")
+                when_column = spec.get("when_column")
+                when_op = spec.get("when_op")
+                when_value = spec.get("when_value")  # Can be None
+                min_val = spec.get("min")
+                max_val = spec.get("max")
+                if (isinstance(col, str) and col and
+                    isinstance(when_column, str) and when_column and
+                    isinstance(when_op, str) and when_op and
+                    (min_val is not None or max_val is not None)):
+                    aggregate_selects.append(
+                        agg_conditional_range(col, when_column, when_op, when_value, min_val, max_val, rule_id, DIALECT)
                     )
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)

@@ -99,6 +99,21 @@ class FreshnessRule(BaseRule):
         column = self.params["column"]
         max_age = parse_duration(str(self.params["max_age"]))
 
+        # Check column dtype is datetime-compatible
+        col_dtype = df[column].dtype
+        datetime_types = (pl.Datetime, pl.Date)
+        is_datetime_type = isinstance(col_dtype, datetime_types) or col_dtype in datetime_types
+
+        if not is_datetime_type:
+            # Check if it's a string that might be parseable
+            if col_dtype not in (pl.Utf8, getattr(pl, "String", pl.Utf8)):
+                return {
+                    "rule_id": self.rule_id,
+                    "passed": False,
+                    "failed_count": df.height,
+                    "message": f"Column '{column}' must be a datetime type for freshness check (found {col_dtype})",
+                }
+
         # Get the maximum timestamp
         max_ts = df[column].max()
 
@@ -114,11 +129,16 @@ class FreshnessRule(BaseRule):
         if isinstance(max_ts, datetime):
             max_datetime = max_ts
         else:
-            # Try to handle various timestamp types
+            # Try to handle various timestamp types (including strings)
             try:
                 max_datetime = datetime.fromisoformat(str(max_ts).replace('Z', '+00:00'))
             except (ValueError, AttributeError):
-                max_datetime = max_ts
+                return {
+                    "rule_id": self.rule_id,
+                    "passed": False,
+                    "failed_count": df.height,
+                    "message": f"Column '{column}' contains values that cannot be parsed as datetime (got: {type(max_ts).__name__})",
+                }
 
         # Get current time (use UTC for consistency)
         now = datetime.now(timezone.utc)

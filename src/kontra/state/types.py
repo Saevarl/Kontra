@@ -81,6 +81,7 @@ class FailureMode(str, Enum):
     # Cross-column failures
     COMPARISON_FAILED = "comparison_failed"  # Compare rule failed
     CONDITIONAL_NULL = "conditional_null"  # Conditional not-null failed
+    CONDITIONAL_RANGE_VIOLATION = "conditional_range_violation"  # Conditional range failed
 
     def __str__(self) -> str:
         return self.value

@@ -244,6 +244,10 @@ def preplan_single_parquet(
         manifest_columns=list(required_columns) if required_columns else [],
         manifest_row_groups=keep_rg,
         rule_decisions=rule_decisions,
-        stats={"rg_total": md.num_row_groups, "rg_kept": len(keep_rg)},
+        stats={
+            "rg_total": md.num_row_groups,
+            "rg_kept": len(keep_rg),
+            "total_rows": md.num_rows,
+        },
     )
     return preplan

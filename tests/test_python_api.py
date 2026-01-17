@@ -380,6 +380,59 @@ class TestValidationResult:
         assert "ValidationResult" in repr_str
         assert "PASSED" in repr_str
 
+    def test_result_total_rows(self, sample_df):
+        """total_rows reflects the dataset row count."""
+        result = kontra.validate(sample_df, rules=[rules.not_null("id")], save=False)
+
+        assert result.total_rows == 5
+        assert result.total_rows == len(sample_df)
+
+    def test_result_total_rows_in_to_dict(self, sample_df):
+        """to_dict() includes total_rows."""
+        result = kontra.validate(sample_df, rules=[rules.not_null("id")], save=False)
+
+        d = result.to_dict()
+        assert "total_rows" in d
+        assert d["total_rows"] == 5
+
+    def test_result_total_rows_in_to_llm(self, df_with_nulls):
+        """to_llm() shows row count in output."""
+        result = kontra.validate(df_with_nulls, rules=[rules.not_null("id")], save=False)
+
+        llm = result.to_llm()
+        # Should show "(5 rows)" in the output
+        assert "5 rows" in llm
+
+    def test_result_failure_fraction(self, df_with_nulls):
+        """total_rows enables computing failure fractions."""
+        result = kontra.validate(df_with_nulls, rules=[rules.not_null("id")], save=False)
+
+        # df_with_nulls has 5 rows, 1 null in id column
+        assert result.total_rows == 5
+        assert result.failed_count == 1
+
+        # Consumer can compute failure fraction
+        fraction = result.failed_count / result.total_rows
+        assert fraction == 0.2  # 20%
+
+    def test_result_total_rows_parquet(self, sample_df, tmp_path):
+        """total_rows works for Parquet files (from metadata)."""
+        parquet_path = tmp_path / "test.parquet"
+        sample_df.write_parquet(parquet_path)
+
+        result = kontra.validate(str(parquet_path), rules=[rules.not_null("id")], save=False)
+
+        assert result.total_rows == 5
+
+    def test_result_total_rows_csv(self, sample_df, tmp_path):
+        """total_rows works for CSV files (from DuckDB)."""
+        csv_path = tmp_path / "test.csv"
+        sample_df.write_csv(csv_path)
+
+        result = kontra.validate(str(csv_path), rules=[rules.not_null("id")], save=False)
+
+        assert result.total_rows == 5
+
 
 # =============================================================================
 # RuleResult Tests
@@ -833,14 +886,15 @@ class TestServiceAgentSupport:
             assert "scope" in rule
 
     def test_list_rules_includes_all_rules(self):
-        """list_rules() includes all 12 built-in rules."""
+        """list_rules() includes all 13 built-in rules."""
         result = kontra.list_rules()
         rule_names = [r["name"] for r in result]
 
         expected = [
             "not_null", "unique", "allowed_values", "range",
             "regex", "dtype", "min_rows", "max_rows",
-            "freshness", "custom_sql_check", "compare", "conditional_not_null"
+            "freshness", "custom_sql_check", "compare", "conditional_not_null",
+            "conditional_range",
         ]
 
         for expected_rule in expected:

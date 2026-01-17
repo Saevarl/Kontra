@@ -36,12 +36,21 @@ class RangeRule(BaseRule):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Validate min <= max at construction time
+        from kontra.errors import RuleParameterError
+
         min_val = self.params.get("min")
         max_val = self.params.get("max")
+
+        # Validate at least one bound is provided
+        if min_val is None and max_val is None:
+            raise RuleParameterError(
+                "range", "min/max",
+                "at least one of 'min' or 'max' must be provided"
+            )
+
+        # Validate min <= max at construction time
         if min_val is not None and max_val is not None:
             if min_val > max_val:
-                from kontra.errors import RuleParameterError
                 raise RuleParameterError(
                     "range", "min/max",
                     f"min ({min_val}) must be <= max ({max_val})"
@@ -52,14 +61,7 @@ class RangeRule(BaseRule):
         min_val = self.params.get("min")
         max_val = self.params.get("max")
 
-        if min_val is None and max_val is None:
-            return {
-                "rule_id": self.rule_id,
-                "passed": False,
-                "failed_count": int(df.height),
-                "message": "At least one of 'min' or 'max' must be provided",
-            }
-
+        # Note: min/max validation is done in __init__, so we know at least one is set
         try:
             col = df[column]
 

@@ -74,6 +74,12 @@ from kontra.api.results import (
 # Rules helpers
 from kontra.api.rules import rules
 
+# Decorators
+from kontra.api.decorators import validate as validate_decorator
+
+# Errors
+from kontra.errors import ValidationError, StateCorruptedError
+
 # Configuration
 from kontra.config.settings import (
     resolve_datasource,
@@ -105,6 +111,7 @@ def validate(
     dry_run: bool = False,
     sample: int = 5,
     sample_budget: int = 50,
+    sample_columns: Optional[Union[List[str], str]] = None,
     **kwargs,
 ) -> Union[ValidationResult, DryRunResult]:
     """
@@ -135,6 +142,10 @@ def validate(
             .columns_needed. Use to check contracts before running.
         sample: Per-rule sample cap for failing rows (default: 5, 0 to disable)
         sample_budget: Global sample cap across all rules (default: 50)
+        sample_columns: Columns to include in samples for token efficiency.
+            - None (default): All columns
+            - ["col1", "col2"]: Only specified columns
+            - "relevant": Rule's columns + _row_index only
         **kwargs: Additional arguments passed to ValidationEngine
 
     Returns:
@@ -340,7 +351,7 @@ def validate(
     elif isinstance(data, list):
         # list[dict] - flat tabular JSON (e.g., API response)
         if not data:
-            # Empty list - create empty DataFrame
+            # Empty list - create empty DataFrame (valid for dataset-level rules like min_rows)
             df = pl.DataFrame()
         else:
             df = pl.DataFrame(data)
@@ -397,6 +408,7 @@ def validate(
         rule_objects=engine._rules,
         sample=sample,
         sample_budget=sample_budget,
+        sample_columns=sample_columns,
     )
 
 
@@ -570,6 +582,7 @@ def diff(
     from kontra.state.types import StateDiff
     from kontra.state.fingerprint import fingerprint_contract
     from kontra.config.loader import ContractLoader
+    from kontra.errors import StateCorruptedError
 
     store = get_default_store()
     if store is None:
@@ -607,9 +620,17 @@ def diff(
         state_diff = StateDiff.compute(before_state, after_state)
         return Diff.from_state_diff(state_diff)
 
-    except Exception as e:
-        log_exception(_logger, "Failed to compute diff", e)
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+        # These indicate corrupted state data
+        raise StateCorruptedError(contract, str(e))
+    except FileNotFoundError:
+        # No history available - this is normal
         return None
+    except Exception as e:
+        # For other exceptions, log and re-raise as state corruption
+        # since we've already handled the "no history" case
+        log_exception(_logger, "Failed to compute diff", e)
+        raise StateCorruptedError(contract, str(e))
 
 
 def scout_diff(
@@ -1007,6 +1028,16 @@ def list_rules() -> List[Dict[str, Any]]:
             },
             "scope": "cross-column",
         },
+        "conditional_range": {
+            "description": "Fails where column is outside range when a condition is met",
+            "params": {
+                "column": "required (column to check)",
+                "when": "required (e.g., \"customer_type == 'premium'\")",
+                "min": "optional (minimum value, inclusive)",
+                "max": "optional (maximum value, inclusive)",
+            },
+            "scope": "cross-column",
+        },
     }
 
     result = []
@@ -1118,6 +1149,11 @@ __all__ = [
     "ProfileDiff",
     # Rules helpers
     "rules",
+    # Decorators
+    "validate_decorator",
+    # Errors
+    "ValidationError",
+    "StateCorruptedError",
     # Advanced usage
     "ValidationEngine",
     "ScoutProfiler",

@@ -52,7 +52,7 @@ rules:
 
 ## What You Get
 
-- **12 built-in rules**: not_null, unique, range, regex, freshness, and more
+- **13 built-in rules**: not_null, unique, range, regex, freshness, and more
 - **Fast execution**: Metadata analysis and SQL pushdown before loading data
 - **Multiple sources**: Parquet, CSV, PostgreSQL, SQL Server, S3
 - **Python API**: Use as a library with `kontra.validate(df, rules=[...])`

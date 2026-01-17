@@ -841,3 +841,217 @@ class TestEagerSamplingWithParquet:
         # If preplan was used for measurement but polars for sampling
         if r.source == "metadata":
             assert r.samples_source == "polars"
+
+
+# =============================================================================
+# Column Projection Tests
+# =============================================================================
+
+
+class TestSampleColumnProjection:
+    """Tests for sample_columns parameter (token efficiency)."""
+
+    @pytest.fixture
+    def df_many_columns(self):
+        """DataFrame with many columns for projection testing."""
+        return pl.DataFrame({
+            "id": [1, 2, 3, 4, 5],
+            "email": ["a@x.com", None, "c@x.com", None, "e@x.com"],
+            "name": ["Alice", "Bob", "Charlie", "David", "Eve"],
+            "status": ["active", "active", "inactive", "active", "inactive"],
+            "score": [85, 90, 75, 60, 95],
+            "extra1": [1, 2, 3, 4, 5],
+            "extra2": ["a", "b", "c", "d", "e"],
+        })
+
+    def test_default_includes_all_columns(self, df_many_columns):
+        """Default behavior includes all columns in samples."""
+        result = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        # Should have all columns plus _row_index
+        assert "_row_index" in r.samples[0]
+        assert "email" in r.samples[0]
+        assert "name" in r.samples[0]
+        assert "extra1" in r.samples[0]
+
+    def test_specific_columns_list(self, df_many_columns):
+        """sample_columns list restricts output columns."""
+        result = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            sample_columns=["id", "email"],
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        # Should only have id, email, and _row_index
+        sample_keys = set(r.samples[0].keys())
+        assert sample_keys == {"_row_index", "id", "email"}
+
+    def test_relevant_mode_not_null(self, df_many_columns):
+        """'relevant' mode includes only rule's columns."""
+        result = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            sample_columns="relevant",
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        sample_keys = set(r.samples[0].keys())
+        # Should only have email and _row_index
+        assert sample_keys == {"_row_index", "email"}
+
+    def test_relevant_mode_compare_rule(self):
+        """'relevant' mode includes both columns for compare rule."""
+        df = pl.DataFrame({
+            "start_date": ["2024-01-01", "2024-02-01", "2024-03-01"],
+            "end_date": ["2024-01-15", "2024-01-15", "2024-03-15"],
+            "name": ["A", "B", "C"],
+            "extra": [1, 2, 3],
+        })
+        result = kontra.validate(
+            df,
+            rules=[rules.compare("end_date", "start_date", ">=")],
+            sample_columns="relevant",
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        sample_keys = set(r.samples[0].keys())
+        # Should have start_date, end_date, and _row_index
+        assert sample_keys == {"_row_index", "start_date", "end_date"}
+
+    def test_relevant_mode_conditional_not_null(self, df_many_columns):
+        """'relevant' mode includes condition column and target column."""
+        result = kontra.validate(
+            df_many_columns,
+            rules=[rules.conditional_not_null("email", "status == 'active'")],
+            sample_columns="relevant",
+            save=False
+        )
+        r = result.rules[0]
+        if r.samples:  # May or may not have failures
+            sample_keys = set(r.samples[0].keys())
+            assert "email" in sample_keys
+            assert "status" in sample_keys
+            assert "_row_index" in sample_keys
+
+    def test_row_index_always_included(self, df_many_columns):
+        """_row_index is always included even when not in column list."""
+        result = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            sample_columns=["email"],  # Doesn't include _row_index
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        assert "_row_index" in r.samples[0]
+
+    def test_nonexistent_columns_ignored(self, df_many_columns):
+        """Columns not in DataFrame are silently ignored."""
+        result = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            sample_columns=["id", "nonexistent_column"],
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        # Should only have id and _row_index (nonexistent is ignored)
+        sample_keys = set(r.samples[0].keys())
+        assert "nonexistent_column" not in sample_keys
+        assert "id" in sample_keys
+
+    def test_unique_rule_includes_duplicate_count(self):
+        """Unique rule samples always include _duplicate_count."""
+        df = pl.DataFrame({
+            "id": [1, 2, 3, 4, 5],
+            "code": ["A", "B", "A", "C", "B"],
+            "name": ["a", "b", "c", "d", "e"],
+        })
+        result = kontra.validate(
+            df,
+            rules=[rules.unique("code")],
+            sample_columns=["code"],
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        # Should include _duplicate_count even with column projection
+        sample_keys = set(r.samples[0].keys())
+        assert "_duplicate_count" in sample_keys
+        assert "code" in sample_keys
+        assert "_row_index" in sample_keys
+
+    def test_token_efficiency(self, df_many_columns):
+        """Column projection reduces JSON output size."""
+        import json
+
+        result_full = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            save=False
+        )
+        result_proj = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            sample_columns=["id"],
+            save=False
+        )
+
+        full_size = len(json.dumps(result_full.to_dict()))
+        proj_size = len(json.dumps(result_proj.to_dict()))
+
+        # Projected should be smaller
+        assert proj_size < full_size
+
+    def test_parquet_with_column_projection(self, tmp_path):
+        """Column projection works with Parquet files."""
+        df = pl.DataFrame({
+            "id": [1, 2, 3],
+            "email": [None, "b@x.com", None],
+            "name": ["A", "B", "C"],
+            "extra": [1, 2, 3],
+        })
+        path = tmp_path / "test.parquet"
+        df.write_parquet(path)
+
+        result = kontra.validate(
+            str(path),
+            rules=[rules.not_null("email")],
+            sample_columns=["id", "email"],
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        sample_keys = set(r.samples[0].keys())
+        assert sample_keys == {"_row_index", "id", "email"}
+
+    def test_csv_with_column_projection(self, tmp_path):
+        """Column projection works with CSV files."""
+        df = pl.DataFrame({
+            "id": [1, 2, 3],
+            "email": [None, "b@x.com", None],
+            "name": ["A", "B", "C"],
+            "extra": [1, 2, 3],
+        })
+        path = tmp_path / "test.csv"
+        df.write_csv(path)
+
+        result = kontra.validate(
+            str(path),
+            rules=[rules.not_null("email")],
+            sample_columns=["id", "email"],
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        sample_keys = set(r.samples[0].keys())
+        assert sample_keys == {"_row_index", "id", "email"}

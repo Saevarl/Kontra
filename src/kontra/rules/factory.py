@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 from kontra.rules.base import BaseRule
 from kontra.rules.registry import get_rule, get_all_rule_names
 from kontra.config.models import RuleSpec
+from kontra.errors import DuplicateRuleIdError
 
 
 def _derive_rule_id(spec: RuleSpec) -> str:
@@ -68,17 +69,20 @@ class RuleFactory:
                 # Check for duplicate rule IDs
                 if rule_id in seen_ids:
                     prev_idx = seen_ids[rule_id]
-                    raise ValueError(
-                        f"Duplicate rule_id '{rule_id}' at rule index {idx} "
-                        f"(conflicts with rule at index {prev_idx}). "
-                        "Use explicit 'id' in contract to disambiguate."
+                    column = rule_params.get("column")
+                    raise DuplicateRuleIdError(
+                        rule_id=rule_id,
+                        rule_name=rule_name,
+                        rule_index=idx,
+                        conflict_index=prev_idx,
+                        column=column if isinstance(column, str) else None,
                     )
                 seen_ids[rule_id] = idx
 
                 rule_instance.rule_id = rule_id
                 rule_instance.severity = spec.severity
                 rules.append(rule_instance)
-            except ValueError:
+            except (ValueError, DuplicateRuleIdError):
                 raise  # Re-raise validation errors as-is
             except Exception as e:
                 raise RuntimeError(f"Failed to instantiate rule '{rule_name}': {e}") from e

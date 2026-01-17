@@ -11,7 +11,13 @@ from kontra.state.types import FailureMode
 class UniqueRule(BaseRule):
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
-        duplicates = df[column].is_duplicated()
+        col = df[column]
+
+        # SQL semantics: NULLs are not considered duplicates (NULL != NULL)
+        # Only check duplicates among non-null values
+        non_null_mask = col.is_not_null()
+        duplicates = col.is_duplicated() & non_null_mask
+
         res = super()._failures(df, duplicates, f"{column} has duplicate values")
         res["rule_id"] = self.rule_id
 
@@ -56,7 +62,9 @@ class UniqueRule(BaseRule):
 
     def compile_predicate(self) -> Optional[Predicate]:
         column = self.params["column"]
-        expr = pl.col(column).is_duplicated()
+        # SQL semantics: NULLs are not considered duplicates (NULL != NULL)
+        col = pl.col(column)
+        expr = col.is_duplicated() & col.is_not_null()
         return Predicate(
             rule_id=self.rule_id,
             expr=expr,

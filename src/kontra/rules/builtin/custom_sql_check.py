@@ -10,14 +10,19 @@ from kontra.state.types import FailureMode
 @register_rule("custom_sql_check")
 class CustomSQLCheck(BaseRule):
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
-        query = self.params.get("query")
+        # Accept both 'sql' (documented) and 'query' (legacy) parameter names
+        query = self.params.get("sql") or self.params.get("query")
         if not query:
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
                 "failed_count": int(df.height),
-                "message": "Missing 'query' parameter",
+                "message": "Missing 'sql' parameter",
             }
+
+        # Substitute {table} placeholder with the registered table name
+        query = query.replace("{table}", "data")
+
         try:
             # Use DuckDB's native Polars support (zero-copy)
             con = duckdb.connect()

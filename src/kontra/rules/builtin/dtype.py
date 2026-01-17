@@ -38,7 +38,33 @@ class DtypeRule(BaseRule):
     - Message is deterministic: "<col> expected <expected>, found <ActualDtype>".
     """
 
+    # Valid type names (for error message)
+    _VALID_TYPES = [
+        # Exact types
+        "int8", "int16", "int32", "int64",
+        "uint8", "uint16", "uint32", "uint64",
+        "float32", "float64", "float", "double",
+        "bool", "boolean",
+        "date", "datetime", "time",
+        "utf8", "string", "str", "text",
+        # Family types
+        "int", "integer", "numeric",
+    ]
+
     # ---- Aliases / Maps -----------------------------------------------------
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from kontra.errors import RuleParameterError
+
+        expected_type = self.params.get("type")
+        if expected_type is not None:
+            label, allowed = self._normalize_expected(str(expected_type))
+            if allowed is None:
+                raise RuleParameterError(
+                    "dtype", "type",
+                    f"unknown type '{expected_type}'. Valid types: {', '.join(sorted(self._VALID_TYPES))}"
+                )
 
     _STRING_ALIASES = {"utf8", "string", "str", "text"}
 

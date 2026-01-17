@@ -1,6 +1,6 @@
 # Rules Reference
 
-Kontra provides 12 built-in validation rules.
+Kontra provides 13 built-in validation rules.
 
 ## Most Contracts Use These
 
@@ -50,6 +50,7 @@ rules:
 | `freshness` | Data recency | `column`, `max_age` |
 | `compare` | Cross-column comparison | `left`, `right`, `op` |
 | `conditional_not_null` | Conditional not-null | `column`, `when` |
+| `conditional_range` | Conditional range check | `column`, `when`, `min`, `max` |
 | `custom_sql_check` | Custom SQL | `sql` |
 
 ---
@@ -285,6 +286,45 @@ Condition format: `column_name operator value`
 
 ---
 
+### conditional_range
+
+Column must be within range when condition is met. NULL in column when condition is true = violation.
+
+```yaml
+- name: conditional_range
+  params:
+    column: discount_percent
+    when: "customer_type == 'premium'"
+    min: 10
+    max: 50
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `column` | string | Yes |
+| `when` | string | Yes |
+| `min` | number | No* |
+| `max` | number | No* |
+
+*At least one of `min` or `max` required.
+
+Condition format: `column_name operator value`
+- Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`
+- Values: `'string'`, `123`, `true`, `false`, `null`
+
+**Behavior:**
+- Only checks rows where `when` condition is TRUE
+- Fails if column is NULL when condition is TRUE
+- Fails if column is outside `[min, max]` when condition is TRUE
+- NULL in condition column → condition is FALSE (no check)
+
+**Example use cases:**
+- Premium customers must get 10-50% discount
+- Orders over $100 must have shipping fee between $0-$10
+- Active users must have session duration 1-3600 seconds
+
+---
+
 ### custom_sql_check
 
 Escape hatch for custom SQL. Returns violation count.
@@ -339,6 +379,7 @@ All rules accept an optional `severity` parameter:
 | `regex` | NULL = violation |
 | `compare` | NULL = violation |
 | `conditional_not_null` | NULL in condition → condition is FALSE |
+| `conditional_range` | NULL in column = violation (if condition TRUE); NULL in condition → condition is FALSE |
 | `dtype`, `min_rows`, `max_rows` | N/A |
 | `freshness` | NULLs excluded from MAX |
 | `custom_sql_check` | User-defined |
@@ -362,6 +403,7 @@ All rules accept an optional `severity` parameter:
 | `freshness` | | ✓ | |
 | `compare` | | ✓ | |
 | `conditional_not_null` | | ✓ | |
+| `conditional_range` | | ✓ | |
 | `custom_sql_check` | | DuckDB | |
 
 Preplan returns binary (0 or ≥1), not exact counts. Use `--preplan off` for exact counts.

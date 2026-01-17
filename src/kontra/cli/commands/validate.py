@@ -34,6 +34,7 @@ def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) 
     import kontra.rules.builtin.allowed_values  # noqa: F401
     import kontra.rules.builtin.compare  # noqa: F401
     import kontra.rules.builtin.conditional_not_null  # noqa: F401
+    import kontra.rules.builtin.conditional_range  # noqa: F401
     import kontra.rules.builtin.custom_sql_check  # noqa: F401
     import kontra.rules.builtin.dtype  # noqa: F401
     import kontra.rules.builtin.freshness  # noqa: F401
