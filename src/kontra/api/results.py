@@ -479,29 +479,41 @@ class ValidationResult:
             # It's a DatasetHandle
             handle = source
 
-            if handle.scheme == "postgres":
-                # PostgreSQL - need to query
-                if handle.connection is None:
+            # Check for BYOC (external connection)
+            if handle.scheme == "byoc" or hasattr(handle, "external_conn"):
+                conn = getattr(handle, "external_conn", None)
+                if conn is None:
                     raise RuntimeError(
                         "Database connection is closed. "
                         "For BYOC, keep the connection open until done with sample_failures()."
                     )
-                # Use the connection to query
-                import polars as pl
-                table = handle.table or handle.uri.split("/")[-1]
-                return pl.read_database(f"SELECT * FROM {table}", handle.connection)
+                table = getattr(handle, "table_ref", None) or handle.path
+                return pl.read_database(f"SELECT * FROM {table}", conn)
+
+            elif handle.scheme in ("postgres", "postgresql"):
+                # PostgreSQL via URI
+                if hasattr(handle, "external_conn") and handle.external_conn:
+                    conn = handle.external_conn
+                else:
+                    raise RuntimeError(
+                        "Database connection is not available. "
+                        "For URI-based connections, sample_failures() requires re-connection."
+                    )
+                table = getattr(handle, "table_ref", None) or handle.path
+                return pl.read_database(f"SELECT * FROM {table}", conn)
 
             elif handle.scheme == "mssql":
                 # SQL Server
-                if handle.connection is None:
+                if hasattr(handle, "external_conn") and handle.external_conn:
+                    conn = handle.external_conn
+                else:
                     raise RuntimeError(
-                        "Database connection is closed. "
-                        "For BYOC, keep the connection open until done with sample_failures()."
+                        "Database connection is not available."
                     )
-                table = handle.table or handle.uri.split("/")[-1]
-                return pl.read_database(f"SELECT * FROM {table}", handle.connection)
+                table = getattr(handle, "table_ref", None) or handle.path
+                return pl.read_database(f"SELECT * FROM {table}", conn)
 
-            elif handle.scheme in ("file", None) or handle.uri:
+            elif handle.scheme in ("file", None) or (handle.uri and not handle.scheme):
                 # File-based
                 uri = handle.uri
                 if uri.lower().endswith(".parquet"):
