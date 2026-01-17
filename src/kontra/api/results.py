@@ -469,15 +469,15 @@ class ValidationResult:
 
         # String path/URI
         if isinstance(source, str):
-            # Try to load as file
-            if source.lower().endswith(".parquet"):
-                return pl.read_parquet(source)
+            # Try to load as file with predicate pushdown for Parquet
+            if source.lower().endswith(".parquet") or source.startswith("s3://"):
+                return self._load_parquet_with_filter(source, rule, n)
             elif source.lower().endswith(".csv"):
                 return pl.read_csv(source)
             else:
                 # Try parquet first, then CSV
                 try:
-                    return pl.read_parquet(source)
+                    return self._load_parquet_with_filter(source, rule, n)
                 except Exception:
                     try:
                         return pl.read_csv(source)
@@ -531,11 +531,11 @@ class ValidationResult:
                 # File-based
                 uri = handle.uri
                 if uri.lower().endswith(".parquet"):
-                    return pl.read_parquet(uri)
+                    return self._load_parquet_with_filter(uri, rule, n)
                 elif uri.lower().endswith(".csv"):
                     return pl.read_csv(uri)
                 else:
-                    return pl.read_parquet(uri)
+                    return self._load_parquet_with_filter(uri, rule, n)
 
         raise RuntimeError(f"Unsupported data source type: {type(source)}")
 
@@ -556,6 +556,37 @@ class ValidationResult:
         import polars as pl
 
         sql_filter = None
+
+        # Special case: unique rule needs subquery with table name
+        if rule is not None and getattr(rule, "name", None) == "unique":
+            column = rule.params.get("column")
+            if column:
+                col = f'"{column}"'
+                if dialect == "mssql":
+                    query = f"""
+                        SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS _row_index
+                        FROM {table}
+                        WHERE {col} IN (
+                            SELECT {col} FROM {table}
+                            GROUP BY {col}
+                            HAVING COUNT(*) > 1
+                        )
+                        ORDER BY (SELECT NULL)
+                        OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY
+                    """
+                else:
+                    query = f"""
+                        SELECT *, ROW_NUMBER() OVER () - 1 AS _row_index
+                        FROM {table}
+                        WHERE {col} IN (
+                            SELECT {col} FROM {table}
+                            GROUP BY {col}
+                            HAVING COUNT(*) > 1
+                        )
+                        LIMIT {n}
+                    """
+                return pl.read_database(query, conn)
+
         if rule is not None and hasattr(rule, "to_sql_filter"):
             sql_filter = rule.to_sql_filter(dialect)
 
@@ -583,6 +614,40 @@ class ValidationResult:
         else:
             # Fall back to loading all data (rule doesn't support SQL filter)
             return pl.read_database(f"SELECT * FROM {table}", conn)
+
+    def _load_parquet_with_filter(
+        self,
+        path: str,
+        rule: Any,
+        n: int,
+    ) -> "pl.DataFrame":
+        """
+        Load Parquet file with predicate pushdown for performance.
+
+        Uses scan_parquet + filter + head to push predicates to row groups,
+        avoiding loading the entire file.
+        """
+        import polars as pl
+
+        predicate = None
+        if rule is not None and hasattr(rule, "compile_predicate"):
+            pred_obj = rule.compile_predicate()
+            if pred_obj is not None:
+                predicate = pred_obj.expr
+
+        if predicate is not None:
+            # Use lazy scanning with predicate pushdown
+            # The filter pushes down to Parquet row groups
+            return (
+                pl.scan_parquet(path)
+                .with_row_index("_row_index")
+                .filter(predicate)
+                .head(n)
+                .collect()
+            )
+        else:
+            # No predicate available, load all
+            return pl.read_parquet(path)
 
 
 @dataclass
