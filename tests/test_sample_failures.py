@@ -121,6 +121,51 @@ class TestSampleFailuresUnique:
         duplicate_codes = [s["code"] for s in samples]
         assert set(duplicate_codes) == {"A", "B"}
 
+    def test_includes_duplicate_count(self):
+        """unique rule includes _duplicate_count column."""
+        df = pl.DataFrame({
+            "id": [1, 2, 3, 4, 5, 6],
+            "user_id": [100, 100, 100, 200, 200, 300],  # 100 appears 3x, 200 appears 2x
+        })
+
+        result = kontra.validate(df, rules=[rules.unique("user_id")])
+        samples = result.sample_failures("COL:user_id:unique", n=10)
+
+        # Check _duplicate_count is present
+        assert all("_duplicate_count" in s for s in samples)
+
+        # Check counts are correct
+        counts_by_user = {s["user_id"]: s["_duplicate_count"] for s in samples}
+        assert counts_by_user[100] == 3
+        assert counts_by_user[200] == 2
+
+    def test_sorted_by_worst_offenders(self):
+        """unique rule sorts by duplicate count descending."""
+        df = pl.DataFrame({
+            "id": [1, 2, 3, 4, 5, 6, 7, 8],
+            "user_id": [100, 100, 200, 200, 200, 200, 300, 300],  # 200=4, 100=2, 300=2
+        })
+
+        result = kontra.validate(df, rules=[rules.unique("user_id")])
+        samples = result.sample_failures("COL:user_id:unique", n=5)
+
+        # First samples should be from user_id=200 (4 duplicates)
+        assert samples[0]["user_id"] == 200
+        assert samples[0]["_duplicate_count"] == 4
+
+    def test_to_llm_shows_duplicate_count(self):
+        """to_llm() shows duplicate count as 'dupes='."""
+        df = pl.DataFrame({
+            "id": [1, 2, 3],
+            "user_id": [100, 100, 100],
+        })
+
+        result = kontra.validate(df, rules=[rules.unique("user_id")])
+        samples = result.sample_failures("COL:user_id:unique")
+
+        llm_str = samples.to_llm()
+        assert "dupes=3" in llm_str
+
 
 class TestSampleFailuresAllowedValues:
     """Tests for allowed_values rule samples."""
@@ -460,7 +505,7 @@ class TestFailureSamplesMethods:
         assert "SAMPLES:" in llm_str
         assert "COL:email:not_null" in llm_str
         assert "2 rows" in llm_str
-        assert "_row_index=" in llm_str
+        assert "row=" in llm_str  # New format: row=1 instead of _row_index=1
 
     def test_to_llm_empty(self, df_with_nulls):
         """to_llm() handles empty samples."""

@@ -72,8 +72,13 @@ class FailureSamples:
 
         Example output:
             SAMPLES: COL:email:not_null (2 rows)
-            [0] _row_index=1, id=2, email=None, status=active
-            [1] _row_index=3, id=4, email=None, status=active
+            [0] row=1: id=2, email=None, status=active
+            [1] row=3: id=4, email=None, status=active
+
+        For unique rule:
+            SAMPLES: COL:user_id:unique (2 rows)
+            [0] row=5, dupes=3: user_id=123, name=Alice
+            [1] row=8, dupes=3: user_id=123, name=Bob
         """
         if not self._samples:
             return f"SAMPLES: {self.rule_id} (0 rows)"
@@ -81,16 +86,31 @@ class FailureSamples:
         lines = [f"SAMPLES: {self.rule_id} ({len(self._samples)} rows)"]
 
         for i, row in enumerate(self._samples[:10]):  # Limit to 10 for token efficiency
-            # Format row as compact key=value pairs
+            # Extract special columns for prefix
+            row_idx = row.get("_row_index")
+            dup_count = row.get("_duplicate_count")
+
+            # Build prefix with metadata
+            prefix_parts = []
+            if row_idx is not None:
+                prefix_parts.append(f"row={row_idx}")
+            if dup_count is not None:
+                prefix_parts.append(f"dupes={dup_count}")
+            prefix = ", ".join(prefix_parts) + ": " if prefix_parts else ""
+
+            # Format remaining columns as compact key=value pairs
             parts = []
             for k, v in row.items():
+                # Skip special columns (already in prefix)
+                if k in ("_row_index", "_duplicate_count"):
+                    continue
                 if v is None:
                     parts.append(f"{k}=None")
                 elif isinstance(v, str) and len(v) > 20:
                     parts.append(f"{k}={v[:20]}...")
                 else:
                     parts.append(f"{k}={v}")
-            lines.append(f"[{i}] " + ", ".join(parts))
+            lines.append(f"[{i}] {prefix}" + ", ".join(parts))
 
         if len(self._samples) > 10:
             lines.append(f"... +{len(self._samples) - 10} more rows")
@@ -437,12 +457,28 @@ class ValidationResult:
         if "_row_index" not in df.columns:
             # Filter to failing rows, add index, limit
             try:
-                failing = (
-                    df.with_row_index("_row_index")
-                    .filter(predicate)
-                    .head(n)
-                    .to_dicts()
-                )
+                import polars as pl
+
+                # Special case: unique rule - add duplicate count, sort by worst offenders
+                if getattr(rule_obj, "name", None) == "unique":
+                    column = rule_obj.params.get("column")
+                    failing = (
+                        df.with_row_index("_row_index")
+                        .with_columns(
+                            pl.col(column).count().over(column).alias("_duplicate_count")
+                        )
+                        .filter(predicate)
+                        .sort("_duplicate_count", descending=True)
+                        .head(n)
+                        .to_dicts()
+                    )
+                else:
+                    failing = (
+                        df.with_row_index("_row_index")
+                        .filter(predicate)
+                        .head(n)
+                        .to_dicts()
+                    )
             except Exception as e:
                 raise RuntimeError(f"Failed to query failing rows: {e}") from e
         else:
@@ -565,7 +601,7 @@ class ValidationResult:
                 if dialect == "mssql":
                     query = f"""
                         SELECT t.*, dup._duplicate_count,
-                               ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS _row_index
+                               ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS _row_index
                         FROM {table} t
                         JOIN (
                             SELECT {col}, COUNT(*) as _duplicate_count
@@ -573,13 +609,13 @@ class ValidationResult:
                             GROUP BY {col}
                             HAVING COUNT(*) > 1
                         ) dup ON t.{col} = dup.{col}
-                        ORDER BY (SELECT NULL)
+                        ORDER BY dup._duplicate_count DESC
                         OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY
                     """
                 else:
                     query = f"""
                         SELECT t.*, dup._duplicate_count,
-                               ROW_NUMBER() OVER () - 1 AS _row_index
+                               ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS _row_index
                         FROM {table} t
                         JOIN (
                             SELECT {col}, COUNT(*) as _duplicate_count
@@ -587,6 +623,7 @@ class ValidationResult:
                             GROUP BY {col}
                             HAVING COUNT(*) > 1
                         ) dup ON t.{col} = dup.{col}
+                        ORDER BY dup._duplicate_count DESC
                         LIMIT {n}
                     """
                 return pl.read_database(query, conn)
@@ -640,15 +677,30 @@ class ValidationResult:
                 predicate = pred_obj.expr
 
         if predicate is not None:
-            # Use lazy scanning with predicate pushdown
-            # The filter pushes down to Parquet row groups
-            return (
-                pl.scan_parquet(path)
-                .with_row_index("_row_index")
-                .filter(predicate)
-                .head(n)
-                .collect()
-            )
+            # Special case: unique rule - add duplicate count, sort by worst offenders
+            if getattr(rule, "name", None) == "unique":
+                column = rule.params.get("column")
+                return (
+                    pl.scan_parquet(path)
+                    .with_row_index("_row_index")
+                    .with_columns(
+                        pl.col(column).count().over(column).alias("_duplicate_count")
+                    )
+                    .filter(predicate)
+                    .sort("_duplicate_count", descending=True)
+                    .head(n)
+                    .collect()
+                )
+            else:
+                # Use lazy scanning with predicate pushdown
+                # The filter pushes down to Parquet row groups
+                return (
+                    pl.scan_parquet(path)
+                    .with_row_index("_row_index")
+                    .filter(predicate)
+                    .head(n)
+                    .collect()
+                )
         else:
             # No predicate available, load all
             return pl.read_parquet(path)
