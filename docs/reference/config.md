@@ -14,7 +14,7 @@ This creates `.kontra/config.yml` with documented defaults.
 
 ## Config File Location
 
-Kontra looks for `.kontra/config.yml` in the current directory.
+Kontra looks for `.kontra/config.yml` in the current working directory only. It does **not** search parent directories.
 
 ```bash
 # View config file path
@@ -22,7 +22,12 @@ kontra config path
 
 # View effective configuration
 kontra config show
+
+# For services/agents, set path explicitly
+kontra.set_config("/path/to/config.yml")
 ```
+
+If running from a subdirectory, either `cd` to the project root or use `kontra.set_config()` in Python.
 
 ## Configuration Precedence
 

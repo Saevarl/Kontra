@@ -324,16 +324,27 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 | `kontra.suggest_rules(profile)` | Generate rules from profile |
 | `kontra.diff(contract, **opts)` | Compare validation runs |
 
+### History Functions
+
+| Function | Description |
+|----------|-------------|
+| `kontra.list_runs(contract)` | List past validation runs |
+| `kontra.get_run(contract, run_id=None)` | Get specific run (default: latest) |
+| `kontra.has_runs(contract)` | Check if history exists for contract |
+
 ### Result Types
 
 | Type | Key Properties |
 |------|----------------|
-| `ValidationResult` | `passed`, `rules`, `blocking_failures`, `warnings` |
-| `RuleResult` | `rule_id`, `passed`, `failed_count`, `severity`, `message` |
+| `ValidationResult` | `passed`, `rules`, `blocking_failures`, `warnings`, `to_dict()`, `to_json()`, `to_llm()` |
+| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 | `Profile` | `row_count`, `column_count`, `columns` |
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |
 | `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved` |
+| `Suggestions` | `filter(min_confidence)`, `to_dict()`, `to_yaml()`, `save(path)` |
+
+All result types support `to_dict()`, `to_json()`, and `to_llm()` for serialization.
 
 ### Error Handling
 
