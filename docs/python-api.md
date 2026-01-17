@@ -87,64 +87,24 @@ suggestions.save("contracts/generated.yml")
 ### Validate Database Tables
 
 ```python
-# Named datasource (from .kontra/config.yml)
-result = kontra.validate("prod_db.users", "contracts/users.yml")
-
-# Named datasource with inline rules
-result = kontra.validate("prod_db.orders", rules=[
-    rules.not_null("order_id"),
-    rules.range("quantity", min=1),
-    rules.allowed_values("status", ["pending", "shipped", "delivered"]),
-])
-
-# Direct URI
-result = kontra.validate(
-    "postgres://user:pass@host/db/public.users",
-    rules=[rules.not_null("id")]
-)
-```
-
-Named datasources are defined in `.kontra/config.yml`:
-
-```yaml
-datasources:
-  prod_db:
-    type: postgres
-    host: localhost
-    database: myapp
-    tables:
-      users: public.users
-      orders: public.orders
-```
-
-### BYOC (Bring Your Own Connection)
-
-Use your own database connection with Kontra. This gives you full control over connection management (pooling, auth, lifecycle) while Kontra still performs SQL pushdown and preplan optimizations.
-
-```python
 import psycopg
 import kontra
 from kontra import rules
 
-# Create your connection (you manage its lifecycle)
-conn = psycopg.connect(
-    host="localhost",
-    dbname="myapp",
-    user="app_user",
-)
-
-# Validate using your connection
+# Pass your own connection
+conn = psycopg.connect(host="localhost", dbname="myapp")
 result = kontra.validate(
-    conn,                           # Your connection object
-    table="public.users",           # Required: table to validate
-    rules=[
-        rules.not_null("user_id"),
-        rules.unique("email"),
-    ],
+    conn,
+    table="public.users",
+    rules=[rules.not_null("user_id")],
 )
-
-# Important: YOU close the connection when done
 conn.close()
+
+# Or use a direct URI
+result = kontra.validate(
+    "postgres://user:pass@host/db/public.users",
+    rules=[rules.not_null("id")]
+)
 ```
 
 **Supported connection types:**
@@ -159,11 +119,31 @@ conn.close()
 - `"public.users"` - schema.table
 - `"mydb.dbo.orders"` - database.schema.table
 
-**Benefits:**
-- Use your existing connection pool
-- Control authentication and credentials
-- Integrate with your connection management patterns
-- Rules execute as SQL on your connection (pushdown)
+### Named Datasources
+
+For repeated use, define datasources in `.kontra/config.yml`:
+
+```yaml
+datasources:
+  prod_db:
+    type: postgres
+    host: localhost
+    database: myapp
+    tables:
+      users: public.users
+      orders: public.orders
+```
+
+Then reference by name:
+
+```python
+result = kontra.validate("prod_db.users", "contracts/users.yml")
+
+result = kontra.validate("prod_db.orders", rules=[
+    rules.not_null("order_id"),
+    rules.range("quantity", min=1),
+])
+```
 
 ### Validate JSON Data
 
