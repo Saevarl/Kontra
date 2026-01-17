@@ -119,9 +119,9 @@ result = kontra.validate(
 - `"public.users"` - schema.table
 - `"mydb.dbo.orders"` - database.schema.table
 
-### Named Datasources
+### Named Datasources (Alternative)
 
-For repeated use, define datasources in `.kontra/config.yml`:
+Instead of passing connections or URIs, you can define reusable datasources in `.kontra/config.yml`:
 
 ```yaml
 datasources:
