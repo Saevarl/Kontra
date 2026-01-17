@@ -13,11 +13,8 @@ pip install kontra
 ```python
 import kontra
 from kontra import rules
-import polars as pl
 
-df = pl.read_parquet("data.parquet")
-
-result = kontra.validate(df, rules=[
+result = kontra.validate("data.parquet", rules=[
     rules.not_null("user_id"),
     rules.unique("email"),
     rules.range("age", min=0, max=150),
@@ -30,18 +27,20 @@ else:
         print(f"FAILED: {rule.rule_id} - {rule.message}")
 ```
 
+Pass file paths directly—no need to load data yourself. Kontra handles Parquet, CSV, and database connections.
+
 ## Common Patterns
 
 ### Validate with a Contract File
 
 ```python
-result = kontra.validate(df, "contracts/users.yml")
+result = kontra.validate("data.parquet", "contracts/users.yml")
 ```
 
 ### Mix Contract and Inline Rules
 
 ```python
-result = kontra.validate(df, "contracts/base.yml", rules=[
+result = kontra.validate("data.parquet", "contracts/base.yml", rules=[
     rules.freshness("updated_at", max_age="24h"),
 ])
 ```
@@ -49,7 +48,7 @@ result = kontra.validate(df, "contracts/base.yml", rules=[
 ### Profile Data
 
 ```python
-profile = kontra.scout(df)
+profile = kontra.scout("data.parquet")
 print(f"Rows: {profile.row_count}")
 print(f"Columns: {profile.column_count}")
 
@@ -60,11 +59,11 @@ for col in profile.columns:
 ### Generate Rules from Profile
 
 ```python
-profile = kontra.scout(df, preset="deep")
+profile = kontra.scout("data.parquet", preset="deep")
 suggestions = kontra.suggest_rules(profile)
 
 # Use directly
-result = kontra.validate(df, rules=suggestions.to_dict())
+result = kontra.validate("data.parquet", rules=suggestions.to_dict())
 
 # Or save as contract
 suggestions.save("contracts/generated.yml")
@@ -212,7 +211,7 @@ rules.range("score", min=0, max=100, id="score_range")  # custom rule ID
 ## Working with Results
 
 ```python
-result = kontra.validate(df, rules=[...])
+result = kontra.validate("data.parquet", rules=[...])
 
 # Status
 result.passed          # bool
@@ -243,7 +242,7 @@ result.to_json()       # JSON string
 
 ```python
 result = kontra.validate(
-    df,
+    "data.parquet",
     "contract.yml",
     preplan="auto",      # "on" | "off" | "auto"
     pushdown="auto",     # "on" | "off" | "auto"
@@ -269,7 +268,7 @@ For full details, see [Execution Model](advanced/performance.md).
 Validate contract/rules syntax without executing against data:
 
 ```python
-check = kontra.validate(df, "contract.yml", dry_run=True)
+check = kontra.validate(None, "contract.yml", dry_run=True)
 check.valid          # bool - is contract syntax valid?
 check.rules_count    # int - number of rules that would run
 check.columns_needed # list - columns the contract requires
@@ -353,7 +352,7 @@ from kontra.errors import (
 )
 
 try:
-    result = kontra.validate(df, "contract.yml")
+    result = kontra.validate("data.parquet", "contract.yml")
 except ContractNotFoundError as e:
     print(f"Contract not found: {e}")
 except KontraError as e:
