@@ -29,6 +29,21 @@ else:
 
 Pass file paths directly—no need to load data yourself. Kontra handles Parquet, CSV, and database connections.
 
+### With DataFrames
+
+Already have data loaded? Pass it directly:
+
+```python
+import polars as pl
+
+df = pl.read_parquet("data.parquet")
+result = kontra.validate(df, rules=[
+    rules.not_null("user_id"),
+])
+```
+
+Works with Polars and pandas DataFrames.
+
 ## Common Patterns
 
 ### Validate with a Contract File
