@@ -10,7 +10,7 @@ All result types have a `.to_llm()` method that returns a compact, token-efficie
 import kontra
 
 # Validation result
-result = kontra.validate(df, rules=[...])
+result = kontra.validate("data.parquet", rules=[...])
 print(result.to_llm())
 # VALIDATION: my_contract PASSED
 # PASSED: 5 rules
@@ -22,7 +22,7 @@ print(result.to_llm())
 # PASSED: 12 rules
 
 # Profile
-profile = kontra.scout(df)
+profile = kontra.scout("data.parquet")
 print(profile.to_llm())
 # DATASET: users.parquet (50K rows, 8 cols)
 # COLS: user_id(int64,100%,unique), email(str,98%), status(str,100%,3vals), ...
@@ -111,26 +111,12 @@ sources = kontra.list_datasources()
 # }
 ```
 
-## MCP Server Integration
-
-Kontra can be exposed as an MCP (Model Context Protocol) server for Claude and other LLM tools.
-
-The MCP server provides three tools:
-
-| Tool | Description |
-|------|-------------|
-| `validate` | Validate data against rules |
-| `scout` | Profile a dataset |
-| `diff` | Compare validation runs |
-
-See [kontra-mcp](https://github.com/kontra/kontra-mcp) for setup.
-
 ## Suggested Rules for Agents
 
 When an agent needs to generate validation rules from data:
 
 ```python
-profile = kontra.scout(df, preset="deep")
+profile = kontra.scout("data.parquet", preset="deep")
 suggestions = kontra.suggest_rules(profile)
 
 # Filter by confidence
@@ -138,7 +124,7 @@ high_confidence = suggestions.filter(min_confidence=0.9)
 
 # Get as dict for validation
 rules = high_confidence.to_dict()
-result = kontra.validate(df, rules=rules)
+result = kontra.validate("data.parquet", rules=rules)
 ```
 
 **Note:** Suggested rules are heuristic. They reflect observed patterns in the data, not ground truth. Agents should present them as starting points, not authoritative contracts.
@@ -154,7 +140,7 @@ from kontra.errors import (
 )
 
 try:
-    result = kontra.validate(df, "contract.yml")
+    result = kontra.validate("data.parquet", "contract.yml")
 except ContractNotFoundError as e:
     # Contract file not found
     return {"error": "contract_not_found", "message": str(e)}
