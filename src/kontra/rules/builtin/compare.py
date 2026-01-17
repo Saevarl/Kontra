@@ -167,3 +167,17 @@ class CompareRule(BaseRule):
             "right": self._right,
             "op": self._op,
         }
+
+    def to_sql_filter(self, dialect: str = "postgres") -> str | None:
+        left = f'"{self._left}"'
+        right = f'"{self._right}"'
+
+        # Map Python operators to SQL
+        sql_op = self._op
+        if sql_op == "==":
+            sql_op = "="
+        elif sql_op == "!=":
+            sql_op = "<>"
+
+        # Failures: NULL in either column OR comparison is FALSE
+        return f"{left} IS NULL OR {right} IS NULL OR NOT ({left} {sql_op} {right})"

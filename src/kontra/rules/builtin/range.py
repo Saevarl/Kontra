@@ -189,3 +189,24 @@ class RangeRule(BaseRule):
             return f"{column} values below minimum {min_val}"
         else:
             return f"{column} values above maximum {max_val}"
+
+    def to_sql_filter(self, dialect: str = "postgres") -> str | None:
+        column = self.params.get("column")
+        min_val = self.params.get("min")
+        max_val = self.params.get("max")
+
+        if not column or (min_val is None and max_val is None):
+            return None
+
+        col = f'"{column}"'
+        conditions = []
+
+        if min_val is not None:
+            conditions.append(f"{col} < {min_val}")
+        if max_val is not None:
+            conditions.append(f"{col} > {max_val}")
+
+        # NULL is also a failure
+        conditions.append(f"{col} IS NULL")
+
+        return " OR ".join(conditions)

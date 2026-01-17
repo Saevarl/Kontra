@@ -429,23 +429,37 @@ class ValidationResult:
             )
 
         # Load data based on source type
-        df = self._load_data_for_sampling()
+        # Try SQL pushdown for database sources
+        df = self._load_data_for_sampling(rule_obj, n)
 
-        # Filter to failing rows, add index, limit
-        try:
-            failing = (
-                df.with_row_index("_row_index")
-                .filter(predicate)
-                .head(n)
-                .to_dicts()
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to query failing rows: {e}") from e
+        # For non-database sources (or if SQL filter wasn't available),
+        # we need to filter with Polars
+        if "_row_index" not in df.columns:
+            # Filter to failing rows, add index, limit
+            try:
+                failing = (
+                    df.with_row_index("_row_index")
+                    .filter(predicate)
+                    .head(n)
+                    .to_dicts()
+                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to query failing rows: {e}") from e
+        else:
+            # SQL pushdown already applied filter and added row index
+            failing = df.head(n).to_dicts()
 
         return FailureSamples(failing, rule_id)
 
-    def _load_data_for_sampling(self) -> "pl.DataFrame":
-        """Load data from the stored data source for sample_failures()."""
+    def _load_data_for_sampling(
+        self, rule: Any = None, n: int = 5
+    ) -> "pl.DataFrame":
+        """
+        Load data from the stored data source for sample_failures().
+
+        For database sources with rules that support SQL filters,
+        pushes the filter to SQL for performance.
+        """
         import polars as pl
 
         source = self._data_source
@@ -488,7 +502,7 @@ class ValidationResult:
                         "For BYOC, keep the connection open until done with sample_failures()."
                     )
                 table = getattr(handle, "table_ref", None) or handle.path
-                return pl.read_database(f"SELECT * FROM {table}", conn)
+                return self._query_db_with_filter(conn, table, rule, n, "postgres")
 
             elif handle.scheme in ("postgres", "postgresql"):
                 # PostgreSQL via URI
@@ -500,7 +514,7 @@ class ValidationResult:
                         "For URI-based connections, sample_failures() requires re-connection."
                     )
                 table = getattr(handle, "table_ref", None) or handle.path
-                return pl.read_database(f"SELECT * FROM {table}", conn)
+                return self._query_db_with_filter(conn, table, rule, n, "postgres")
 
             elif handle.scheme == "mssql":
                 # SQL Server
@@ -511,7 +525,7 @@ class ValidationResult:
                         "Database connection is not available."
                     )
                 table = getattr(handle, "table_ref", None) or handle.path
-                return pl.read_database(f"SELECT * FROM {table}", conn)
+                return self._query_db_with_filter(conn, table, rule, n, "mssql")
 
             elif handle.scheme in ("file", None) or (handle.uri and not handle.scheme):
                 # File-based
@@ -524,6 +538,51 @@ class ValidationResult:
                     return pl.read_parquet(uri)
 
         raise RuntimeError(f"Unsupported data source type: {type(source)}")
+
+    def _query_db_with_filter(
+        self,
+        conn: Any,
+        table: str,
+        rule: Any,
+        n: int,
+        dialect: str,
+    ) -> "pl.DataFrame":
+        """
+        Query database with SQL filter if rule supports it.
+
+        Uses the rule's to_sql_filter() method to push the filter to SQL,
+        avoiding loading the entire table.
+        """
+        import polars as pl
+
+        sql_filter = None
+        if rule is not None and hasattr(rule, "to_sql_filter"):
+            sql_filter = rule.to_sql_filter(dialect)
+
+        if sql_filter:
+            # Build query with filter and row number
+            # ROW_NUMBER() gives us the original row index
+            if dialect == "mssql":
+                # SQL Server syntax
+                query = f"""
+                    SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS _row_index
+                    FROM {table}
+                    WHERE {sql_filter}
+                    ORDER BY (SELECT NULL)
+                    OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY
+                """
+            else:
+                # PostgreSQL / DuckDB syntax
+                query = f"""
+                    SELECT *, ROW_NUMBER() OVER () - 1 AS _row_index
+                    FROM {table}
+                    WHERE {sql_filter}
+                    LIMIT {n}
+                """
+            return pl.read_database(query, conn)
+        else:
+            # Fall back to loading all data (rule doesn't support SQL filter)
+            return pl.read_database(f"SELECT * FROM {table}", conn)
 
 
 @dataclass

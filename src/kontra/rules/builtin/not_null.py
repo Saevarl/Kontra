@@ -96,3 +96,16 @@ class NotNullRule(BaseRule):
             message=message,
             columns={column},
         )
+
+    def to_sql_filter(self, dialect: str = "postgres") -> str | None:
+        column = self.params["column"]
+        include_nan = self.params.get("include_nan", False)
+
+        # Quote column name for safety
+        col = f'"{column}"'
+
+        if include_nan:
+            # NaN check: value != value is true for NaN
+            return f"{col} IS NULL OR {col} != {col}"
+        else:
+            return f"{col} IS NULL"

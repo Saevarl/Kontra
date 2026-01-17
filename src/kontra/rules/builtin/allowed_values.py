@@ -77,3 +77,30 @@ class AllowedValuesRule(BaseRule):
             message=f"{column} contains disallowed values",
             columns={column},
         )
+
+    def to_sql_filter(self, dialect: str = "postgres") -> str | None:
+        column = self.params["column"]
+        values: Sequence[Any] = self.params["values"]
+
+        col = f'"{column}"'
+
+        # Build IN list with proper quoting
+        quoted_values = []
+        for v in values:
+            if v is None:
+                continue  # NULL handled separately
+            elif isinstance(v, str):
+                # Escape single quotes
+                escaped = v.replace("'", "''")
+                quoted_values.append(f"'{escaped}'")
+            elif isinstance(v, bool):
+                quoted_values.append("TRUE" if v else "FALSE")
+            else:
+                quoted_values.append(str(v))
+
+        if quoted_values:
+            in_list = ", ".join(quoted_values)
+            return f"{col} NOT IN ({in_list}) OR {col} IS NULL"
+        else:
+            # Only NULL in allowed values, everything else fails
+            return f"{col} IS NOT NULL"

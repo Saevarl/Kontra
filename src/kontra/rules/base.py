@@ -86,3 +86,22 @@ class BaseRule(ABC):
             "failed_count": int(failed_count),
             "message": message if failed_count > 0 else "Passed",
         }
+
+    def to_sql_filter(self, dialect: str = "postgres") -> str | None:
+        """
+        Return a SQL WHERE clause that matches failing rows.
+
+        Used by sample_failures() to push filtering to the database instead of
+        loading the entire table. Returns None if the rule doesn't support SQL filters.
+
+        Args:
+            dialect: SQL dialect ("postgres", "mssql", "duckdb")
+
+        Returns:
+            SQL WHERE clause string (without "WHERE"), or None if not supported.
+
+        Example:
+            not_null rule returns: "email IS NULL"
+            range rule returns: "amount < 0 OR amount > 100 OR amount IS NULL"
+        """
+        return None

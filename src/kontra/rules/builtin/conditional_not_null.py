@@ -174,3 +174,35 @@ class ConditionalNotNullRule(BaseRule):
             "when_op": self._when_op,
             "when_value": self._when_value,
         }
+
+    def to_sql_filter(self, dialect: str = "postgres") -> str | None:
+        col = f'"{self._column}"'
+        when_col = f'"{self._when_column}"'
+
+        # Map operators
+        sql_op = self._when_op
+        if sql_op == "==":
+            sql_op = "="
+        elif sql_op == "!=":
+            sql_op = "<>"
+
+        # Format the value
+        if self._when_value is None:
+            # Special handling for NULL comparison
+            if sql_op == "=":
+                condition = f"{when_col} IS NULL"
+            elif sql_op == "<>":
+                condition = f"{when_col} IS NOT NULL"
+            else:
+                return None  # Can't compare with NULL using < > etc.
+        elif isinstance(self._when_value, str):
+            escaped = self._when_value.replace("'", "''")
+            condition = f"{when_col} {sql_op} '{escaped}'"
+        elif isinstance(self._when_value, bool):
+            val = "TRUE" if self._when_value else "FALSE"
+            condition = f"{when_col} {sql_op} {val}"
+        else:
+            condition = f"{when_col} {sql_op} {self._when_value}"
+
+        # Failure = condition is TRUE AND column is NULL
+        return f"({condition}) AND {col} IS NULL"

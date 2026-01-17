@@ -112,3 +112,26 @@ class RegexRule(BaseRule):
             "column": column,
             "pattern": pattern,
         }
+
+    def to_sql_filter(self, dialect: str = "postgres") -> str | None:
+        column = self.params.get("column")
+        pattern = self.params.get("pattern")
+
+        if not column or not pattern:
+            return None
+
+        col = f'"{column}"'
+        # Escape single quotes in pattern
+        escaped_pattern = pattern.replace("'", "''")
+
+        if dialect in ("postgres", "postgresql"):
+            # PostgreSQL uses ~ for regex match, !~ for non-match
+            return f"{col} !~ '{escaped_pattern}' OR {col} IS NULL"
+        elif dialect == "duckdb":
+            # DuckDB uses regexp_matches
+            return f"NOT regexp_matches({col}, '{escaped_pattern}') OR {col} IS NULL"
+        elif dialect == "mssql":
+            # SQL Server doesn't have native regex - skip SQL filter
+            return None
+        else:
+            return None
