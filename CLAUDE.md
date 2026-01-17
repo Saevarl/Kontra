@@ -8,6 +8,19 @@ Kontra is a developer-first data quality **measurement engine**. It measures dat
 
 Supports Parquet, CSV, PostgreSQL, SQL Server, local files, and S3. Uses a hybrid execution model: metadata preplan → SQL pushdown → Polars.
 
+## Kontra Manifest
+
+**Before making design or feature decisions, refer to `kontra-manifest.md` in the project root.**
+
+The manifest defines Kontra's core beliefs, design constraints, and boundaries. Key principles:
+- Kontra is a **primitive**, not a product
+- Measurement comes before explanation (counts are facts, samples are explanations)
+- Execution is tiered: metadata → pushdown → in-memory
+- Results are first-class artifacts (structured, serializable, diffable)
+- Boring is a feature (no workflows, no UI, no orchestration)
+
+If a proposed feature conflicts with the manifest, the feature needs a very strong justification or should be rejected.
+
 ## Key Commands
 
 ```bash
@@ -280,6 +293,10 @@ These facts must be documented (in advanced/reference docs):
 5. SQL dialects (DuckDB, PostgreSQL, SQL Server) may differ on edge cases
 6. DuckDB is a core dependency
 
+### Holistic Updates
+
+When updating documentation for a new feature, view the doc holistically—don't "overfit" to the new feature. The doc should read naturally for someone encountering it fresh, not like a changelog with the latest feature prominently featured. New features should be integrated proportionally to their importance, not their recency.
+
 ### Documentation Checklist
 
 When adding a new feature:
@@ -288,6 +305,7 @@ When adding a new feature:
 - [ ] Caveats in advanced/ or reference/ (not in getting-started)
 - [ ] Python API helpers added if applicable
 - [ ] Rule count updated if adding rules
+- [ ] Re-read the full doc to ensure it flows naturally with the addition
 
 ## Roadmap
 

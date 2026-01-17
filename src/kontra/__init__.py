@@ -103,6 +103,8 @@ def validate(
     env: Optional[str] = None,
     stats: str = "none",
     dry_run: bool = False,
+    sample: int = 5,
+    sample_budget: int = 50,
     **kwargs,
 ) -> Union[ValidationResult, DryRunResult]:
     """
@@ -131,6 +133,8 @@ def validate(
         dry_run: If True, validate contract/rules syntax without executing
             against data. Returns DryRunResult with .valid, .rules_count,
             .columns_needed. Use to check contracts before running.
+        sample: Per-rule sample cap for failing rows (default: 5, 0 to disable)
+        sample_budget: Global sample cap across all rules (default: 50)
         **kwargs: Additional arguments passed to ValidationEngine
 
     Returns:
@@ -391,6 +395,8 @@ def validate(
         raw_result,
         data_source=data_source,
         rule_objects=engine._rules,
+        sample=sample,
+        sample_budget=sample_budget,
     )
 
 

@@ -178,7 +178,7 @@ This is useful for:
 
 ### Debug Failed Rules
 
-When a rule fails, use `sample_failures()` to see example failing rows:
+When validation fails, each rule includes sample failing rows for debugging:
 
 ```python
 result = kontra.validate("data.parquet", rules=[
@@ -188,27 +188,22 @@ result = kontra.validate("data.parquet", rules=[
 
 if not result.passed:
     for rule in result.blocking_failures:
-        samples = result.sample_failures(rule.rule_id, n=5)
-        print(f"\n{rule.rule_id}: {rule.failed_count} failures")
-        for row in samples:
+        print(f"{rule.rule_id}: {rule.failed_count} failures")
+        for row in rule.samples or []:
             print(f"  Row {row['_row_index']}: {row}")
 ```
 
-Output:
-```
-COL:email:not_null: 42 failures
-  Row 15: {'_row_index': 15, 'id': 16, 'email': None, 'status': 'active'}
-  Row 23: {'_row_index': 23, 'id': 24, 'email': None, 'status': 'pending'}
-  ...
-```
-
-`sample_failures()` returns a `FailureSamples` object with serialization methods:
+By default, up to 5 samples per rule (50 total) are collected. Adjust with `sample` and `sample_budget` parameters:
 
 ```python
-samples = result.sample_failures("COL:email:not_null")
-samples.to_dict()   # List of dicts
-samples.to_json()   # JSON string
-samples.to_llm()    # Token-optimized for LLM context
+result = kontra.validate(..., sample=10, sample_budget=100)  # More samples
+result = kontra.validate(..., sample=0)  # Disable sampling
+```
+
+For more samples than cached, use `sample_failures()`:
+
+```python
+samples = result.sample_failures("COL:email:not_null", n=20)
 ```
 
 **Note**: For database connections (BYOC), keep the connection open until done with `sample_failures()`.
@@ -375,7 +370,7 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 |------|----------------|
 | `ValidationResult` | `passed`, `rules`, `blocking_failures`, `warnings`, `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
 | `FailureSamples` | `count`, `rule_id`, `to_dict()`, `to_json()`, `to_llm()` (iterable) |
-| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column` |
+| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column`, `samples`, `samples_source`, `samples_reason` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 | `Profile` | `row_count`, `column_count`, `columns` |
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |

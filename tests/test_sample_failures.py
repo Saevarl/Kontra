@@ -655,3 +655,189 @@ class TestMultipleRules:
         # Same row (index 0) appears in both
         assert email_samples[0]["_row_index"] == 0
         assert status_samples[0]["_row_index"] == 0
+
+
+# =============================================================================
+# Eager Sampling Tests
+# =============================================================================
+
+
+class TestEagerSampling:
+    """Tests for eager sampling (samples embedded in RuleResult)."""
+
+    def test_samples_populated_during_validation(self):
+        """Samples are populated during validate() call."""
+        df = pl.DataFrame({"email": [None, "a@b.com", None]})
+        result = kontra.validate(df, rules=[rules.not_null("email")])
+
+        r = result.rules[0]
+        assert r.samples is not None
+        assert len(r.samples) == 2
+        assert r.samples_source == "polars"
+
+    def test_passing_rule_has_empty_samples(self):
+        """Passing rules have samples=[] and reason=rule_passed."""
+        df = pl.DataFrame({"name": ["a", "b", "c"]})
+        result = kontra.validate(df, rules=[rules.not_null("name")])
+
+        r = result.rules[0]
+        assert r.passed
+        assert r.samples == []
+        assert r.samples_reason == "rule_passed"
+
+    def test_sample_parameter_limits_per_rule(self):
+        """sample parameter limits samples per rule."""
+        df = pl.DataFrame({"email": [None] * 10})
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=3)
+
+        r = result.rules[0]
+        assert len(r.samples) == 3
+        assert r.samples_truncated is True
+        assert r.samples_reason == "per_rule_limit"
+
+    def test_sample_budget_limits_total_samples(self):
+        """sample_budget limits total samples across rules."""
+        df = pl.DataFrame({
+            "a": [None] * 10,  # 10 failures
+            "b": [None] * 10,  # 10 failures
+        })
+        result = kontra.validate(
+            df,
+            rules=[rules.not_null("a"), rules.not_null("b")],
+            sample=5,
+            sample_budget=6,
+        )
+
+        # Worst offender should get samples (both have same count, so order matters)
+        total_samples = sum(len(r.samples) for r in result.rules if r.samples)
+        assert total_samples <= 6
+
+    def test_budget_exhausted_rules_have_truncated_flag(self):
+        """Rules that don't get samples due to budget have samples=None."""
+        df = pl.DataFrame({
+            "a": [None if i < 10 else 1 for i in range(12)],  # 10 failures - worst
+            "b": [None if i < 5 else 1 for i in range(12)],   # 5 failures
+            "c": [None if i < 2 else 1 for i in range(12)],   # 2 failures - may be cut off
+        })
+        result = kontra.validate(
+            df,
+            rules=[
+                rules.not_null("a"),
+                rules.not_null("b"),
+                rules.not_null("c"),
+            ],
+            sample=3,
+            sample_budget=4,  # Only enough for ~1 rule
+        )
+
+        # Sort by failed_count to find worst offenders
+        sorted_rules = sorted(result.rules, key=lambda r: r.failed_count, reverse=True)
+
+        # First rule(s) should have samples
+        has_samples = [r for r in sorted_rules if r.samples]
+        assert len(has_samples) >= 1
+
+        # Some rule(s) should be budget exhausted
+        budget_exhausted = [r for r in sorted_rules if r.samples_reason == "budget_exhausted"]
+        assert len(budget_exhausted) >= 1
+
+    def test_sample_zero_disables_eager_sampling(self):
+        """sample=0 disables eager sampling."""
+        df = pl.DataFrame({"email": [None]})
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=0)
+
+        r = result.rules[0]
+        assert r.samples is None
+        # sample_failures() should still work (lazy path)
+        samples = result.sample_failures("COL:email:not_null")
+        assert len(samples) == 1
+
+    def test_unsupported_rule_has_unavailable_samples(self):
+        """Dataset-level rules have samples=None with reason."""
+        df = pl.DataFrame({"a": [1, 2, 3]})
+        result = kontra.validate(df, rules=[{"name": "min_rows", "params": {"threshold": 10}}])
+
+        r = result.rules[0]
+        assert not r.passed
+        assert r.samples is None
+        assert r.samples_reason == "rule_unsupported"
+
+    def test_cached_samples_returned_from_sample_failures(self):
+        """sample_failures() returns cached samples instead of re-querying."""
+        df = pl.DataFrame({"email": [None] * 5})
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=5)
+
+        # First call uses cache
+        samples = result.sample_failures("COL:email:not_null", n=3)
+        assert len(samples) == 3
+
+        # Verify it's the same data as cached
+        cached = result.rules[0].samples
+        assert samples[0]["_row_index"] == cached[0]["_row_index"]
+
+    def test_unique_rule_has_duplicate_count(self):
+        """Unique rule samples include _duplicate_count."""
+        df = pl.DataFrame({
+            "user_id": [1, 1, 1, 2, 2, 3],  # 1 has 3, 2 has 2
+            "name": list("ABCDEF"),
+        })
+        result = kontra.validate(df, rules=[rules.unique("user_id")])
+
+        r = result.rules[0]
+        assert r.samples is not None
+        assert all("_duplicate_count" in s for s in r.samples)
+
+        # Worst offenders first
+        counts = [s["_duplicate_count"] for s in r.samples]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_to_dict_includes_samples(self):
+        """to_dict() includes sample data."""
+        df = pl.DataFrame({"email": [None, "a@b.com"]})
+        result = kontra.validate(df, rules=[rules.not_null("email")])
+
+        d = result.to_dict()
+        assert "samples" in d["rules"][0]
+        assert d["rules"][0]["samples"] is not None
+
+    def test_rule_result_to_llm_includes_samples(self):
+        """RuleResult.to_llm() includes sample data."""
+        df = pl.DataFrame({"email": [None, "a@b.com"]})
+        result = kontra.validate(df, rules=[rules.not_null("email")])
+
+        llm = result.rules[0].to_llm()
+        assert "Samples" in llm
+        assert "row=" in llm
+
+
+class TestEagerSamplingWithParquet:
+    """Tests for eager sampling with Parquet files (preplan tier)."""
+
+    @pytest.fixture
+    def parquet_with_nulls(self, tmp_path):
+        """Create a parquet file with nulls."""
+        df = pl.DataFrame({
+            "id": [1, 2, 3, 4, 5],
+            "email": ["a@b.com", None, "c@d.com", None, "e@f.com"],
+        })
+        path = tmp_path / "test.parquet"
+        df.write_parquet(path)
+        return str(path)
+
+    def test_parquet_preplan_still_samples(self, parquet_with_nulls):
+        """Parquet files with preplan still get samples (file can be read)."""
+        result = kontra.validate(parquet_with_nulls, rules=[rules.not_null("email")])
+
+        r = result.rules[0]
+        # Even if preplan was used, we can still sample from file
+        assert r.samples is not None
+        assert len(r.samples) == 2
+
+    def test_parquet_samples_source_indicates_upgrade(self, parquet_with_nulls):
+        """samples_source reflects how samples were obtained."""
+        result = kontra.validate(parquet_with_nulls, rules=[rules.not_null("email")])
+
+        r = result.rules[0]
+        # If preplan was used for measurement but polars for sampling
+        if r.source == "metadata":
+            assert r.samples_source == "polars"

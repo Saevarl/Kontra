@@ -118,6 +118,16 @@ class FailureSamples:
         return "\n".join(lines)
 
 
+class SampleReason:
+    """Constants for why samples may be unavailable."""
+
+    UNAVAILABLE_METADATA = "unavailable_from_metadata"  # Preplan tier - knows existence, not location
+    UNAVAILABLE_PASSED = "rule_passed"  # No failures to sample
+    UNAVAILABLE_UNSUPPORTED = "rule_unsupported"  # dtype, min_rows, etc. - no row-level samples
+    TRUNCATED_BUDGET = "budget_exhausted"  # Global budget hit
+    TRUNCATED_LIMIT = "per_rule_limit"  # Per-rule cap hit
+
+
 @dataclass
 class RuleResult:
     """
@@ -130,8 +140,14 @@ class RuleResult:
         failed_count: Number of failing rows
         message: Human-readable result message
         severity: "blocking" | "warning" | "info"
-        source: Execution source ("metadata", "sql", "polars")
+        source: Measurement source ("metadata", "sql", "polars")
         column: Column name if applicable
+
+    Sampling properties:
+        samples: List of sample failing rows, or None if unavailable
+        samples_source: Where samples came from ("sql", "polars"), or None
+        samples_reason: Why samples unavailable (see SampleReason)
+        samples_truncated: True if more samples exist but were cut off
     """
 
     rule_id: str
@@ -143,6 +159,12 @@ class RuleResult:
     source: str = "polars"
     column: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
+
+    # Sampling fields (eager sampling)
+    samples: Optional[List[Dict[str, Any]]] = None
+    samples_source: Optional[str] = None
+    samples_reason: Optional[str] = None
+    samples_truncated: bool = False
 
     def __repr__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
@@ -177,6 +199,11 @@ class RuleResult:
             source=d.get("execution_source", d.get("source", "polars")),
             column=column,
             details=d.get("details"),
+            # Sampling fields
+            samples=d.get("samples"),
+            samples_source=d.get("samples_source"),
+            samples_reason=d.get("samples_reason"),
+            samples_truncated=d.get("samples_truncated", False),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -194,7 +221,58 @@ class RuleResult:
             d["column"] = self.column
         if self.details:
             d["details"] = self.details
+
+        # Sampling fields - always include for clarity
+        d["samples"] = self.samples  # None = unavailable, [] = none found
+        if self.samples_source:
+            d["samples_source"] = self.samples_source
+        if self.samples_reason:
+            d["samples_reason"] = self.samples_reason
+        if self.samples_truncated:
+            d["samples_truncated"] = self.samples_truncated
+
         return d
+
+    def to_llm(self) -> str:
+        """Token-optimized format for LLM context."""
+        status = "PASS" if self.passed else "FAIL"
+        parts = [f"{self.rule_id}: {status}"]
+
+        if self.failed_count > 0:
+            parts.append(f"({self.failed_count:,} failures)")
+
+        # Add samples if available
+        if self.samples:
+            parts.append(f"\n  Samples ({len(self.samples)}):")
+            for i, row in enumerate(self.samples[:5]):
+                # Extract metadata
+                row_idx = row.get("_row_index")
+                dup_count = row.get("_duplicate_count")
+                prefix_parts = []
+                if row_idx is not None:
+                    prefix_parts.append(f"row={row_idx}")
+                if dup_count is not None:
+                    prefix_parts.append(f"dupes={dup_count}")
+                prefix = ", ".join(prefix_parts) + ": " if prefix_parts else ""
+
+                # Format data columns
+                data_parts = []
+                for k, v in row.items():
+                    if k in ("_row_index", "_duplicate_count"):
+                        continue
+                    if v is None:
+                        data_parts.append(f"{k}=None")
+                    elif isinstance(v, str) and len(v) > 15:
+                        data_parts.append(f"{k}={v[:15]}...")
+                    else:
+                        data_parts.append(f"{k}={v}")
+                parts.append(f"    [{i}] {prefix}" + ", ".join(data_parts[:5]))
+            if len(self.samples) > 5:
+                parts.append(f"    ... +{len(self.samples) - 5} more")
+        elif self.samples_reason:
+            parts.append(f"\n  Samples: {self.samples_reason}")
+
+        return " ".join(parts[:2]) + "".join(parts[2:])
 
 
 @dataclass
@@ -262,6 +340,8 @@ class ValidationResult:
         dataset: str = "unknown",
         data_source: Optional[Any] = None,
         rule_objects: Optional[List[Any]] = None,
+        sample: int = 5,
+        sample_budget: int = 50,
     ) -> "ValidationResult":
         """Create from ValidationEngine.run() result dict.
 
@@ -270,6 +350,8 @@ class ValidationResult:
             dataset: Dataset name (fallback)
             data_source: Original data source for lazy sample_failures()
             rule_objects: Rule objects for sample_failures() predicates
+            sample: Per-rule sample cap (0 to disable)
+            sample_budget: Global sample cap across all rules
         """
         summary = result.get("summary", {})
         results_list = result.get("results", [])
@@ -285,7 +367,8 @@ class ValidationResult:
         blocking_failed = sum(1 for r in rules if not r.passed and r.severity == "blocking")
         warning_failed = sum(1 for r in rules if not r.passed and r.severity == "warning")
 
-        return cls(
+        # Create instance first (need it for sampling methods)
+        instance = cls(
             passed=summary.get("passed", blocking_failed == 0),
             dataset=summary.get("dataset_name", dataset),
             total_rules=total,
@@ -298,6 +381,200 @@ class ValidationResult:
             _data_source=data_source,
             _rule_objects=rule_objects,
         )
+
+        # Perform eager sampling if enabled
+        if sample > 0 and rule_objects is not None:
+            instance._perform_eager_sampling(sample, sample_budget, rule_objects)
+
+        return instance
+
+    def _perform_eager_sampling(
+        self,
+        per_rule_cap: int,
+        global_budget: int,
+        rule_objects: List[Any],
+    ) -> None:
+        """
+        Populate samples for each rule (eager sampling).
+
+        Allocates samples to worst offenders first (highest failed_count).
+        Respects per-rule cap and global budget.
+        """
+        import polars as pl
+
+        # Build rule_id -> rule_object map
+        rule_map = {getattr(r, "rule_id", None): r for r in rule_objects}
+
+        # Sort rules by failed_count descending (worst offenders first)
+        sorted_rules = sorted(
+            self.rules,
+            key=lambda r: r.failed_count if not r.passed else 0,
+            reverse=True,
+        )
+
+        remaining_budget = global_budget
+
+        for rule_result in sorted_rules:
+            # Handle passing rules
+            if rule_result.passed:
+                rule_result.samples = []
+                rule_result.samples_reason = SampleReason.UNAVAILABLE_PASSED
+                continue
+
+            # Check budget
+            if remaining_budget <= 0:
+                rule_result.samples = None
+                rule_result.samples_reason = SampleReason.TRUNCATED_BUDGET
+                rule_result.samples_truncated = True
+                continue
+
+            # Get corresponding rule object
+            rule_obj = rule_map.get(rule_result.rule_id)
+            if rule_obj is None:
+                rule_result.samples = None
+                rule_result.samples_reason = SampleReason.UNAVAILABLE_UNSUPPORTED
+                continue
+
+            # Check if rule was resolved via metadata (preplan)
+            # For file-based sources (Parquet/CSV), we can still sample by reading the file
+            # Only skip sampling for database stats without a live connection
+            if rule_result.source == "metadata":
+                if not self._can_sample_source():
+                    rule_result.samples = None
+                    rule_result.samples_reason = SampleReason.UNAVAILABLE_METADATA
+                    continue
+                # File-based source - proceed with sampling, update source to indicate upgrade
+                rule_result.samples_source = "polars"  # Will sample via Polars
+
+            # Check if rule supports sampling (has compile_predicate)
+            if not hasattr(rule_obj, "compile_predicate"):
+                rule_result.samples = None
+                rule_result.samples_reason = SampleReason.UNAVAILABLE_UNSUPPORTED
+                continue
+
+            predicate = None
+            pred_obj = rule_obj.compile_predicate()
+            if pred_obj is not None:
+                predicate = pred_obj.expr
+
+            if predicate is None:
+                rule_result.samples = None
+                rule_result.samples_reason = SampleReason.UNAVAILABLE_UNSUPPORTED
+                continue
+
+            # Calculate how many samples to get
+            n = min(per_rule_cap, remaining_budget)
+
+            # Try to get samples
+            try:
+                samples = self._collect_samples_for_rule(rule_obj, predicate, n)
+                rule_result.samples = samples
+                # Only set samples_source if not already set (e.g., for metadata tier upgrade)
+                if rule_result.samples_source is None:
+                    rule_result.samples_source = rule_result.source
+                remaining_budget -= len(samples)
+
+                # Mark if truncated at per-rule cap
+                if len(samples) == per_rule_cap and rule_result.failed_count > per_rule_cap:
+                    rule_result.samples_truncated = True
+                    rule_result.samples_reason = SampleReason.TRUNCATED_LIMIT
+
+            except Exception as e:
+                # Sampling failed, but validation result is still valid
+                rule_result.samples = None
+                rule_result.samples_reason = f"error: {str(e)[:50]}"
+
+    def _can_sample_source(self) -> bool:
+        """
+        Check if the data source supports sampling.
+
+        File-based sources (Parquet, CSV, S3) can always be sampled.
+        Database sources need a live connection.
+
+        Returns:
+            True if sampling is possible, False otherwise.
+        """
+        import polars as pl
+
+        source = self._data_source
+
+        if source is None:
+            return False
+
+        # DataFrame - always sampleable
+        if isinstance(source, pl.DataFrame):
+            return True
+
+        # String path - file based, always sampleable
+        if isinstance(source, str):
+            return True
+
+        # DatasetHandle - check scheme and connection
+        if hasattr(source, "scheme"):
+            scheme = getattr(source, "scheme", None)
+
+            # File-based schemes - always sampleable
+            if scheme in (None, "file") or (hasattr(source, "uri") and source.uri):
+                uri = getattr(source, "uri", "")
+                if uri.lower().endswith((".parquet", ".csv")) or uri.startswith("s3://"):
+                    return True
+
+            # BYOC or database with connection - check if connection exists
+            if hasattr(source, "external_conn") and source.external_conn is not None:
+                return True
+
+            # Database without connection - can't sample
+            if scheme in ("postgres", "postgresql", "mssql"):
+                return False
+
+        return True  # Default to sampleable
+
+    def _collect_samples_for_rule(
+        self,
+        rule_obj: Any,
+        predicate: Any,
+        n: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Collect sample rows for a single rule.
+
+        Uses the existing sampling infrastructure (SQL pushdown, Parquet predicate, etc.)
+        """
+        import polars as pl
+
+        source = self._data_source
+
+        if source is None:
+            return []
+
+        # Reuse existing loading/filtering logic
+        df = self._load_data_for_sampling(rule_obj, n)
+
+        # Check if SQL pushdown already filtered
+        if "_row_index" in df.columns:
+            return df.head(n).to_dicts()
+
+        # For Polars path, filter with predicate
+        # Special case: unique rule - add duplicate count
+        if getattr(rule_obj, "name", None) == "unique":
+            column = rule_obj.params.get("column")
+            return (
+                df.with_row_index("_row_index")
+                .with_columns(
+                    pl.col(column).count().over(column).alias("_duplicate_count")
+                )
+                .filter(predicate)
+                .sort("_duplicate_count", descending=True)
+                .head(n)
+                .to_dicts()
+            )
+        else:
+            return (
+                df.with_row_index("_row_index")
+                .filter(predicate)
+                .head(n)
+                .to_dicts()
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -364,16 +641,20 @@ class ValidationResult:
         self,
         rule_id: str,
         n: int = 5,
+        *,
+        upgrade_tier: bool = False,
     ) -> FailureSamples:
         """
         Get a sample of rows that failed a specific rule.
 
-        This method lazily re-queries the data source to find failing rows.
-        For BYOC (database connections), the connection must still be open.
+        If eager sampling is enabled (default), this returns cached samples.
+        Otherwise, it lazily re-queries the data source.
 
         Args:
             rule_id: The rule ID to get failures for (e.g., "COL:email:not_null")
             n: Number of sample rows to return (default: 5, max: 100)
+            upgrade_tier: If True, re-execute rules resolved via metadata
+                tier to get actual samples. Required for preplan rules.
 
         Returns:
             FailureSamples: Collection of failing rows with "_row_index" field.
@@ -382,7 +663,8 @@ class ValidationResult:
 
         Raises:
             ValueError: If rule_id not found or rule doesn't support row-level samples
-            RuntimeError: If data source is unavailable for re-query
+            RuntimeError: If data source is unavailable for re-query,
+                or if samples unavailable from metadata tier without upgrade_tier=True
 
         Example:
             result = kontra.validate("data.parquet", contract)
@@ -390,6 +672,9 @@ class ValidationResult:
                 samples = result.sample_failures("COL:email:not_null", n=5)
                 for row in samples:
                     print(f"Row {row['_row_index']}: {row}")
+
+            # For metadata-tier rules, use upgrade_tier to get samples:
+            samples = result.sample_failures("COL:id:not_null", upgrade_tier=True)
         """
         import polars as pl
 
@@ -409,6 +694,29 @@ class ValidationResult:
         # If rule passed, return empty FailureSamples
         if rule_result.passed:
             return FailureSamples([], rule_id)
+
+        # Check for cached samples first
+        if rule_result.samples is not None:
+            # Have cached samples - return if n <= cached, else fetch more
+            if len(rule_result.samples) >= n:
+                return FailureSamples(rule_result.samples[:n], rule_id)
+            # Need more samples than cached - fall through to lazy path
+
+        # Handle unavailable samples
+        if rule_result.samples_reason == SampleReason.UNAVAILABLE_METADATA:
+            if not upgrade_tier:
+                raise RuntimeError(
+                    f"Samples unavailable for {rule_id}: rule was resolved via metadata tier. "
+                    "Use upgrade_tier=True to re-execute and get samples."
+                )
+            # Fall through to lazy path for tier upgrade
+
+        elif rule_result.samples_reason == SampleReason.UNAVAILABLE_UNSUPPORTED:
+            raise ValueError(
+                f"Rule '{rule_result.name}' does not support row-level samples. "
+                "Dataset-level rules (min_rows, max_rows, freshness, etc.) "
+                "cannot identify specific failing rows."
+            )
 
         # Find the rule object to get the failure predicate
         if self._rule_objects is None:
