@@ -69,7 +69,8 @@ src/kontra/
 │   ├── loader.py          # Contract loading
 │   └── settings.py        # Project config system (.kontra/config.yml)
 ├── connectors/            # Dataset URI handling
-│   ├── handle.py          # URI parsing and named datasource resolution
+│   ├── handle.py          # URI parsing, named datasource resolution, BYOC handles
+│   ├── detection.py       # Connection type detection for BYOC
 │   ├── postgres.py        # PostgreSQL connection
 │   └── sqlserver.py       # SQL Server connection
 ├── engine/
@@ -148,7 +149,7 @@ src/kontra/
 - Determinism tests verify identical inputs produce identical outputs
 - Tier equivalence tests verify all execution paths agree on violation existence
 - CLI tests use `typer.testing.CliRunner`
-- 430+ tests
+- 550+ tests
 
 ### Test Files
 
@@ -200,6 +201,13 @@ These patterns caused bugs in the past. Avoid them:
 
 9. **API completeness**: If a parameter exists in dict format (like `id` for rules), the helper functions should support it too. Users shouldn't need to fall back to dict format for common use cases.
 
+## Bug Tracking
+
+See `BUGCHECKLIST.md` for known bugs discovered through adversarial testing. When fixing bugs:
+1. Check the item in BUGCHECKLIST.md
+2. Add a test that reproduces the bug
+3. Move the item to the "Completed" section with the test file reference
+
 ## Data Sources
 
 | Source | URI Format | Example |
@@ -210,6 +218,7 @@ These patterns caused bugs in the past. Avoid them:
 | PostgreSQL | `postgres://user:pass@host:port/db/schema.table` | `postgres:///public.users` |
 | SQL Server | `mssql://user:pass@host:port/db/schema.table` | `mssql:///dbo.orders` |
 | Named | `datasource.table` | `prod_db.users` |
+| BYOC | Connection object + table | `validate(conn, table="public.users")` |
 
 ## Documentation
 

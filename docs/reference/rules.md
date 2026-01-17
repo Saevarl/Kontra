@@ -381,3 +381,28 @@ class MyRule(BaseRule):
         mask = df[column] < 0
         return self._failures(df, mask, f"{column} has negative values")
 ```
+
+---
+
+## Data Format Edge Cases
+
+### CSV Files
+
+**Empty strings are NULL**: Both `""` (quoted empty) and trailing empty values in CSV are treated as NULL by Polars. This differs from Parquet where empty string and NULL are distinct.
+
+```csv
+id,name
+1,Alice
+2,""     # NULL, not empty string
+3,       # NULL
+```
+
+**First row is always header**: CSV files are assumed to have a header row. If your CSV has no header, the first data row becomes column names.
+
+### Large Values
+
+**Integer overflow**: Very large integers (e.g., 10^100) cause `OverflowError` because they exceed Polars integer types. Use string columns for arbitrary-precision numbers.
+
+### SQL Server
+
+**Regex falls back to Polars**: SQL Server doesn't support true regex (PATINDEX uses LIKE wildcards). The `regex` rule automatically falls back to Polars execution for correct results.

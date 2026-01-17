@@ -54,10 +54,18 @@ from kontra.logging import get_logger, log_exception
 
 _logger = get_logger(__name__)
 
+
+def _is_pandas_dataframe(obj: Any) -> bool:
+    """Check if object is a pandas DataFrame without importing pandas."""
+    # Check module name to avoid importing pandas
+    return type(obj).__module__.startswith("pandas") and type(obj).__name__ == "DataFrame"
+
+
 # API types
 from kontra.api.results import (
     ValidationResult,
     RuleResult,
+    DryRunResult,
     Diff,
     Suggestions,
     SuggestedRule,
@@ -81,9 +89,10 @@ from kontra.config.settings import (
 
 
 def validate(
-    data: Union[str, pl.DataFrame, "pd.DataFrame"],
+    data: Union[str, pl.DataFrame, "pd.DataFrame", List[Dict[str, Any]], Dict[str, Any], Any],
     contract: Optional[str] = None,
     *,
+    table: Optional[str] = None,
     rules: Optional[List[Dict[str, Any]]] = None,
     emit_report: bool = False,
     save: bool = True,
@@ -95,12 +104,20 @@ def validate(
     stats: str = "none",
     dry_run: bool = False,
     **kwargs,
-) -> ValidationResult:
+) -> Union[ValidationResult, DryRunResult]:
     """
     Validate data against a contract and/or inline rules.
 
     Args:
-        data: DataFrame (Polars or pandas) or path/URI to data file
+        data: Data to validate. Accepts:
+            - str: File path, URI, or named datasource (e.g., "data.parquet", "s3://...", "prod_db.users")
+            - DataFrame: Polars or pandas DataFrame
+            - list[dict]: Flat tabular JSON (e.g., API response data)
+            - dict: Single record (converted to 1-row DataFrame)
+            - Database connection: psycopg2/pyodbc/SQLAlchemy connection (requires `table` param)
+        table: Table name for BYOC (Bring Your Own Connection) pattern.
+            Required when `data` is a database connection object.
+            Formats: "table", "schema.table", or "database.schema.table"
         contract: Path to contract YAML file (optional if rules provided)
         rules: List of inline rule dicts (optional if contract provided)
         emit_report: Print validation report to console
@@ -111,11 +128,14 @@ def validate(
         csv_mode: "auto" | "duckdb" | "parquet"
         env: Environment name from config
         stats: "none" | "summary" | "profile"
-        dry_run: Validate contract without running (returns check result)
+        dry_run: If True, validate contract/rules syntax without executing
+            against data. Returns DryRunResult with .valid, .rules_count,
+            .columns_needed. Use to check contracts before running.
         **kwargs: Additional arguments passed to ValidationEngine
 
     Returns:
         ValidationResult with .passed, .rules, .to_llm(), etc.
+        DryRunResult if dry_run=True, with .valid, .rules_count, .columns_needed
 
     Example:
         # With contract file
@@ -128,7 +148,23 @@ def validate(
             rules.unique("email"),
         ])
 
-        # Mix both
+        # With list of dicts (e.g., API response)
+        data = [{"id": 1, "email": "a@b.com"}, {"id": 2, "email": "c@d.com"}]
+        result = kontra.validate(data, rules=[rules.not_null("email")])
+
+        # With single dict (single record validation)
+        record = {"id": 1, "email": "test@example.com"}
+        result = kontra.validate(record, rules=[rules.regex("email", r".*@.*")])
+
+        # BYOC (Bring Your Own Connection) - database connection + table
+        import psycopg2
+        conn = psycopg2.connect(host="localhost", dbname="mydb")
+        result = kontra.validate(conn, table="public.users", rules=[
+            rules.not_null("user_id"),
+        ])
+        # Note: Kontra does NOT close your connection. You manage its lifecycle.
+
+        # Mix contract and inline rules
         result = kontra.validate(df, "base.yml", rules=[
             rules.freshness("updated_at", max_age="24h"),
         ])
@@ -139,10 +175,127 @@ def validate(
         else:
             for r in result.blocking_failures:
                 print(f"FAILED: {r.rule_id}")
+
+        # Dry run - validate contract syntax without running
+        check = kontra.validate(df, "contract.yml", dry_run=True)
+        if check.valid:
+            print(f"Contract OK: {check.rules_count} rules, needs columns: {check.columns_needed}")
+        else:
+            print(f"Contract errors: {check.errors}")
     """
+    from kontra.errors import InvalidDataError, InvalidPathError
+    from kontra.connectors.detection import is_database_connection, is_cursor_object
+
+    # ==========================================================================
+    # Input validation - catch invalid data types early with clear errors
+    # ==========================================================================
+
     # Validate inputs
     if contract is None and rules is None:
         raise ValueError("Either contract or rules must be provided")
+
+    # ==========================================================================
+    # Dry run - validate contract/rules syntax without executing
+    # Data can be None for dry_run since we're not actually validating
+    # ==========================================================================
+    if dry_run:
+        from kontra.config.loader import ContractLoader
+        from kontra.rules.factory import RuleFactory
+        from kontra.rules.execution_plan import RuleExecutionPlan
+
+        errors: List[str] = []
+        contract_name: Optional[str] = None
+        datasource: Optional[str] = None
+        all_rule_specs: List[Any] = []
+
+        # Load contract if provided
+        if contract is not None:
+            try:
+                contract_obj = ContractLoader.from_path(contract)
+                contract_name = contract_obj.name
+                datasource = contract_obj.datasource
+                all_rule_specs.extend(contract_obj.rules)
+            except FileNotFoundError as e:
+                errors.append(f"Contract not found: {e}")
+            except ValueError as e:
+                errors.append(f"Contract parse error: {e}")
+            except Exception as e:
+                errors.append(f"Contract error: {e}")
+
+        # Add inline rules if provided
+        if rules is not None:
+            # Convert inline rules to RuleSpec format
+            from kontra.config.models import RuleSpec
+            for i, r in enumerate(rules):
+                try:
+                    if isinstance(r, dict):
+                        spec = RuleSpec(
+                            name=r.get("name", ""),
+                            id=r.get("id"),
+                            params=r.get("params", {}),
+                            severity=r.get("severity", "blocking"),
+                        )
+                        all_rule_specs.append(spec)
+                    else:
+                        errors.append(f"Inline rule {i} is not a dict")
+                except Exception as e:
+                    errors.append(f"Inline rule {i} error: {e}")
+
+        # Try to build rules and extract required columns
+        columns_needed: List[str] = []
+        rules_count = 0
+
+        if not errors and all_rule_specs:
+            try:
+                built_rules = RuleFactory(all_rule_specs).build_rules()
+                rules_count = len(built_rules)
+
+                # Extract required columns
+                plan = RuleExecutionPlan(built_rules)
+                compiled = plan.compile()
+                columns_needed = list(compiled.required_cols or [])
+            except Exception as e:
+                errors.append(f"Rule build error: {e}")
+
+        return DryRunResult(
+            valid=len(errors) == 0,
+            rules_count=rules_count,
+            columns_needed=columns_needed,
+            contract_name=contract_name,
+            datasource=datasource,
+            errors=errors,
+        )
+
+    # ==========================================================================
+    # Input validation for actual validation (not dry_run)
+    # ==========================================================================
+
+    # Check for None
+    if data is None:
+        raise InvalidDataError("NoneType", detail="Data cannot be None")
+
+    # Check for cursor instead of connection (common mistake)
+    if is_cursor_object(data):
+        raise InvalidDataError(
+            type(data).__name__,
+            detail="Expected database connection, got cursor object. Pass the connection, not the cursor."
+        )
+
+    # Check for BYOC pattern: connection object + table
+
+    is_byoc = False
+    if is_database_connection(data):
+        if table is None:
+            raise ValueError(
+                "When passing a database connection, the 'table' parameter is required.\n"
+                "Example: kontra.validate(conn, table='public.users', rules=[...])"
+            )
+        is_byoc = True
+    elif table is not None:
+        raise ValueError(
+            "The 'table' parameter is only valid when 'data' is a database connection.\n"
+            "For other data types, use file paths, URIs, or named datasources."
+        )
 
     # Resolve environment config
     if env:
@@ -167,26 +320,62 @@ def validate(
         **kwargs,
     }
 
-    # Create engine
-    if isinstance(data, str):
+    # Normalize and create engine
+    if is_byoc:
+        # BYOC: database connection + table
+        from kontra.connectors.handle import DatasetHandle
+
+        handle = DatasetHandle.from_connection(data, table)
+        engine = ValidationEngine(handle=handle, **engine_kwargs)
+    elif isinstance(data, str):
         # File path/URI or datasource name
+        # Validate: check if it's a directory (common mistake)
+        if os.path.isdir(data):
+            raise InvalidPathError(data, "Path is a directory, not a file")
         engine = ValidationEngine(data_path=data, **engine_kwargs)
-    else:
-        # DataFrame
+    elif isinstance(data, list):
+        # list[dict] - flat tabular JSON (e.g., API response)
+        if not data:
+            # Empty list - create empty DataFrame
+            df = pl.DataFrame()
+        else:
+            df = pl.DataFrame(data)
+        engine = ValidationEngine(dataframe=df, **engine_kwargs)
+    elif isinstance(data, dict) and not isinstance(data, pl.DataFrame):
+        # Single dict - convert to 1-row DataFrame
+        # Note: check for pl.DataFrame first since it's also dict-like in some contexts
+        df = pl.DataFrame([data])
+        engine = ValidationEngine(dataframe=df, **engine_kwargs)
+    elif isinstance(data, pl.DataFrame):
+        # Polars DataFrame
         engine = ValidationEngine(dataframe=data, **engine_kwargs)
+    elif _is_pandas_dataframe(data):
+        # pandas DataFrame - will be converted by engine
+        engine = ValidationEngine(dataframe=data, **engine_kwargs)
+    else:
+        # Invalid data type
+        raise InvalidDataError(type(data).__name__)
 
     # Run validation
-    raw_result = engine.run()
-
-    # Get dataset name
-    dataset = "unknown"
-    if isinstance(data, str):
-        dataset = data
-    elif engine.contract:
-        dataset = engine.contract.datasource or engine.contract.name or "dataframe"
+    try:
+        raw_result = engine.run()
+    except OSError as e:
+        # Catch internal errors about unsupported formats and wrap in user-friendly error
+        error_str = str(e)
+        if "Unsupported format" in error_str or "PolarsConnectorMaterializer" in error_str:
+            # Extract the problematic value from the error
+            if isinstance(data, str):
+                raise InvalidDataError(
+                    "str",
+                    detail=f"'{data}' is not a valid file path, URI, or datasource name"
+                ) from None
+            else:
+                raise InvalidDataError(type(data).__name__) from None
+        raise
 
     # Wrap in ValidationResult
-    return ValidationResult.from_engine_result(raw_result, dataset=dataset)
+    # Note: dataset name is determined by the engine from contract.datasource
+    return ValidationResult.from_engine_result(raw_result)
 
 
 def scout(
@@ -779,6 +968,23 @@ def list_rules() -> List[Dict[str, Any]]:
             "params": {"sql": "required", "threshold": "optional (default: 0)"},
             "scope": "dataset",
         },
+        "compare": {
+            "description": "Fails where left column doesn't satisfy comparison with right column",
+            "params": {
+                "left": "required (column name)",
+                "right": "required (column name)",
+                "op": "required (>, >=, <, <=, ==, !=)",
+            },
+            "scope": "cross-column",
+        },
+        "conditional_not_null": {
+            "description": "Fails where column is NULL when a condition is met",
+            "params": {
+                "column": "required (column to check)",
+                "when": "required (e.g., \"status == 'shipped'\")",
+            },
+            "scope": "cross-column",
+        },
     }
 
     result = []
@@ -881,6 +1087,7 @@ __all__ = [
     # Result types
     "ValidationResult",
     "RuleResult",
+    "DryRunResult",
     "Diff",
     "Suggestions",
     "SuggestedRule",

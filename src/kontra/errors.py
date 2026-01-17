@@ -215,6 +215,43 @@ class DataError(KontraError):
     pass
 
 
+class InvalidDataError(DataError):
+    """Data type is invalid for validation."""
+
+    def __init__(self, data_type: str, *, detail: Optional[str] = None):
+        message = f"Invalid data type: {data_type}"
+        if detail:
+            message = f"{message}. {detail}"
+
+        super().__init__(
+            message,
+            suggestions=[
+                "Supported data types:",
+                "  - Polars DataFrame",
+                "  - pandas DataFrame",
+                "  - dict (single record)",
+                "  - list[dict] (multiple records)",
+                "  - str (file path, URI, or datasource name)",
+                "  - Database connection (requires table= parameter)",
+            ],
+        )
+
+
+class InvalidPathError(DataError):
+    """Path is invalid (e.g., directory instead of file)."""
+
+    def __init__(self, path: str, issue: str):
+        super().__init__(
+            f"Invalid path: {issue}",
+            context=path,
+            suggestions=[
+                "Provide a path to a file, not a directory",
+                "Supported formats: .parquet, .csv",
+                "Or use a URI: s3://bucket/key, postgres://..., mssql://...",
+            ],
+        )
+
+
 class DataNotFoundError(DataError):
     """Data file or table not found."""
 

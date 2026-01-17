@@ -126,7 +126,14 @@ def range(
 
     Returns:
         Rule dict for use with kontra.validate()
+
+    Raises:
+        ValueError: If min > max
     """
+    # Validate min <= max
+    if min is not None and max is not None and min > max:
+        raise ValueError(f"range rule: min ({min}) must be <= max ({max})")
+
     params: Dict[str, Any] = {"column": column}
     if min is not None:
         params["min"] = min
@@ -187,13 +194,19 @@ def min_rows(
     Dataset must have at least this many rows.
 
     Args:
-        threshold: Minimum row count
+        threshold: Minimum row count (must be >= 0)
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules)
 
     Returns:
         Rule dict for use with kontra.validate()
+
+    Raises:
+        ValueError: If threshold is negative
     """
+    if threshold < 0:
+        raise ValueError(f"min_rows threshold must be non-negative, got {threshold}")
+
     return _build_rule("min_rows", {"threshold": threshold}, severity, id)
 
 

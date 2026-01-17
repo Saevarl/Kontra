@@ -76,16 +76,16 @@ rules: []
 class TestContractValidation:
     """Tests for contract validation."""
 
-    def test_missing_datasource(self, tmp_path):
-        """Raise error when datasource is missing."""
+    def test_missing_datasource_uses_default(self, tmp_path):
+        """Contract without datasource defaults to 'inline'."""
         contract_file = tmp_path / "contract.yml"
         contract_file.write_text("""
 name: no_datasource
 rules: []
 """)
 
-        with pytest.raises(ValueError, match="missing required key: 'datasource'"):
-            ContractLoader.from_path(contract_file)
+        contract = ContractLoader.from_path(contract_file)
+        assert contract.datasource == "inline"
 
     def test_invalid_yaml_not_mapping(self, tmp_path):
         """Raise error for non-mapping YAML."""

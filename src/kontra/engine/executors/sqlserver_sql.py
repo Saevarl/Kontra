@@ -14,7 +14,11 @@ Supports rules:
   - allowed_values(column, values) - uses SUM CASE
   - freshness(column, max_age) - uses MAX
   - range(column, min, max) - uses SUM CASE
-  - regex(column, pattern) - uses PATINDEX (limited regex)
+  - compare(left, right, op) - uses SUM CASE
+  - conditional_not_null(column, when) - uses SUM CASE
+
+NOT supported (falls back to Polars):
+  - regex(column, pattern) - PATINDEX uses LIKE wildcards, not regex
 """
 
 from __future__ import annotations
@@ -23,16 +27,16 @@ from typing import Any, Dict, List
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
+from kontra.connectors.detection import parse_table_reference, get_default_schema, SQLSERVER
+from contextlib import contextmanager
 from kontra.engine.sql_utils import (
     esc_ident,
-    agg_not_null,
     agg_unique,
     agg_min_rows,
     agg_max_rows,
     agg_allowed_values,
     agg_freshness,
     agg_range,
-    agg_regex,
     agg_compare,
     agg_conditional_not_null,
     exists_not_null,
@@ -67,6 +71,44 @@ def _assemble_exists_query(exists_exprs: List[str]) -> str:
     return f"SELECT {', '.join(exists_exprs)};"
 
 
+@contextmanager
+def _get_connection_ctx(handle: DatasetHandle):
+    """
+    Get a connection context for either BYOC or URI-based handles.
+
+    For BYOC, yields the external connection directly (not owned by us).
+    For URI-based, yields a new connection (owned by context manager).
+    """
+    if handle.scheme == "byoc" and handle.external_conn is not None:
+        # BYOC: yield external connection directly, don't close it
+        yield handle.external_conn
+    elif handle.db_params:
+        # URI-based: use our connection manager
+        with get_connection(handle.db_params) as conn:
+            yield conn
+    else:
+        raise ValueError("Handle has neither external_conn nor db_params")
+
+
+def _get_table_reference(handle: DatasetHandle) -> str:
+    """
+    Get the fully-qualified table reference for a handle.
+
+    Returns: "schema.table" format for SQL Server.
+    """
+    if handle.scheme == "byoc" and handle.table_ref:
+        # BYOC: parse table_ref
+        _db, schema, table = parse_table_reference(handle.table_ref)
+        schema = schema or get_default_schema(SQLSERVER)
+        return f"{_esc(schema)}.{_esc(table)}"
+    elif handle.db_params:
+        # URI-based: use db_params
+        params: SqlServerConnectionParams = handle.db_params
+        return f"{_esc(params.schema)}.{_esc(params.table)}"
+    else:
+        raise ValueError("Handle has neither table_ref nor db_params")
+
+
 @register_executor("sqlserver")
 class SqlServerSqlExecutor(SqlExecutor):
     """
@@ -83,14 +125,28 @@ class SqlServerSqlExecutor(SqlExecutor):
 
     name = "sqlserver"
 
-    SUPPORTED_RULES = {"not_null", "unique", "min_rows", "max_rows", "allowed_values", "freshness", "range", "regex", "compare", "conditional_not_null"}
+    # Note: regex is NOT supported because PATINDEX uses LIKE-style wildcards, not regex.
+    # Regex rules fall back to Polars execution which handles them correctly.
+    SUPPORTED_RULES = {"not_null", "unique", "min_rows", "max_rows", "allowed_values", "freshness", "range", "compare", "conditional_not_null"}
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
     ) -> bool:
         """Check if this executor can handle the given handle and rules."""
-        # Only handle mssql:// or sqlserver:// URIs
         scheme = (handle.scheme or "").lower()
+
+        # BYOC: check dialect for external connections
+        if scheme == "byoc" and handle.dialect == "sqlserver":
+            # Must have external connection
+            if handle.external_conn is None:
+                return False
+            # Must have at least one supported rule
+            return any(
+                s.get("kind") in self.SUPPORTED_RULES
+                for s in (sql_specs or [])
+            )
+
+        # URI-based: handle mssql:// or sqlserver:// URIs
         if scheme not in {"mssql", "sqlserver"}:
             return False
 
@@ -184,14 +240,8 @@ class SqlServerSqlExecutor(SqlExecutor):
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
-            elif kind == "regex":
-                # Phase 2: Pattern matching with PATINDEX (limited regex)
-                col = spec.get("column")
-                pattern = spec.get("pattern")
-                if isinstance(col, str) and col and isinstance(pattern, str) and pattern:
-                    aggregate_selects.append(agg_regex(col, pattern, rule_id, DIALECT))
-                    aggregate_specs.append(spec)
-                    supported_specs.append(spec)
+            # Note: regex is NOT supported - PATINDEX uses LIKE wildcards, not regex.
+            # Regex rules fall back to Polars execution.
 
             elif kind == "compare":
                 # Phase 2: Compare two columns
@@ -239,20 +289,19 @@ class SqlServerSqlExecutor(SqlExecutor):
         Phase 1: EXISTS checks for not_null (fast, can early-terminate)
         Phase 2: Aggregate query for remaining rules
 
+        Supports both URI-based connections (handle.db_params) and
+        BYOC connections (handle.external_conn).
+
         Returns:
             {"results": [...]}
         """
-        if not handle.db_params:
-            raise ValueError("SQL Server handle missing db_params")
-
-        params: SqlServerConnectionParams = handle.db_params
         exists_specs = compiled_plan.get("exists_specs", [])
         aggregate_selects = compiled_plan.get("aggregate_selects", [])
 
         if not exists_specs and not aggregate_selects:
             return {"results": [], "staging": None}
 
-        table = f"{_esc(params.schema)}.{_esc(params.table)}"
+        table = _get_table_reference(handle)
         results: List[Dict[str, Any]] = []
 
         # Build rule_kinds mapping from specs
@@ -262,7 +311,7 @@ class SqlServerSqlExecutor(SqlExecutor):
         for spec in compiled_plan.get("aggregate_specs", []):
             rule_kinds[spec["rule_id"]] = spec.get("kind")
 
-        with get_connection(params) as conn:
+        with _get_connection_ctx(handle) as conn:
             cursor = conn.cursor()
 
             # Phase 1: EXISTS checks for not_null rules
@@ -302,24 +351,34 @@ class SqlServerSqlExecutor(SqlExecutor):
         """
         Introspect the SQL Server table for metadata.
 
+        Supports both URI-based connections (handle.db_params) and
+        BYOC connections (handle.external_conn).
+
         Returns:
             {"row_count": int, "available_cols": [...]}
         """
-        if not handle.db_params:
-            raise ValueError("SQL Server handle missing db_params")
+        table = _get_table_reference(handle)
 
-        params: SqlServerConnectionParams = handle.db_params
+        # Get schema and table name for information_schema query
+        if handle.scheme == "byoc" and handle.table_ref:
+            _db, schema, table_name = parse_table_reference(handle.table_ref)
+            schema = schema or get_default_schema(SQLSERVER)
+        elif handle.db_params:
+            params: SqlServerConnectionParams = handle.db_params
+            schema = params.schema
+            table_name = params.table
+        else:
+            raise ValueError("Handle has neither table_ref nor db_params")
 
-        with get_connection(params) as conn:
+        with _get_connection_ctx(handle) as conn:
             cursor = conn.cursor()
 
             # Get row count
-            table = f"{_esc(params.schema)}.{_esc(params.table)}"
             cursor.execute(f"SELECT COUNT(*) FROM {table}")
             row_count = cursor.fetchone()
             n = int(row_count[0]) if row_count else 0
 
-            # Get column names
+            # Get column names (pymssql uses %s, pyodbc uses ?)
             cursor.execute(
                 """
                 SELECT column_name
@@ -327,7 +386,7 @@ class SqlServerSqlExecutor(SqlExecutor):
                 WHERE table_schema = %s AND table_name = %s
                 ORDER BY ordinal_position
                 """,
-                (params.schema, params.table),
+                (schema, table_name),
             )
             cols = [row[0] for row in cursor.fetchall()]
 

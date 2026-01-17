@@ -22,9 +22,10 @@ class Contract(BaseModel):
     - A named datasource from config: "prod_db.users"
     - A file path: "./data/users.parquet"
     - A URI: "s3://bucket/users.parquet", "postgres:///public.users"
+    - Omitted when data is passed directly to validate()
     """
     name: Optional[str] = Field(default=None, description="Contract name (optional, used for identification).")
-    datasource: str = Field(..., description="Data source: named datasource, path, or URI.")
+    datasource: str = Field(default="inline", description="Data source: named datasource, path, or URI. Defaults to 'inline' when data is passed directly.")
     rules: List[RuleSpec] = Field(default_factory=list)
 
     # Backwards compatibility: accept 'dataset' as alias for 'datasource'

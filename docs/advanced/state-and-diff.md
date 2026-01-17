@@ -159,7 +159,7 @@ for change in diff.changes:
 ## Disabling State
 
 ```bash
-kontra validate contract.yml --save false
+kontra validate contract.yml --no-state
 ```
 
 ```python

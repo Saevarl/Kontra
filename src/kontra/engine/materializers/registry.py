@@ -44,7 +44,8 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
     """
     Choose the best materializer for the given dataset handle.
 
-    Policy (v1.3 - SQL Server support):
+    Policy (v1.4 - BYOC support):
+      - BYOC handles use the materializer matching their dialect.
       - PostgreSQL URIs use the PostgreSQL materializer.
       - SQL Server URIs use the SQL Server materializer.
       - Remote files (s3, http) with known formats use DuckDB materializer.
@@ -52,6 +53,30 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
 
     This logic is INDEPENDENT of the projection flag.
     """
+    # BYOC: route based on dialect
+    if handle.scheme == "byoc":
+        if handle.dialect == "postgresql":
+            ctor = _MATS.get("postgres")
+            if ctor:
+                return ctor(handle)
+            raise RuntimeError(
+                "PostgreSQL materializer not registered. "
+                "Ensure psycopg is installed: pip install 'psycopg[binary]'"
+            )
+        elif handle.dialect == "sqlserver":
+            ctor = _MATS.get("sqlserver")
+            if ctor:
+                return ctor(handle)
+            raise RuntimeError(
+                "SQL Server materializer not registered. "
+                "Ensure pymssql is installed: pip install pymssql"
+            )
+        else:
+            raise RuntimeError(
+                f"Unsupported BYOC dialect: {handle.dialect}. "
+                "Supported: postgresql, sqlserver"
+            )
+
     # PostgreSQL: use dedicated materializer
     if handle.scheme in ("postgres", "postgresql"):
         ctor = _MATS.get("postgres")

@@ -210,6 +210,97 @@ class TestValidateFunction:
 
         assert result.passed is True
 
+    # -------------------------------------------------------------------------
+    # list[dict] and dict input tests
+    # -------------------------------------------------------------------------
+
+    def test_validate_list_of_dicts(self):
+        """Validate with list of dicts (flat tabular JSON)."""
+        data = [
+            {"id": 1, "email": "alice@example.com"},
+            {"id": 2, "email": "bob@example.com"},
+            {"id": 3, "email": "charlie@example.com"},
+        ]
+
+        result = kontra.validate(data, rules=[
+            rules.not_null("id"),
+            rules.not_null("email"),
+            rules.min_rows(2),
+        ], save=False)
+
+        assert result.passed is True
+        assert result.total_rules == 3
+
+    def test_validate_list_of_dicts_with_failures(self):
+        """Validate list of dicts with failing rules."""
+        data = [
+            {"id": 1, "email": "valid@example.com"},
+            {"id": 2, "email": "bad"},  # Invalid email
+            {"id": 3, "email": None},   # Null email
+        ]
+
+        result = kontra.validate(data, rules=[
+            rules.not_null("email"),
+            rules.regex("email", r".+@.+\..+"),
+        ], save=False)
+
+        assert result.passed is False
+        assert result.failed_count == 2  # not_null fails 1, regex fails 2
+
+    def test_validate_single_dict(self):
+        """Validate single dict (single record)."""
+        record = {"id": 1, "email": "test@example.com", "status": "active"}
+
+        result = kontra.validate(record, rules=[
+            rules.not_null("id"),
+            rules.not_null("email"),
+            rules.allowed_values("status", ["active", "inactive"]),
+        ], save=False)
+
+        assert result.passed is True
+        assert result.total_rules == 3
+
+    def test_validate_single_dict_with_failure(self):
+        """Validate single dict with failing rule."""
+        record = {"id": 1, "email": None}
+
+        result = kontra.validate(record, rules=[
+            rules.not_null("email"),
+        ], save=False)
+
+        assert result.passed is False
+        assert result.failed_count == 1
+
+    def test_validate_empty_list(self):
+        """Validate empty list (zero rows)."""
+        result = kontra.validate([], rules=[
+            rules.min_rows(1),
+        ], save=False)
+
+        assert result.passed is False
+        assert result.failed_count == 1  # min_rows fails
+
+    def test_validate_empty_list_passes_max_rows(self):
+        """Validate empty list passes max_rows check."""
+        result = kontra.validate([], rules=[
+            rules.max_rows(100),
+        ], save=False)
+
+        assert result.passed is True
+
+    def test_validate_list_preserves_types(self):
+        """Validate that list input preserves data types."""
+        data = [
+            {"id": 1, "score": 95.5, "active": True},
+            {"id": 2, "score": 87.0, "active": False},
+        ]
+
+        result = kontra.validate(data, rules=[
+            rules.range("score", min=0, max=100),
+        ], save=False)
+
+        assert result.passed is True
+
 
 # =============================================================================
 # ValidationResult Tests
@@ -742,14 +833,14 @@ class TestServiceAgentSupport:
             assert "scope" in rule
 
     def test_list_rules_includes_all_rules(self):
-        """list_rules() includes all 10 built-in rules."""
+        """list_rules() includes all 12 built-in rules."""
         result = kontra.list_rules()
         rule_names = [r["name"] for r in result]
 
         expected = [
             "not_null", "unique", "allowed_values", "range",
             "regex", "dtype", "min_rows", "max_rows",
-            "freshness", "custom_sql_check"
+            "freshness", "custom_sql_check", "compare", "conditional_not_null"
         ]
 
         for expected_rule in expected:
@@ -764,6 +855,19 @@ class TestServiceAgentSupport:
             assert rule["description"], f"Empty description for {rule['name']}"
             # Description should describe what the rule does
             assert len(rule["description"]) > 10, f"Description too short for {rule['name']}"
+
+    def test_list_rules_has_complete_metadata(self):
+        """BUG-009: list_rules() returns complete metadata for all rules."""
+        result = kontra.list_rules()
+
+        for rule in result:
+            # Scope should not be "unknown"
+            assert rule["scope"] != "unknown", f"Unknown scope for {rule['name']}"
+            # Params should not be empty
+            assert rule["params"], f"Empty params for {rule['name']}"
+            # Should have valid scope
+            assert rule["scope"] in ["column", "dataset", "cross-column"], \
+                f"Invalid scope '{rule['scope']}' for {rule['name']}"
 
     def test_set_config_and_get_config_path(self):
         """set_config() and get_config_path() work together."""
@@ -1125,3 +1229,385 @@ class TestEdgeCases:
 
         result = kontra.validate(pdf, rules=[rules.min_rows(1)], save=False)
         assert result.passed is True
+
+
+# =============================================================================
+# BYOC (Bring Your Own Connection) Tests
+# =============================================================================
+
+
+class TestConnectionDetection:
+    """Tests for connection type detection."""
+
+    def test_parse_table_reference_simple(self):
+        """Parse simple table name."""
+        from kontra.connectors.detection import parse_table_reference
+
+        db, schema, table = parse_table_reference("users")
+        assert db is None
+        assert schema is None
+        assert table == "users"
+
+    def test_parse_table_reference_schema_table(self):
+        """Parse schema.table reference."""
+        from kontra.connectors.detection import parse_table_reference
+
+        db, schema, table = parse_table_reference("public.users")
+        assert db is None
+        assert schema == "public"
+        assert table == "users"
+
+    def test_parse_table_reference_db_schema_table(self):
+        """Parse database.schema.table reference."""
+        from kontra.connectors.detection import parse_table_reference
+
+        db, schema, table = parse_table_reference("mydb.dbo.orders")
+        assert db == "mydb"
+        assert schema == "dbo"
+        assert table == "orders"
+
+    def test_parse_table_reference_too_many_parts(self):
+        """Reject table reference with too many parts."""
+        from kontra.connectors.detection import parse_table_reference
+
+        with pytest.raises(ValueError, match="Invalid table reference"):
+            parse_table_reference("a.b.c.d")
+
+    def test_get_default_schema_postgres(self):
+        """Default schema for PostgreSQL is 'public'."""
+        from kontra.connectors.detection import get_default_schema, POSTGRESQL
+
+        assert get_default_schema(POSTGRESQL) == "public"
+
+    def test_get_default_schema_sqlserver(self):
+        """Default schema for SQL Server is 'dbo'."""
+        from kontra.connectors.detection import get_default_schema, SQLSERVER
+
+        assert get_default_schema(SQLSERVER) == "dbo"
+
+    def test_is_database_connection_none(self):
+        """None is not a database connection."""
+        from kontra.connectors.detection import is_database_connection
+
+        assert is_database_connection(None) is False
+
+    def test_is_database_connection_string(self):
+        """Strings are not database connections."""
+        from kontra.connectors.detection import is_database_connection
+
+        assert is_database_connection("not a connection") is False
+
+    def test_is_database_connection_has_cursor(self):
+        """Objects with callable cursor() are detected as connections."""
+        from kontra.connectors.detection import is_database_connection
+
+        class FakeConn:
+            def cursor(self):
+                pass
+
+        assert is_database_connection(FakeConn()) is True
+
+
+class TestDatasetHandleBYOC:
+    """Tests for DatasetHandle BYOC support."""
+
+    def test_from_connection_creates_handle(self):
+        """from_connection creates a valid BYOC handle."""
+        from kontra.connectors.handle import DatasetHandle
+        from unittest.mock import MagicMock
+
+        # Mock a psycopg connection
+        mock_conn = MagicMock()
+        mock_conn.__class__.__module__ = "psycopg"
+        mock_conn.__class__.__name__ = "Connection"
+
+        handle = DatasetHandle.from_connection(mock_conn, "public.users")
+
+        assert handle.scheme == "byoc"
+        assert handle.dialect == "postgresql"
+        assert handle.table_ref == "public.users"
+        assert handle.external_conn is mock_conn
+        assert handle.owned is False  # User manages connection lifecycle
+
+    def test_from_connection_sqlserver_dialect(self):
+        """from_connection detects SQL Server dialect."""
+        from kontra.connectors.handle import DatasetHandle
+        from unittest.mock import MagicMock
+
+        # Mock a pymssql connection
+        mock_conn = MagicMock()
+        mock_conn.__class__.__module__ = "pymssql"
+        mock_conn.__class__.__name__ = "Connection"
+
+        handle = DatasetHandle.from_connection(mock_conn, "dbo.orders")
+
+        assert handle.scheme == "byoc"
+        assert handle.dialect == "sqlserver"
+        assert handle.table_ref == "dbo.orders"
+
+
+class TestValidateBYOC:
+    """Tests for validate() with BYOC pattern."""
+
+    def test_validate_requires_table_for_connection(self):
+        """validate raises error if table missing for connection."""
+        from unittest.mock import MagicMock
+
+        # Mock a database connection
+        mock_conn = MagicMock()
+        mock_conn.__class__.__module__ = "psycopg"
+        mock_conn.__class__.__name__ = "Connection"
+
+        with pytest.raises(ValueError, match="table.*parameter is required"):
+            kontra.validate(mock_conn, rules=[rules.not_null("id")], save=False)
+
+    def test_validate_rejects_table_for_non_connection(self, sample_df):
+        """validate raises error if table provided for non-connection data."""
+        with pytest.raises(ValueError, match="table.*only valid"):
+            kontra.validate(sample_df, table="users", rules=[rules.not_null("id")], save=False)
+
+    def test_validate_rejects_table_for_string_path(self, tmp_path, sample_df):
+        """validate raises error if table provided for file path."""
+        parquet = tmp_path / "data.parquet"
+        sample_df.write_parquet(parquet)
+
+        with pytest.raises(ValueError, match="table.*only valid"):
+            kontra.validate(str(parquet), table="users", rules=[rules.not_null("id")], save=False)
+
+
+# =============================================================================
+# Invalid Data Type Tests (BUG-001 to BUG-005)
+# =============================================================================
+
+
+class TestInvalidDataErrors:
+    """Tests for clear error messages on invalid data types."""
+
+    def test_validate_rejects_none_data(self):
+        """BUG-001: validate raises InvalidDataError for None data."""
+        from kontra.errors import InvalidDataError
+
+        with pytest.raises(InvalidDataError, match="NoneType.*cannot be None"):
+            kontra.validate(None, rules=[rules.not_null("col")], save=False)
+
+    def test_validate_rejects_invalid_string(self):
+        """BUG-002: validate raises InvalidDataError for invalid string data."""
+        from kontra.errors import InvalidDataError
+
+        with pytest.raises(InvalidDataError, match="str.*not a valid file path"):
+            kontra.validate("not a dataset", rules=[rules.not_null("col")], save=False)
+
+    def test_validate_rejects_integer_data(self):
+        """BUG-003: validate raises InvalidDataError for integer data."""
+        from kontra.errors import InvalidDataError
+
+        with pytest.raises(InvalidDataError, match="int"):
+            kontra.validate(42, rules=[rules.not_null("col")], save=False)
+
+    def test_validate_rejects_directory_path(self):
+        """BUG-004: validate raises InvalidPathError for directory path."""
+        from kontra.errors import InvalidPathError
+
+        with pytest.raises(InvalidPathError, match="directory.*not a file"):
+            kontra.validate("/tmp/", rules=[rules.not_null("col")], save=False)
+
+    def test_validate_rejects_cursor_object(self):
+        """BUG-005: validate raises InvalidDataError for cursor object."""
+        from kontra.errors import InvalidDataError
+        from unittest.mock import MagicMock
+
+        # Create a mock cursor (has execute/fetchone but NOT cursor method)
+        mock_cursor = MagicMock()
+        mock_cursor.__class__.__name__ = "Cursor"
+        mock_cursor.__class__.__module__ = "psycopg"
+        # Cursors have execute and fetchone, but not cursor()
+        del mock_cursor.cursor
+
+        with pytest.raises(InvalidDataError, match="Cursor.*Expected database connection.*got cursor"):
+            kontra.validate(mock_cursor, table="users", rules=[rules.not_null("id")], save=False)
+
+    def test_validate_rejects_float_data(self):
+        """validate raises InvalidDataError for float data."""
+        from kontra.errors import InvalidDataError
+
+        with pytest.raises(InvalidDataError, match="float"):
+            kontra.validate(3.14, rules=[rules.not_null("col")], save=False)
+
+    def test_validate_rejects_tuple_data(self):
+        """validate raises InvalidDataError for tuple data."""
+        from kontra.errors import InvalidDataError
+
+        with pytest.raises(InvalidDataError, match="tuple"):
+            kontra.validate((1, 2, 3), rules=[rules.not_null("col")], save=False)
+
+
+# =============================================================================
+# Parameter Validation Tests (BUG-006, BUG-007)
+# =============================================================================
+
+
+class TestParameterValidation:
+    """Tests for parameter validation in rule helpers."""
+
+    def test_min_rows_rejects_negative_threshold(self):
+        """BUG-006: min_rows raises ValueError for negative threshold."""
+        with pytest.raises(ValueError, match="non-negative"):
+            rules.min_rows(-1)
+
+    def test_min_rows_accepts_zero(self):
+        """min_rows accepts zero as threshold."""
+        rule = rules.min_rows(0)
+        assert rule["params"]["threshold"] == 0
+
+    def test_min_rows_accepts_positive(self):
+        """min_rows accepts positive threshold."""
+        rule = rules.min_rows(100)
+        assert rule["params"]["threshold"] == 100
+
+    def test_range_rejects_min_greater_than_max(self):
+        """BUG-007: range raises ValueError when min > max."""
+        with pytest.raises(ValueError, match="min.*must be <= max"):
+            rules.range("col", min=100, max=10)
+
+    def test_range_accepts_min_equals_max(self):
+        """range accepts min == max (exact value check)."""
+        rule = rules.range("col", min=50, max=50)
+        assert rule["params"]["min"] == 50
+        assert rule["params"]["max"] == 50
+
+    def test_range_accepts_valid_bounds(self):
+        """range accepts valid min <= max."""
+        rule = rules.range("col", min=0, max=100)
+        assert rule["params"]["min"] == 0
+        assert rule["params"]["max"] == 100
+
+    def test_range_accepts_only_min(self):
+        """range accepts only min (no max)."""
+        rule = rules.range("col", min=0)
+        assert rule["params"]["min"] == 0
+        assert "max" not in rule["params"]
+
+    def test_range_accepts_only_max(self):
+        """range accepts only max (no min)."""
+        rule = rules.range("col", max=100)
+        assert rule["params"]["max"] == 100
+        assert "min" not in rule["params"]
+
+
+# =============================================================================
+# Dry Run Tests
+# =============================================================================
+
+
+class TestDryRun:
+    """Tests for dry_run functionality."""
+
+    def test_dry_run_returns_dry_run_result(self, sample_df, sample_contract):
+        """dry_run=True returns DryRunResult, not ValidationResult."""
+        from kontra.api.results import DryRunResult
+
+        result = kontra.validate(sample_df, str(sample_contract), dry_run=True)
+        assert isinstance(result, DryRunResult)
+
+    def test_dry_run_valid_contract(self, sample_df, sample_contract):
+        """dry_run with valid contract shows valid=True."""
+        result = kontra.validate(sample_df, str(sample_contract), dry_run=True)
+        assert result.valid is True
+        assert result.rules_count == 2
+        assert result.errors == []
+        assert result.contract_name == "test_contract"
+
+    def test_dry_run_columns_needed(self, sample_df, sample_contract):
+        """dry_run extracts required columns."""
+        result = kontra.validate(sample_df, str(sample_contract), dry_run=True)
+        assert "id" in result.columns_needed
+
+    def test_dry_run_inline_rules(self, sample_df):
+        """dry_run works with inline rules."""
+        result = kontra.validate(sample_df, rules=[
+            rules.not_null("id"),
+            rules.unique("name"),
+            rules.range("age", min=0, max=150),
+        ], dry_run=True)
+        assert result.valid is True
+        assert result.rules_count == 3
+        assert set(result.columns_needed) == {"id", "name", "age"}
+
+    def test_dry_run_invalid_contract_file(self, sample_df):
+        """dry_run with missing contract file shows valid=False."""
+        result = kontra.validate(sample_df, "/nonexistent/contract.yml", dry_run=True)
+        assert result.valid is False
+        assert len(result.errors) > 0
+        assert "not found" in result.errors[0].lower()
+
+    def test_dry_run_invalid_contract_syntax(self, sample_df, tmp_path):
+        """dry_run with invalid contract syntax shows valid=False."""
+        bad_contract = tmp_path / "bad.yml"
+        bad_contract.write_text("- this is not a valid contract\n- just a list")
+
+        result = kontra.validate(sample_df, str(bad_contract), dry_run=True)
+        assert result.valid is False
+        assert len(result.errors) > 0
+
+    def test_dry_run_to_dict(self, sample_df, sample_contract):
+        """DryRunResult.to_dict() works."""
+        result = kontra.validate(sample_df, str(sample_contract), dry_run=True)
+        d = result.to_dict()
+        assert "valid" in d
+        assert "rules_count" in d
+        assert "columns_needed" in d
+        assert "errors" in d
+
+    def test_dry_run_to_json(self, sample_df, sample_contract):
+        """DryRunResult.to_json() works."""
+        import json
+        result = kontra.validate(sample_df, str(sample_contract), dry_run=True)
+        j = result.to_json()
+        parsed = json.loads(j)
+        assert parsed["valid"] is True
+
+    def test_dry_run_to_llm(self, sample_df, sample_contract):
+        """DryRunResult.to_llm() works."""
+        result = kontra.validate(sample_df, str(sample_contract), dry_run=True)
+        llm = result.to_llm()
+        assert "DRYRUN" in llm
+        assert "VALID" in llm
+
+    def test_dry_run_invalid_to_llm(self, sample_df):
+        """DryRunResult.to_llm() for invalid contract."""
+        result = kontra.validate(sample_df, "/nonexistent.yml", dry_run=True)
+        llm = result.to_llm()
+        assert "DRYRUN" in llm
+        assert "INVALID" in llm
+
+    def test_dry_run_does_not_execute_validation(self, sample_df, sample_contract):
+        """dry_run does not actually run validation - even bad data passes."""
+        # This would fail actual validation (df doesn't match contract columns)
+        wrong_df = pl.DataFrame({"wrong_col": [1, 2, 3]})
+
+        # But dry_run just checks contract syntax
+        result = kontra.validate(wrong_df, str(sample_contract), dry_run=True)
+        assert result.valid is True  # Contract syntax is valid
+
+    def test_dry_run_repr(self, sample_df, sample_contract):
+        """DryRunResult has readable repr."""
+        result = kontra.validate(sample_df, str(sample_contract), dry_run=True)
+        repr_str = repr(result)
+        assert "DryRunResult" in repr_str
+        assert "VALID" in repr_str
+
+    def test_dry_run_accepts_none_data(self, sample_contract):
+        """dry_run accepts None as data (just validates contract)."""
+        result = kontra.validate(None, str(sample_contract), dry_run=True)
+        assert result.valid is True
+        assert result.rules_count == 2
+
+    def test_dry_run_none_data_inline_rules(self):
+        """dry_run with None data and inline rules."""
+        result = kontra.validate(None, rules=[
+            rules.not_null("id"),
+            rules.unique("email"),
+        ], dry_run=True)
+        assert result.valid is True
+        assert result.rules_count == 2
+        assert set(result.columns_needed) == {"id", "email"}

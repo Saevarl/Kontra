@@ -92,9 +92,7 @@ class ContractLoader:
                 f"Invalid or empty contract YAML at {source}. "
                 "Expected a mapping with keys like 'datasource' and 'rules'."
             )
-        # Accept both 'datasource' (new) and 'dataset' (deprecated, for backwards compat)
-        if "datasource" not in raw and "dataset" not in raw:
-            raise ValueError("Contract is missing required key: 'datasource'.")
+        # datasource is optional - defaults to "inline" when data is passed directly
         rules_raw = raw.get("rules", []) or []
         if not isinstance(rules_raw, list):
             raise ValueError("Contract 'rules' must be a list.")
@@ -116,7 +114,8 @@ class ContractLoader:
             ))
 
         # Use 'datasource' if present, otherwise fall back to 'dataset' for backwards compat
-        datasource_value = raw.get("datasource") or raw.get("dataset")
+        # If neither is present, default to "inline" (handled by Contract model)
+        datasource_value = raw.get("datasource") or raw.get("dataset") or "inline"
         return Contract(
             name=raw.get("name"),
             datasource=str(datasource_value),

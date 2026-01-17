@@ -54,7 +54,7 @@ print(f"Rows: {profile.row_count}")
 print(f"Columns: {profile.column_count}")
 
 for col in profile.columns:
-    print(f"  {col.name}: {col.dtype}, {col.null_pct}% null")
+    print(f"  {col.name}: {col.dtype}, {col.null_rate:.0%} null")
 ```
 
 ### Generate Rules from Profile
@@ -102,6 +102,85 @@ datasources:
       users: public.users
       orders: public.orders
 ```
+
+### BYOC (Bring Your Own Connection)
+
+Use your own database connection with Kontra. This gives you full control over connection management (pooling, auth, lifecycle) while Kontra still performs SQL pushdown and preplan optimizations.
+
+```python
+import psycopg
+import kontra
+from kontra import rules
+
+# Create your connection (you manage its lifecycle)
+conn = psycopg.connect(
+    host="localhost",
+    dbname="myapp",
+    user="app_user",
+)
+
+# Validate using your connection
+result = kontra.validate(
+    conn,                           # Your connection object
+    table="public.users",           # Required: table to validate
+    rules=[
+        rules.not_null("user_id"),
+        rules.unique("email"),
+    ],
+)
+
+# Important: YOU close the connection when done
+conn.close()
+```
+
+**Supported connection types:**
+- `psycopg` / `psycopg2` / `psycopg3` (PostgreSQL)
+- `pg8000` (PostgreSQL)
+- `pyodbc` (SQL Server, PostgreSQL via ODBC)
+- `pymssql` (SQL Server)
+- SQLAlchemy engines and connections
+
+**Table reference formats:**
+- `"users"` - uses default schema (public for PostgreSQL, dbo for SQL Server)
+- `"public.users"` - schema.table
+- `"mydb.dbo.orders"` - database.schema.table
+
+**Benefits:**
+- Use your existing connection pool
+- Control authentication and credentials
+- Integrate with your connection management patterns
+- Rules execute as SQL on your connection (pushdown)
+
+### Validate JSON Data
+
+Validate lists of dicts (e.g., API responses) or single records:
+
+```python
+# List of dicts (flat tabular JSON)
+api_data = [
+    {"id": 1, "email": "alice@example.com", "status": "active"},
+    {"id": 2, "email": "bob@example.com", "status": "pending"},
+]
+
+result = kontra.validate(api_data, rules=[
+    rules.not_null("email"),
+    rules.allowed_values("status", ["active", "pending", "inactive"]),
+])
+
+# Single dict (single record validation)
+record = {"id": 1, "email": "test@example.com"}
+result = kontra.validate(record, rules=[
+    rules.not_null("email"),
+    rules.regex("email", r".*@.*"),
+])
+```
+
+This is useful for:
+- Validating API response data before processing
+- Single-record validation in web applications
+- Testing data transformations
+
+**Note**: Data must be flat (tabular). Nested JSON like `{"user": {"email": "..."}}` should be flattened before validation.
 
 ## Available Rules
 
@@ -170,7 +249,7 @@ result = kontra.validate(
     pushdown="auto",     # "on" | "off" | "auto"
     projection=True,     # column pruning
     env="production",    # environment from config
-    save=True,           # save to history
+    save=True,           # save to history (default: True, use False to disable)
 )
 ```
 
@@ -187,14 +266,32 @@ For full details, see [Execution Model](advanced/performance.md).
 
 ### Dry Run
 
-Check contract validity without executing:
+Validate contract/rules syntax without executing against data:
 
 ```python
 check = kontra.validate(df, "contract.yml", dry_run=True)
-check.valid        # bool
-check.rules_count  # int
-check.errors       # list of issues
+check.valid          # bool - is contract syntax valid?
+check.rules_count    # int - number of rules that would run
+check.columns_needed # list - columns the contract requires
+check.contract_name  # str - name from contract (if any)
+check.errors         # list - any parse/validation errors
 ```
+
+Use `dry_run=True` to:
+- Validate contract files before deploying to production
+- Check which columns a contract needs without loading data
+- Catch syntax errors early in CI/CD pipelines
+
+```python
+# Example: Pre-validate contracts
+check = kontra.validate(None, "new_contract.yml", dry_run=True)
+if not check.valid:
+    print(f"Contract errors: {check.errors}")
+    sys.exit(1)
+print(f"Contract OK: {check.rules_count} rules need columns {check.columns_needed}")
+```
+
+Note: `save=False` skips state persistence but still executes validation. Use `dry_run=True` to skip execution entirely.
 
 ### Compare Runs Over Time
 
@@ -239,8 +336,9 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 |------|----------------|
 | `ValidationResult` | `passed`, `rules`, `blocking_failures`, `warnings` |
 | `RuleResult` | `rule_id`, `passed`, `failed_count`, `severity`, `message` |
+| `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 | `Profile` | `row_count`, `column_count`, `columns` |
-| `ColumnProfile` | `name`, `dtype`, `null_pct`, `unique_count` |
+| `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |
 | `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved` |
 
 ### Error Handling

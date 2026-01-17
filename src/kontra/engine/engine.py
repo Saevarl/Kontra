@@ -190,6 +190,7 @@ class ValidationEngine:
         contract_path: Optional[str] = None,
         data_path: Optional[str] = None,
         dataframe: Optional[Union[pl.DataFrame, "pd.DataFrame"]] = None,
+        handle: Optional[DatasetHandle] = None,  # BYOC: pre-built handle
         emit_report: bool = True,
         stats_mode: Literal["none", "summary", "profile"] = "none",
         # Independent toggles
@@ -258,6 +259,7 @@ class ValidationEngine:
 
         self.contract: Optional[Contract] = None
         self.df: Optional[pl.DataFrame] = None
+        self._handle: Optional[DatasetHandle] = handle  # BYOC: pre-built handle
 
         register_default_materializers()
         register_default_executors()
@@ -588,9 +590,14 @@ class ValidationEngine:
             return self._run_dataframe_mode(timers, rules, plan, compiled_full, rule_severity_map)
 
         # Dataset handle (used across phases)
-        source_ref = self.data_path or self.contract.datasource
-        source_uri = _resolve_datasource_uri(source_ref)
-        handle = DatasetHandle.from_uri(source_uri)
+        # BYOC: if a pre-built handle was provided, use it directly
+        if self._handle is not None:
+            handle = self._handle
+            source_uri = handle.uri
+        else:
+            source_ref = self.data_path or self.contract.datasource
+            source_uri = _resolve_datasource_uri(source_ref)
+            handle = DatasetHandle.from_uri(source_uri)
 
         # ------------------------------------------------------------------ #
         # 3) Preplan (metadata-only; independent of pushdown/projection)

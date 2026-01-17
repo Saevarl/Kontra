@@ -43,7 +43,7 @@ import kontra
 health = kontra.health()
 
 # {
-#     "version": "0.4.0",
+#     "version": "0.x.x",
 #     "status": "ok",
 #     "config_found": True,
 #     "config_path": "/app/.kontra/config.yml",

@@ -23,6 +23,8 @@ from typing import Any, Dict, List
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.postgres import PostgresConnectionParams, get_connection
+from kontra.connectors.detection import parse_table_reference, get_default_schema, POSTGRESQL
+from contextlib import contextmanager
 from kontra.engine.sql_utils import (
     esc_ident,
     agg_not_null,
@@ -68,6 +70,44 @@ def _assemble_exists_query(exists_exprs: List[str]) -> str:
     return f"SELECT {', '.join(exists_exprs)};"
 
 
+@contextmanager
+def _get_connection_ctx(handle: DatasetHandle):
+    """
+    Get a connection context for either BYOC or URI-based handles.
+
+    For BYOC, yields the external connection directly (not owned by us).
+    For URI-based, yields a new connection (owned by context manager).
+    """
+    if handle.scheme == "byoc" and handle.external_conn is not None:
+        # BYOC: yield external connection directly, don't close it
+        yield handle.external_conn
+    elif handle.db_params:
+        # URI-based: use our connection manager
+        with get_connection(handle.db_params) as conn:
+            yield conn
+    else:
+        raise ValueError("Handle has neither external_conn nor db_params")
+
+
+def _get_table_reference(handle: DatasetHandle) -> str:
+    """
+    Get the fully-qualified table reference for a handle.
+
+    Returns: "schema.table" format for PostgreSQL.
+    """
+    if handle.scheme == "byoc" and handle.table_ref:
+        # BYOC: parse table_ref
+        _db, schema, table = parse_table_reference(handle.table_ref)
+        schema = schema or get_default_schema(POSTGRESQL)
+        return f"{_esc(schema)}.{_esc(table)}"
+    elif handle.db_params:
+        # URI-based: use db_params
+        params: PostgresConnectionParams = handle.db_params
+        return f"{_esc(params.schema)}.{_esc(params.table)}"
+    else:
+        raise ValueError("Handle has neither table_ref nor db_params")
+
+
 @register_executor("postgres")
 class PostgresSqlExecutor(SqlExecutor):
     """
@@ -89,8 +129,20 @@ class PostgresSqlExecutor(SqlExecutor):
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
     ) -> bool:
         """Check if this executor can handle the given handle and rules."""
-        # Only handle postgres:// URIs
         scheme = (handle.scheme or "").lower()
+
+        # BYOC: check dialect for external connections
+        if scheme == "byoc" and handle.dialect == "postgresql":
+            # Must have external connection
+            if handle.external_conn is None:
+                return False
+            # Must have at least one supported rule
+            return any(
+                s.get("kind") in self.SUPPORTED_RULES
+                for s in (sql_specs or [])
+            )
+
+        # URI-based: handle postgres:// URIs
         if scheme not in {"postgres", "postgresql"}:
             return False
 
@@ -239,20 +291,19 @@ class PostgresSqlExecutor(SqlExecutor):
         Phase 1: EXISTS checks for not_null (fast, can early-terminate)
         Phase 2: Aggregate query for remaining rules
 
+        Supports both URI-based connections (handle.db_params) and
+        BYOC connections (handle.external_conn).
+
         Returns:
             {"results": [...]}
         """
-        if not handle.db_params:
-            raise ValueError("PostgreSQL handle missing db_params")
-
-        params: PostgresConnectionParams = handle.db_params
         exists_specs = compiled_plan.get("exists_specs", [])
         aggregate_selects = compiled_plan.get("aggregate_selects", [])
 
         if not exists_specs and not aggregate_selects:
             return {"results": [], "staging": None}
 
-        table = f"{_esc(params.schema)}.{_esc(params.table)}"
+        table = _get_table_reference(handle)
         results: List[Dict[str, Any]] = []
 
         # Build rule_kinds mapping from specs
@@ -262,7 +313,7 @@ class PostgresSqlExecutor(SqlExecutor):
         for spec in compiled_plan.get("aggregate_specs", []):
             rule_kinds[spec["rule_id"]] = spec.get("kind")
 
-        with get_connection(params) as conn:
+        with _get_connection_ctx(handle) as conn:
             with conn.cursor() as cur:
                 # Phase 1: EXISTS checks for not_null rules
                 if exists_specs:
@@ -301,18 +352,28 @@ class PostgresSqlExecutor(SqlExecutor):
         """
         Introspect the PostgreSQL table for metadata.
 
+        Supports both URI-based connections (handle.db_params) and
+        BYOC connections (handle.external_conn).
+
         Returns:
             {"row_count": int, "available_cols": [...]}
         """
-        if not handle.db_params:
-            raise ValueError("PostgreSQL handle missing db_params")
+        table = _get_table_reference(handle)
 
-        params: PostgresConnectionParams = handle.db_params
+        # Get schema and table name for information_schema query
+        if handle.scheme == "byoc" and handle.table_ref:
+            _db, schema, table_name = parse_table_reference(handle.table_ref)
+            schema = schema or get_default_schema(POSTGRESQL)
+        elif handle.db_params:
+            params: PostgresConnectionParams = handle.db_params
+            schema = params.schema
+            table_name = params.table
+        else:
+            raise ValueError("Handle has neither table_ref nor db_params")
 
-        with get_connection(params) as conn:
+        with _get_connection_ctx(handle) as conn:
             with conn.cursor() as cur:
                 # Get row count
-                table = f"{_esc(params.schema)}.{_esc(params.table)}"
                 cur.execute(f"SELECT COUNT(*) FROM {table}")
                 row_count = cur.fetchone()
                 n = int(row_count[0]) if row_count else 0
@@ -325,7 +386,7 @@ class PostgresSqlExecutor(SqlExecutor):
                     WHERE table_schema = %s AND table_name = %s
                     ORDER BY ordinal_position
                     """,
-                    (params.schema, params.table),
+                    (schema, table_name),
                 )
                 cols = [row[0] for row in cur.fetchall()]
 

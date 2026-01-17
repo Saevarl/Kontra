@@ -240,6 +240,71 @@ class ValidationResult:
 
 
 @dataclass
+class DryRunResult:
+    """
+    Result of a dry run (contract validation without execution).
+
+    Properties:
+        valid: Whether the contract is syntactically valid
+        rules_count: Number of rules that would run
+        columns_needed: Columns the contract requires
+        contract_name: Name of the contract (if any)
+        errors: List of errors found during validation
+        datasource: Datasource from contract
+    """
+
+    valid: bool
+    rules_count: int
+    columns_needed: List[str]
+    contract_name: Optional[str] = None
+    datasource: Optional[str] = None
+    errors: List[str] = field(default_factory=list)
+
+    def __repr__(self) -> str:
+        status = "VALID" if self.valid else "INVALID"
+        parts = [f"DryRunResult({self.contract_name or 'inline'}) {status}"]
+        if self.valid:
+            parts.append(f"  Rules: {self.rules_count}, Columns: {len(self.columns_needed)}")
+            if self.columns_needed:
+                cols = ", ".join(self.columns_needed[:5])
+                if len(self.columns_needed) > 5:
+                    cols += f" ... +{len(self.columns_needed) - 5} more"
+                parts.append(f"  Needs: {cols}")
+        else:
+            for err in self.errors[:3]:
+                parts.append(f"  ERROR: {err}")
+            if len(self.errors) > 3:
+                parts.append(f"  ... +{len(self.errors) - 3} more errors")
+        return "\n".join(parts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "valid": self.valid,
+            "rules_count": self.rules_count,
+            "columns_needed": self.columns_needed,
+            "contract_name": self.contract_name,
+            "datasource": self.datasource,
+            "errors": self.errors,
+        }
+
+    def to_json(self, indent: Optional[int] = None) -> str:
+        """Convert to JSON string."""
+        return json.dumps(self.to_dict(), indent=indent, default=str)
+
+    def to_llm(self) -> str:
+        """Token-optimized format for LLM context."""
+        if self.valid:
+            cols = ",".join(self.columns_needed[:10])
+            if len(self.columns_needed) > 10:
+                cols += f"...+{len(self.columns_needed) - 10}"
+            return f"DRYRUN: {self.contract_name or 'inline'} VALID rules={self.rules_count} cols=[{cols}]"
+        else:
+            errs = "; ".join(self.errors[:3])
+            return f"DRYRUN: {self.contract_name or 'inline'} INVALID errors=[{errs}]"
+
+
+@dataclass
 class Diff:
     """
     Diff between two validation runs.

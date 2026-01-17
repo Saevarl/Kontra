@@ -8,6 +8,17 @@ from kontra.state.types import FailureMode
 
 @register_rule("min_rows")
 class MinRowsRule(BaseRule):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Validate threshold at construction time
+        threshold = self.params.get("value", self.params.get("threshold", 0))
+        if threshold is not None and int(threshold) < 0:
+            from kontra.errors import RuleParameterError
+            raise RuleParameterError(
+                "min_rows", "threshold",
+                f"must be non-negative, got {threshold}"
+            )
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         # Accept both 'value' and 'threshold' for backwards compatibility
         min_count = int(self.params.get("value", self.params.get("threshold", 0)))

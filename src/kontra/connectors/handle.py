@@ -1,4 +1,4 @@
-# src/contra/connectors/handle.py
+# src/kontra/connectors/handle.py
 from __future__ import annotations
 
 """
@@ -6,16 +6,22 @@ DatasetHandle — a normalized, engine-agnostic view of a dataset location.
 
 Why this exists
 ---------------
-Materializers (DuckDB/Polars) and SQL executors shouldn’t have to parse URIs
+Materializers (DuckDB/Polars) and SQL executors shouldn't have to parse URIs
 or chase environment variables. This small value object centralizes that logic:
 
   - `uri`:     the original string you passed (e.g., "s3://bucket/key.parquet")
-  - `scheme`:  parsed scheme: "s3", "file", "https", "" (bare local), etc.
+  - `scheme`:  parsed scheme: "s3", "file", "https", "" (bare local), "byoc", etc.
   - `path`:    the path we should hand to the backend (typically the original URI)
-  - `format`:  best-effort file format: "parquet" | "csv" | "unknown"
+  - `format`:  best-effort file format: "parquet" | "csv" | "postgres" | "sqlserver" | "unknown"
   - `fs_opts`: normalized filesystem options pulled from env (e.g., S3 creds,
                region, endpoint, URL style). These are safe to pass to a DuckDB
                httpfs session or other backends.
+
+BYOC (Bring Your Own Connection) support:
+  - `external_conn`: User-provided database connection object
+  - `dialect`:       Database dialect ("postgresql", "sqlserver")
+  - `table_ref`:     Table reference ("schema.table" or "db.schema.table")
+  - `owned`:         If True, Kontra closes the connection. If False (BYOC), user closes it.
 
 This object is intentionally tiny and immutable. If a connector later wants to
 enrich it (e.g., SAS tokens for ADLS), we can extend `fs_opts` without touching
@@ -35,10 +41,62 @@ class DatasetHandle:
     path: str
     format: str
     fs_opts: Dict[str, str]
-    # PostgreSQL-specific: resolved connection parameters
+    # Database connection parameters (for URI-based connections)
     db_params: Optional[Any] = field(default=None)
 
+    # BYOC (Bring Your Own Connection) fields
+    external_conn: Optional[Any] = field(default=None)  # User's connection object
+    dialect: Optional[str] = field(default=None)        # "postgresql" | "sqlserver"
+    table_ref: Optional[str] = field(default=None)      # "schema.table" or "db.schema.table"
+    owned: bool = field(default=True)                   # True = we close, False = user closes
+
     # ------------------------------ Constructors ------------------------------
+
+    @staticmethod
+    def from_connection(conn: Any, table: str) -> "DatasetHandle":
+        """
+        Create a DatasetHandle from a BYOC (Bring Your Own Connection) database connection.
+
+        This allows users to pass their own database connection objects (psycopg2,
+        pyodbc, SQLAlchemy, etc.) while Kontra still performs SQL pushdown and preplan.
+
+        Args:
+            conn: A database connection object (psycopg2, pyodbc, SQLAlchemy engine, etc.)
+            table: Table reference: "table", "schema.table", or "database.schema.table"
+
+        Returns:
+            DatasetHandle configured for BYOC mode
+
+        Examples:
+            >>> import psycopg2
+            >>> conn = psycopg2.connect(host="localhost", dbname="mydb")
+            >>> handle = DatasetHandle.from_connection(conn, "public.users")
+
+            >>> import pyodbc
+            >>> conn = pyodbc.connect("DRIVER={ODBC Driver 17};SERVER=...")
+            >>> handle = DatasetHandle.from_connection(conn, "dbo.orders")
+
+        Notes:
+            - Kontra does NOT close the connection (owned=False). User manages lifecycle.
+            - SQL pushdown and preplan still work using the provided connection.
+            - The `dialect` is auto-detected from the connection type.
+        """
+        from kontra.connectors.detection import detect_connection_dialect
+
+        dialect = detect_connection_dialect(conn)
+
+        return DatasetHandle(
+            uri=f"byoc://{dialect}/{table}",
+            scheme="byoc",
+            path=table,
+            format=dialect,
+            fs_opts={},
+            db_params=None,
+            external_conn=conn,
+            dialect=dialect,
+            table_ref=table,
+            owned=False,  # User owns the connection, not Kontra
+        )
 
     @staticmethod
     def from_uri(uri: str) -> "DatasetHandle":

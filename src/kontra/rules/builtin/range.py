@@ -34,6 +34,19 @@ class RangeRule(BaseRule):
           min: 0  # Only minimum, no upper bound
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Validate min <= max at construction time
+        min_val = self.params.get("min")
+        max_val = self.params.get("max")
+        if min_val is not None and max_val is not None:
+            if min_val > max_val:
+                from kontra.errors import RuleParameterError
+                raise RuleParameterError(
+                    "range", "min/max",
+                    f"min ({min_val}) must be <= max ({max_val})"
+                )
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
         min_val = self.params.get("min")

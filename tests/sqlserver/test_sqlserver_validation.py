@@ -239,3 +239,83 @@ class TestSqlServerPreplan:
         assert result.rule_decisions["test_user_id"] == "pass_meta"
         # email has no unique constraint -> unknown
         assert result.rule_decisions["test_email"] == "unknown"
+
+
+@pytest.mark.integration
+class TestSqlServerRegexFallback:
+    """Test that regex rules correctly fall back to Polars (BUG-011 fix)."""
+
+    def test_regex_not_in_supported_rules(self):
+        """Verify regex is NOT in SQL Server SUPPORTED_RULES.
+
+        PATINDEX uses LIKE-style wildcards, not regex, so regex rules
+        must fall back to Polars execution.
+        """
+        from kontra.engine.executors.sqlserver_sql import SqlServerSqlExecutor
+
+        executor = SqlServerSqlExecutor()
+        assert "regex" not in executor.SUPPORTED_RULES
+
+    def test_regex_not_compiled_by_executor(self):
+        """Verify regex specs are not compiled by SQL Server executor."""
+        from kontra.engine.executors.sqlserver_sql import SqlServerSqlExecutor
+
+        executor = SqlServerSqlExecutor()
+
+        # Regex spec should NOT be added to supported_specs
+        specs = [
+            {"kind": "regex", "column": "email", "pattern": r".*@.*", "rule_id": "test_regex"},
+            {"kind": "not_null", "column": "email", "rule_id": "test_not_null"},
+        ]
+
+        plan = executor.compile(specs)
+
+        # Only not_null should be in supported_specs
+        supported_rule_ids = [s["rule_id"] for s in plan["supported_specs"]]
+        assert "test_not_null" in supported_rule_ids
+        assert "test_regex" not in supported_rule_ids
+
+    def test_regex_via_polars_fallback(self, sqlserver_uri):
+        """Verify regex works via Polars fallback with correct results.
+
+        This is the actual bug fix verification: regex should work correctly
+        on SQL Server data by falling back to Polars execution.
+        """
+        import kontra
+        from kontra import rules
+
+        # username column has no nulls - test that regex matching works
+        result = kontra.validate(
+            sqlserver_uri,
+            rules=[
+                rules.regex("username", r"^user_\d+$"),  # Matches user_1, user_2, etc.
+            ],
+        )
+
+        # Should pass since all usernames match the pattern
+        assert result.passed
+
+    def test_regex_with_nulls_via_fallback(self, sqlserver_uri):
+        """Verify regex correctly counts NULL as failure via Polars.
+
+        The email column has NULLs. Regex should count NULLs as failures
+        (since NULL doesn't match any pattern).
+        """
+        import kontra
+        from kontra import rules
+
+        result = kontra.validate(
+            sqlserver_uri,
+            rules=[
+                rules.regex("email", r".*@.*"),  # Matches emails with @
+            ],
+        )
+
+        # Should fail because email has NULLs
+        assert not result.passed
+
+        # Check that only NULL rows are counted as failures (not all rows)
+        rule_result = result.rules[0]
+        assert rule_result.failed_count > 0
+        # Email has ~2 NULLs in test data - should NOT be 1002 (all rows)
+        assert rule_result.failed_count < 100
