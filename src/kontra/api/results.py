@@ -564,25 +564,29 @@ class ValidationResult:
                 col = f'"{column}"'
                 if dialect == "mssql":
                     query = f"""
-                        SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS _row_index
-                        FROM {table}
-                        WHERE {col} IN (
-                            SELECT {col} FROM {table}
+                        SELECT t.*, dup._duplicate_count,
+                               ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS _row_index
+                        FROM {table} t
+                        JOIN (
+                            SELECT {col}, COUNT(*) as _duplicate_count
+                            FROM {table}
                             GROUP BY {col}
                             HAVING COUNT(*) > 1
-                        )
+                        ) dup ON t.{col} = dup.{col}
                         ORDER BY (SELECT NULL)
                         OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY
                     """
                 else:
                     query = f"""
-                        SELECT *, ROW_NUMBER() OVER () - 1 AS _row_index
-                        FROM {table}
-                        WHERE {col} IN (
-                            SELECT {col} FROM {table}
+                        SELECT t.*, dup._duplicate_count,
+                               ROW_NUMBER() OVER () - 1 AS _row_index
+                        FROM {table} t
+                        JOIN (
+                            SELECT {col}, COUNT(*) as _duplicate_count
+                            FROM {table}
                             GROUP BY {col}
                             HAVING COUNT(*) > 1
-                        )
+                        ) dup ON t.{col} = dup.{col}
                         LIMIT {n}
                     """
                 return pl.read_database(query, conn)
