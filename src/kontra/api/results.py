@@ -142,6 +142,7 @@ class RuleResult:
         severity: "blocking" | "warning" | "info"
         source: Measurement source ("metadata", "sql", "polars")
         column: Column name if applicable
+        context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Sampling properties:
         samples: List of sample failing rows, or None if unavailable
@@ -159,6 +160,7 @@ class RuleResult:
     source: str = "polars"
     column: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None
 
     # Sampling fields (eager sampling)
     samples: Optional[List[Dict[str, Any]]] = None
@@ -199,6 +201,7 @@ class RuleResult:
             source=d.get("execution_source", d.get("source", "polars")),
             column=column,
             details=d.get("details"),
+            context=d.get("context"),
             # Sampling fields
             samples=d.get("samples"),
             samples_source=d.get("samples_source"),
@@ -221,6 +224,8 @@ class RuleResult:
             d["column"] = self.column
         if self.details:
             d["details"] = self.details
+        if self.context:
+            d["context"] = self.context
 
         # Sampling fields - always include for clarity
         d["samples"] = self.samples  # None = unavailable, [] = none found
@@ -366,6 +371,17 @@ class ValidationResult:
 
         # Convert raw results to RuleResult objects
         rules = [RuleResult.from_dict(r) for r in results_list]
+
+        # Populate context from rule objects if available
+        if rule_objects is not None:
+            context_map = {
+                getattr(r, "rule_id", r.name): getattr(r, "context", {})
+                for r in rule_objects
+            }
+            for rule_result in rules:
+                ctx = context_map.get(rule_result.rule_id)
+                if ctx:
+                    rule_result.context = ctx
 
         # Calculate counts
         total = summary.get("total_rules", len(rules))

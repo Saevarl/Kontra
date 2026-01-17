@@ -129,25 +129,63 @@ class RuleExecutionPlan:
         """
         # Build rule_id -> severity mapping for predicates
         rule_severity_map = self._build_severity_map()
+        available_cols = set(df.columns)
 
         vec_results: List[Dict[str, Any]] = []
         if compiled.predicates:
-            # Sum boolean violations per predicate in a single select pass
-            counts_df = df.select([p.expr.sum().alias(p.rule_id) for p in compiled.predicates])
-            counts = counts_df.row(0, named=True)
+            # Separate predicates into those with all columns present vs missing columns
+            valid_predicates: List[Predicate] = []
+            missing_col_results: List[Dict[str, Any]] = []
+
             for p in compiled.predicates:
-                failed_count = int(counts[p.rule_id])
-                passed = failed_count == 0
-                vec_results.append(
-                    {
+                missing = p.columns - available_cols
+                if missing:
+                    # Column(s) not found - generate failure result
+                    missing_list = sorted(missing)
+                    if len(missing_list) == 1:
+                        msg = f"Column '{missing_list[0]}' not found"
+                    else:
+                        msg = f"Columns not found: {', '.join(missing_list)}"
+
+                    # Hint if data might be nested (single column available, multiple expected)
+                    if len(available_cols) == 1:
+                        msg += ". Data may be nested - Kontra requires flat tabular data"
+
+                    missing_col_results.append({
                         "rule_id": p.rule_id,
-                        "passed": passed,
-                        "failed_count": failed_count,
-                        "message": "Passed" if passed else p.message,
+                        "passed": False,
+                        "failed_count": df.height,
+                        "message": msg,
                         "execution_source": "polars",
                         "severity": rule_severity_map.get(p.rule_id, "blocking"),
-                    }
-                )
+                        "details": {
+                            "missing_columns": missing_list,
+                            "available_columns": sorted(available_cols)[:20],
+                        },
+                    })
+                else:
+                    valid_predicates.append(p)
+
+            # Execute valid predicates in vectorized pass
+            if valid_predicates:
+                counts_df = df.select([p.expr.sum().alias(p.rule_id) for p in valid_predicates])
+                counts = counts_df.row(0, named=True)
+                for p in valid_predicates:
+                    failed_count = int(counts[p.rule_id])
+                    passed = failed_count == 0
+                    vec_results.append(
+                        {
+                            "rule_id": p.rule_id,
+                            "passed": passed,
+                            "failed_count": failed_count,
+                            "message": "Passed" if passed else p.message,
+                            "execution_source": "polars",
+                            "severity": rule_severity_map.get(p.rule_id, "blocking"),
+                        }
+                    )
+
+            # Add missing column results
+            vec_results.extend(missing_col_results)
 
         fb_results: List[Dict[str, Any]] = []
         for r in compiled.fallback_rules:

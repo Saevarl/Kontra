@@ -18,6 +18,9 @@ class BaseRule(ABC):
         self.rule_id: str = name
         # severity is set by the factory (from contract spec)
         self.severity: str = "blocking"
+        # context is set by the factory (from contract spec)
+        # Consumer-defined metadata, ignored by validation
+        self.context: Dict[str, Any] = {}
     
     def __str__(self) -> str:
         return f"{self.name}({self.params})"
@@ -85,6 +88,54 @@ class BaseRule(ABC):
             "passed": failed_count == 0,
             "failed_count": int(failed_count),
             "message": message if failed_count > 0 else "Passed",
+        }
+
+    def _check_columns(self, df: pl.DataFrame, columns: Set[str]) -> Dict[str, Any] | None:
+        """
+        Check if required columns exist in the DataFrame.
+
+        Returns a failure result dict if any columns are missing, None if all exist.
+        This allows rules to fail gracefully instead of raising exceptions.
+
+        Args:
+            df: The DataFrame to check
+            columns: Set of required column names
+
+        Returns:
+            Failure result dict if columns missing, None if all present
+        """
+        if not columns:
+            return None
+
+        available = set(df.columns)
+        missing = columns - available
+
+        if not missing:
+            return None
+
+        # Build helpful error message
+        missing_list = sorted(missing)
+        available_list = sorted(available)
+
+        if len(missing_list) == 1:
+            msg = f"Column '{missing_list[0]}' not found"
+        else:
+            msg = f"Columns not found: {', '.join(missing_list)}"
+
+        # Check if data might be nested (single column that looks like a wrapper)
+        nested_hint = ""
+        if len(available) == 1 and len(missing) > 0:
+            nested_hint = ". Data may be nested - Kontra requires flat tabular data"
+
+        return {
+            "rule_id": getattr(self, "rule_id", self.name),
+            "passed": False,
+            "failed_count": df.height,  # All rows fail if column missing
+            "message": f"{msg}{nested_hint}",
+            "details": {
+                "missing_columns": missing_list,
+                "available_columns": available_list[:20],  # Limit for readability
+            },
         }
 
     def to_sql_filter(self, dialect: str = "postgres") -> str | None:

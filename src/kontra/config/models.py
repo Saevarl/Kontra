@@ -5,6 +5,10 @@ from typing import Dict, Any, List, Literal, Optional
 class RuleSpec(BaseModel):
     """
     Declarative specification for a rule from contract.yml
+
+    The `context` field is for consumer-defined metadata that Kontra stores
+    but does not use for validation. Consumers/agents can read context for
+    routing, explanations, fix hints, etc.
     """
     name: str = Field(..., description="The rule name (e.g., not_null, unique).")
     id: Optional[str] = Field(default=None, description="Explicit rule ID (optional, auto-generated if not provided).")
@@ -12,6 +16,10 @@ class RuleSpec(BaseModel):
     severity: Literal["blocking", "warning", "info"] = Field(
         default="blocking",
         description="Rule severity: blocking (fails pipeline), warning (warns but continues), info (logs only)."
+    )
+    context: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Consumer-defined context (owner, tags, fix_hint, etc.). Stored but not used by Kontra."
     )
 
 class Contract(BaseModel):

@@ -12,6 +12,12 @@ class AllowedValuesRule(BaseRule):
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
         values: Sequence[Any] = self.params["values"]
+
+        # Check column exists before accessing
+        col_check = self._check_columns(df, {column})
+        if col_check is not None:
+            return col_check
+
         allowed_set = set(values)
         mask = (~df[column].is_in(list(values))).fill_null(True)
         res = super()._failures(df, mask, f"{column} contains disallowed values")

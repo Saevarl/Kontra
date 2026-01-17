@@ -81,6 +81,7 @@ class RuleFactory:
 
                 rule_instance.rule_id = rule_id
                 rule_instance.severity = spec.severity
+                rule_instance.context = spec.context or {}
                 rules.append(rule_instance)
             except (ValueError, DuplicateRuleIdError):
                 raise  # Re-raise validation errors as-is

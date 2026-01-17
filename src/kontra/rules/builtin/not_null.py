@@ -24,6 +24,11 @@ class NotNullRule(BaseRule):
         column = self.params["column"]
         include_nan = self.params.get("include_nan", False)
 
+        # Check column exists before accessing
+        col_check = self._check_columns(df, {column})
+        if col_check is not None:
+            return col_check
+
         # Build mask for null (and optionally NaN) values
         mask = df[column].is_null()
         if include_nan:

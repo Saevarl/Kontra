@@ -141,6 +141,11 @@ class ConditionalRangeRule(BaseRule):
         return null_expr | out_of_range
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+        # Check columns exist before accessing
+        col_check = self._check_columns(df, {self._column, self._when_column})
+        if col_check is not None:
+            return col_check
+
         # Build condition and range violation expressions
         condition_expr = self._build_condition_expr()
         range_violation_expr = self._build_range_violation_expr()

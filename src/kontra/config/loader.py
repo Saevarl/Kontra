@@ -106,11 +106,15 @@ class ContractLoader:
             params = r.get("params", {}) or {}
             if not isinstance(params, dict):
                 raise ValueError(f"Rule at index {i} has non-dict 'params'.")
+            context = r.get("context", {}) or {}
+            if not isinstance(context, dict):
+                raise ValueError(f"Rule at index {i} has non-dict 'context'.")
             rules.append(RuleSpec(
                 name=r["name"],
                 id=r.get("id"),
                 params=params,
                 severity=r.get("severity", "blocking"),
+                context=context,
             ))
 
         # Use 'datasource' if present, otherwise fall back to 'dataset' for backwards compat

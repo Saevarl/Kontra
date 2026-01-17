@@ -177,3 +177,71 @@ def validate_user_data(data_source: str) -> str:
     # Return token-optimized output
     return result.to_llm()
 ```
+
+## Example: LLM Retry Pattern
+
+When validating LLM outputs and retrying on failure, use `rule.message`, `rule.details`, and `rule.context` to build actionable feedback:
+
+```python
+import kontra
+from kontra import rules
+import json
+
+def validate_with_retry(llm_fn, prompt: str, contract_path: str, max_retries: int = 3):
+    """Validate LLM output and retry with actionable feedback on failure."""
+
+    for attempt in range(max_retries):
+        # Get LLM output
+        output = llm_fn(prompt)
+
+        # Parse output (LLM returns JSON)
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            prompt = f"{prompt}\n\nYour response was not valid JSON. Please respond with valid JSON."
+            continue
+
+        # Validate
+        result = kontra.validate(data, contract=contract_path, save=False)
+
+        if result.passed:
+            return data
+
+        # Build actionable feedback from rule results
+        feedback_lines = []
+        for r in result.blocking_failures:
+            line = f"- {r.message}"
+
+            # Add expected values from details if available
+            if r.details:
+                if "expected" in r.details:
+                    line += f" (allowed: {r.details['expected']})"
+                if "expected_min" in r.details or "expected_max" in r.details:
+                    min_v = r.details.get("expected_min", "")
+                    max_v = r.details.get("expected_max", "")
+                    line += f" (range: [{min_v}, {max_v}])"
+
+            # Add fix hint from context if available
+            if r.context and r.context.get("fix_hint"):
+                line += f" → {r.context['fix_hint']}"
+
+            feedback_lines.append(line)
+
+        # Update prompt with feedback
+        prompt = f"""{prompt}
+
+Your previous response failed validation. Fix these issues:
+{chr(10).join(feedback_lines)}
+"""
+
+    raise ValueError(f"Validation failed after {max_retries} attempts")
+```
+
+**Key points:**
+
+- **`rule.message`**: Human-readable description of what failed (e.g., "email contains null values")
+- **`rule.details`**: Structured data about the failure (expected values, actual values, counts)
+- **`rule.context`**: Consumer-defined metadata from the contract (owner, fix hints, tags)
+- **`save=False`**: Disables state persistence for ephemeral validation (no history tracking)
+
+The retry pattern keeps Kontra as a measurement primitive—it provides the data, your code builds the feedback.

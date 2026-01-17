@@ -61,6 +61,11 @@ class RangeRule(BaseRule):
         min_val = self.params.get("min")
         max_val = self.params.get("max")
 
+        # Check column exists before accessing
+        col_check = self._check_columns(df, {column})
+        if col_check is not None:
+            return col_check
+
         # Note: min/max validation is done in __init__, so we know at least one is set
         try:
             col = df[column]

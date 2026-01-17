@@ -11,6 +11,12 @@ from kontra.state.types import FailureMode
 class UniqueRule(BaseRule):
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
+
+        # Check column exists before accessing
+        col_check = self._check_columns(df, {column})
+        if col_check is not None:
+            return col_check
+
         col = df[column]
 
         # SQL semantics: NULLs are not considered duplicates (NULL != NULL)

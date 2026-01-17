@@ -297,6 +297,33 @@ rules.not_null("email", severity="warning")  # "blocking" | "warning" | "info"
 rules.range("score", min=0, max=100, id="score_range")  # custom rule ID
 ```
 
+### Rule Context in Contracts
+
+Add consumer-defined context to rules in contract files. Kontra stores this data but doesn't use it for validation—consumers/agents access it for routing, explanations, or fix hints:
+
+```yaml
+rules:
+  - name: not_null
+    params:
+      column: email
+    context:
+      owner: data_eng_team
+      fix_hint: Ensure email is provided for all users
+      tags: ["daily_check", "critical"]
+```
+
+Access in code:
+
+```python
+result = kontra.validate("data.parquet", "contract.yml")
+
+for rule in result.blocking_failures:
+    msg = rule.message
+    if rule.context and rule.context.get("fix_hint"):
+        msg += f" → {rule.context['fix_hint']}"
+    print(msg)
+```
+
 ## Working with Results
 
 ```python
@@ -324,6 +351,13 @@ for rule in result.blocking_failures:
 
 for rule in result.warnings:
     print(f"Warning: {rule.rule_id}")
+
+# Access rule details for programmatic use
+for rule in result.rules:
+    print(f"{rule.rule_id}:")
+    print(f"  message: {rule.message}")  # Human-readable description
+    print(f"  details: {rule.details}")  # Structured failure data
+    print(f"  context: {rule.context}")  # Consumer-defined metadata
 
 # Serialize
 result.to_dict()       # dict
@@ -424,6 +458,7 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 | `kontra.scout(data, **opts)` | Profile data |
 | `kontra.suggest_rules(profile)` | Generate rules from profile |
 | `kontra.diff(contract, **opts)` | Compare validation runs |
+| `kontra.list_rules()` | List all available rule types |
 | `@kontra.validate_decorator(...)` | Decorator for pipeline validation |
 
 ### History Functions
@@ -440,7 +475,7 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 |------|----------------|
 | `ValidationResult` | `passed`, `total_rows`, `rules`, `blocking_failures`, `warnings`, `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
 | `FailureSamples` | `count`, `rule_id`, `to_dict()`, `to_json()`, `to_llm()` (iterable) |
-| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column`, `samples`, `samples_source`, `samples_reason` |
+| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column`, `details`, `context`, `samples`, `samples_source`, `samples_reason` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 | `Profile` | `row_count`, `column_count`, `columns` |
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |

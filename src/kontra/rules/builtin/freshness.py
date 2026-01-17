@@ -99,6 +99,11 @@ class FreshnessRule(BaseRule):
         column = self.params["column"]
         max_age = parse_duration(str(self.params["max_age"]))
 
+        # Check column exists before accessing
+        col_check = self._check_columns(df, {column})
+        if col_check is not None:
+            return col_check
+
         # Check column dtype is datetime-compatible
         col_dtype = df[column].dtype
         datetime_types = (pl.Datetime, pl.Date)

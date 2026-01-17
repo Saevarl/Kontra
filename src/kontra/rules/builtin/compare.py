@@ -80,6 +80,11 @@ class CompareRule(BaseRule):
         return {self._left, self._right}
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+        # Check columns exist before accessing
+        col_check = self._check_columns(df, {self._left, self._right})
+        if col_check is not None:
+            return col_check
+
         left_col = pl.col(self._left)
         right_col = pl.col(self._right)
 

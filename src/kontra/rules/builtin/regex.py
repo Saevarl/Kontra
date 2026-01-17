@@ -41,6 +41,12 @@ class RegexRule(BaseRule):
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
         pattern = self.params["pattern"]
+
+        # Check column exists before accessing
+        col_check = self._check_columns(df, {column})
+        if col_check is not None:
+            return col_check
+
         try:
             mask = (
                 ~df[column]
