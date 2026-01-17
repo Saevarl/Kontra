@@ -176,6 +176,43 @@ This is useful for:
 
 **Note**: Data must be flat (tabular). Nested JSON like `{"user": {"email": "..."}}` should be flattened before validation.
 
+### Debug Failed Rules
+
+When a rule fails, use `sample_failures()` to see example failing rows:
+
+```python
+result = kontra.validate("data.parquet", rules=[
+    rules.not_null("email"),
+    rules.allowed_values("status", ["active", "inactive"]),
+])
+
+if not result.passed:
+    for rule in result.blocking_failures:
+        samples = result.sample_failures(rule.rule_id, n=5)
+        print(f"\n{rule.rule_id}: {rule.failed_count} failures")
+        for row in samples:
+            print(f"  Row {row['_row_index']}: {row}")
+```
+
+Output:
+```
+COL:email:not_null: 42 failures
+  Row 15: {'_row_index': 15, 'id': 16, 'email': None, 'status': 'active'}
+  Row 23: {'_row_index': 23, 'id': 24, 'email': None, 'status': 'pending'}
+  ...
+```
+
+`sample_failures()` returns a `FailureSamples` object with serialization methods:
+
+```python
+samples = result.sample_failures("COL:email:not_null")
+samples.to_dict()   # List of dicts
+samples.to_json()   # JSON string
+samples.to_llm()    # Token-optimized for LLM context
+```
+
+**Note**: For database connections (BYOC), keep the connection open until done with `sample_failures()`.
+
 ## Available Rules
 
 ```python
@@ -336,7 +373,8 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 
 | Type | Key Properties |
 |------|----------------|
-| `ValidationResult` | `passed`, `rules`, `blocking_failures`, `warnings`, `to_dict()`, `to_json()`, `to_llm()` |
+| `ValidationResult` | `passed`, `rules`, `blocking_failures`, `warnings`, `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
+| `FailureSamples` | `count`, `rule_id`, `to_dict()`, `to_json()`, `to_llm()` (iterable) |
 | `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 | `Profile` | `row_count`, `column_count`, `columns` |

@@ -260,6 +260,7 @@ class ValidationEngine:
         self.contract: Optional[Contract] = None
         self.df: Optional[pl.DataFrame] = None
         self._handle: Optional[DatasetHandle] = handle  # BYOC: pre-built handle
+        self._rules: Optional[List] = None  # Built rules, for sample_failures()
 
         register_default_materializers()
         register_default_executors()
@@ -576,6 +577,7 @@ class ValidationEngine:
         # 2) Rules & plan
         t0 = now_ms()
         rules = RuleFactory(self.contract.rules).build_rules()
+        self._rules = rules  # Store for sample_failures()
         plan = RuleExecutionPlan(rules)
         compiled_full = plan.compile()
         timers.compile_ms = now_ms() - t0

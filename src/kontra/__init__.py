@@ -373,9 +373,25 @@ def validate(
                 raise InvalidDataError(type(data).__name__) from None
         raise
 
-    # Wrap in ValidationResult
-    # Note: dataset name is determined by the engine from contract.datasource
-    return ValidationResult.from_engine_result(raw_result)
+    # Determine data source for sample_failures()
+    # Priority: DataFrame > handle > data path
+    if isinstance(data, pl.DataFrame):
+        data_source = data
+    elif is_byoc:
+        # Store the handle for BYOC
+        data_source = engine._handle
+    elif isinstance(data, str):
+        data_source = data
+    else:
+        # list[dict] or dict - store as DataFrame
+        data_source = engine.df
+
+    # Wrap in ValidationResult with data source and rules for sample_failures()
+    return ValidationResult.from_engine_result(
+        raw_result,
+        data_source=data_source,
+        rule_objects=engine._rules,
+    )
 
 
 def scout(

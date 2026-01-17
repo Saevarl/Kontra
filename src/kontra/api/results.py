@@ -17,6 +17,87 @@ from typing import Any, Dict, Iterator, List, Optional, Union
 import yaml
 
 
+class FailureSamples:
+    """
+    Collection of sample rows that failed a validation rule.
+
+    This class wraps a list of failing rows with serialization methods.
+    It's iterable and indexable like a list.
+
+    Properties:
+        rule_id: The rule ID these samples are from
+        count: Number of samples in this collection
+
+    Methods:
+        to_dict(): Convert to list of dicts
+        to_json(): Convert to JSON string
+        to_llm(): Token-optimized format for LLM context
+    """
+
+    def __init__(self, samples: List[Dict[str, Any]], rule_id: str):
+        self._samples = samples
+        self.rule_id = rule_id
+
+    def __repr__(self) -> str:
+        return f"FailureSamples({self.rule_id}, {len(self._samples)} rows)"
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        return iter(self._samples)
+
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        return self._samples[index]
+
+    def __bool__(self) -> bool:
+        return len(self._samples) > 0
+
+    @property
+    def count(self) -> int:
+        """Number of sample rows."""
+        return len(self._samples)
+
+    def to_dict(self) -> List[Dict[str, Any]]:
+        """Convert to list of dicts."""
+        return self._samples
+
+    def to_json(self, indent: Optional[int] = None) -> str:
+        """Convert to JSON string."""
+        return json.dumps(self._samples, indent=indent, default=str)
+
+    def to_llm(self) -> str:
+        """
+        Token-optimized format for LLM context.
+
+        Example output:
+            SAMPLES: COL:email:not_null (2 rows)
+            [0] _row_index=1, id=2, email=None, status=active
+            [1] _row_index=3, id=4, email=None, status=active
+        """
+        if not self._samples:
+            return f"SAMPLES: {self.rule_id} (0 rows)"
+
+        lines = [f"SAMPLES: {self.rule_id} ({len(self._samples)} rows)"]
+
+        for i, row in enumerate(self._samples[:10]):  # Limit to 10 for token efficiency
+            # Format row as compact key=value pairs
+            parts = []
+            for k, v in row.items():
+                if v is None:
+                    parts.append(f"{k}=None")
+                elif isinstance(v, str) and len(v) > 20:
+                    parts.append(f"{k}={v[:20]}...")
+                else:
+                    parts.append(f"{k}={v}")
+            lines.append(f"[{i}] " + ", ".join(parts))
+
+        if len(self._samples) > 10:
+            lines.append(f"... +{len(self._samples) - 10} more rows")
+
+        return "\n".join(lines)
+
+
 @dataclass
 class RuleResult:
     """
@@ -112,6 +193,9 @@ class ValidationResult:
         blocking_failures: List of failed blocking rules
         warnings: List of failed warning rules
         stats: Optional statistics dict
+
+    Methods:
+        sample_failures(rule_id, n=5): Get sample of failing rows for a rule
     """
 
     passed: bool
@@ -123,6 +207,9 @@ class ValidationResult:
     rules: List[RuleResult]
     stats: Optional[Dict[str, Any]] = None
     _raw: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    # For sample_failures() - lazy evaluation
+    _data_source: Optional[Any] = field(default=None, repr=False)
+    _rule_objects: Optional[List[Any]] = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         status = "PASSED" if self.passed else "FAILED"
@@ -149,8 +236,21 @@ class ValidationResult:
         return [r for r in self.rules if not r.passed and r.severity == "warning"]
 
     @classmethod
-    def from_engine_result(cls, result: Dict[str, Any], dataset: str = "unknown") -> "ValidationResult":
-        """Create from ValidationEngine.run() result dict."""
+    def from_engine_result(
+        cls,
+        result: Dict[str, Any],
+        dataset: str = "unknown",
+        data_source: Optional[Any] = None,
+        rule_objects: Optional[List[Any]] = None,
+    ) -> "ValidationResult":
+        """Create from ValidationEngine.run() result dict.
+
+        Args:
+            result: Engine result dict
+            dataset: Dataset name (fallback)
+            data_source: Original data source for lazy sample_failures()
+            rule_objects: Rule objects for sample_failures() predicates
+        """
         summary = result.get("summary", {})
         results_list = result.get("results", [])
 
@@ -175,6 +275,8 @@ class ValidationResult:
             rules=rules,
             stats=result.get("stats"),
             _raw=result,
+            _data_source=data_source,
+            _rule_objects=rule_objects,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -237,6 +339,179 @@ class ValidationResult:
         lines.append(f"PASSED: {self.passed_count} rules")
 
         return "\n".join(lines)
+
+    def sample_failures(
+        self,
+        rule_id: str,
+        n: int = 5,
+    ) -> FailureSamples:
+        """
+        Get a sample of rows that failed a specific rule.
+
+        This method lazily re-queries the data source to find failing rows.
+        For BYOC (database connections), the connection must still be open.
+
+        Args:
+            rule_id: The rule ID to get failures for (e.g., "COL:email:not_null")
+            n: Number of sample rows to return (default: 5, max: 100)
+
+        Returns:
+            FailureSamples: Collection of failing rows with "_row_index" field.
+            Supports to_dict(), to_json(), to_llm() methods.
+            Empty if the rule passed (no failures).
+
+        Raises:
+            ValueError: If rule_id not found or rule doesn't support row-level samples
+            RuntimeError: If data source is unavailable for re-query
+
+        Example:
+            result = kontra.validate("data.parquet", contract)
+            if not result.passed:
+                samples = result.sample_failures("COL:email:not_null", n=5)
+                for row in samples:
+                    print(f"Row {row['_row_index']}: {row}")
+        """
+        import polars as pl
+
+        # Cap n at 100
+        n = min(n, 100)
+
+        # Find the rule result
+        rule_result = None
+        for r in self.rules:
+            if r.rule_id == rule_id:
+                rule_result = r
+                break
+
+        if rule_result is None:
+            raise ValueError(f"Rule not found: {rule_id}")
+
+        # If rule passed, return empty FailureSamples
+        if rule_result.passed:
+            return FailureSamples([], rule_id)
+
+        # Find the rule object to get the failure predicate
+        if self._rule_objects is None:
+            raise RuntimeError(
+                "sample_failures() requires rule objects. "
+                "This may happen if ValidationResult was created manually."
+            )
+
+        rule_obj = None
+        for r in self._rule_objects:
+            if getattr(r, "rule_id", None) == rule_id:
+                rule_obj = r
+                break
+
+        if rule_obj is None:
+            raise ValueError(f"Rule object not found for: {rule_id}")
+
+        # Get the failure predicate
+        predicate = None
+        if hasattr(rule_obj, "compile_predicate"):
+            pred_obj = rule_obj.compile_predicate()
+            if pred_obj is not None:
+                predicate = pred_obj.expr
+
+        if predicate is None:
+            raise ValueError(
+                f"Rule '{rule_obj.name}' does not support row-level samples. "
+                "Dataset-level rules (min_rows, max_rows, freshness, etc.) "
+                "cannot identify specific failing rows."
+            )
+
+        # Load the data
+        if self._data_source is None:
+            raise RuntimeError(
+                "sample_failures() requires data source reference. "
+                "This may happen if ValidationResult was created manually "
+                "or the data source is no longer available."
+            )
+
+        # Load data based on source type
+        df = self._load_data_for_sampling()
+
+        # Filter to failing rows, add index, limit
+        try:
+            failing = (
+                df.with_row_index("_row_index")
+                .filter(predicate)
+                .head(n)
+                .to_dicts()
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to query failing rows: {e}") from e
+
+        return FailureSamples(failing, rule_id)
+
+    def _load_data_for_sampling(self) -> "pl.DataFrame":
+        """Load data from the stored data source for sample_failures()."""
+        import polars as pl
+
+        source = self._data_source
+
+        if source is None:
+            raise RuntimeError("No data source available")
+
+        # String path/URI
+        if isinstance(source, str):
+            # Try to load as file
+            if source.lower().endswith(".parquet"):
+                return pl.read_parquet(source)
+            elif source.lower().endswith(".csv"):
+                return pl.read_csv(source)
+            else:
+                # Try parquet first, then CSV
+                try:
+                    return pl.read_parquet(source)
+                except Exception:
+                    try:
+                        return pl.read_csv(source)
+                    except Exception:
+                        raise RuntimeError(f"Cannot load data from: {source}")
+
+        # Polars DataFrame (was passed directly)
+        if isinstance(source, pl.DataFrame):
+            return source
+
+        # DatasetHandle (BYOC or parsed URI)
+        if hasattr(source, "scheme") and hasattr(source, "uri"):
+            # It's a DatasetHandle
+            handle = source
+
+            if handle.scheme == "postgres":
+                # PostgreSQL - need to query
+                if handle.connection is None:
+                    raise RuntimeError(
+                        "Database connection is closed. "
+                        "For BYOC, keep the connection open until done with sample_failures()."
+                    )
+                # Use the connection to query
+                import polars as pl
+                table = handle.table or handle.uri.split("/")[-1]
+                return pl.read_database(f"SELECT * FROM {table}", handle.connection)
+
+            elif handle.scheme == "mssql":
+                # SQL Server
+                if handle.connection is None:
+                    raise RuntimeError(
+                        "Database connection is closed. "
+                        "For BYOC, keep the connection open until done with sample_failures()."
+                    )
+                table = handle.table or handle.uri.split("/")[-1]
+                return pl.read_database(f"SELECT * FROM {table}", handle.connection)
+
+            elif handle.scheme in ("file", None) or handle.uri:
+                # File-based
+                uri = handle.uri
+                if uri.lower().endswith(".parquet"):
+                    return pl.read_parquet(uri)
+                elif uri.lower().endswith(".csv"):
+                    return pl.read_csv(uri)
+                else:
+                    return pl.read_parquet(uri)
+
+        raise RuntimeError(f"Unsupported data source type: {type(source)}")
 
 
 @dataclass
