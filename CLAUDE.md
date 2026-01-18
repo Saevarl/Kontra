@@ -17,6 +17,7 @@ Supports Parquet, CSV, PostgreSQL, SQL Server, local files, and S3. Uses a hybri
 | `docs/working/codebase_health.md` | **Before any code changes** | Coding guidelines per module, unresolved technical debt |
 | `kontra-manifest.md` | Before design/feature decisions | Core beliefs, design constraints, what Kontra is NOT |
 | `docs/working/execution_design_notes.md` | Before execution/optimization changes | Tier semantics, trade-offs, known issues |
+| `docs/working/kontra-agent-transformation-manifest.md` | Before agent/transformation features | Probe abstraction, language discipline, invariants |
 
 The codebase health document contains module-specific guidelines (e.g., how to add new SQL executors, how state backends handle annotations). Following these prevents introducing patterns that will need to be refactored later.
 
@@ -44,6 +45,19 @@ This document captures:
 - Sample failures tension: Early stop = limited samples
 - Tier equivalence invariant: All tiers agree on pass/fail, counts may differ
 - Known issues: unique semantic mismatch, NaN vs NULL pitfalls
+
+## Agent Transformation Manifest
+
+**For agent-facing transformation features, refer to `docs/working/kontra-agent-transformation-manifest.md`.**
+
+This document defines guardrails for features that help agents reason about transformations (JOINs, GROUP BY, deduplication):
+
+- **Unifying abstraction**: All capabilities are "Transformation Probes" - deterministic, structured, bounded, annotatable
+- **Canonical probes**: Relationship profiling, dependency profiling, duplicate profiling, transformation comparison
+- **Language discipline**: Use "probe", "measure", "profile", "compare" - NOT "validate", "check", "recommend"
+- **Key invariant**: "No component that affects validation or transformation semantics may be written to by agents"
+
+Kontra measures effects of transformations, never reasons about intent.
 
 ## Key Commands
 
