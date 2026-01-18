@@ -26,7 +26,7 @@ This creates `.kontra/config.yml` and a `contracts/` directory.
 ## 2. Profile Your Data
 
 ```bash
-kontra scout data.parquet
+kontra profile data.parquet
 ```
 
 Output:
@@ -42,10 +42,10 @@ Columns:
   created_at  datetime 100% non-null
 ```
 
-## 3. Generate a Contract
+## 3. Draft a Contract
 
 ```bash
-kontra scout data.parquet --suggest-rules > contracts/users.yml
+kontra profile data.parquet --draft > contracts/users.yml
 ```
 
 Review the generated file and adjust as needed:

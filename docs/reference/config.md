@@ -66,11 +66,11 @@ defaults:
   csv_mode: "auto"       # auto | duckdb | parquet
 
 # ─────────────────────────────────────────────────────────────
-# Scout Settings
+# Profile Settings
 # ─────────────────────────────────────────────────────────────
 
-scout:
-  preset: "standard"           # lite | standard | deep | llm
+profile:
+  preset: "scan"               # scout | scan | interrogate
   save_profile: false          # Auto-save profiles for diffing
   list_values_threshold: 10    # List all values if distinct <= N
   top_n: 5                     # Show top N frequent values
@@ -165,7 +165,7 @@ datasources:
 Usage:
 ```bash
 kontra validate contract.yml --data prod_db.users
-kontra scout prod_db.orders
+kontra profile prod_db.orders
 ```
 
 Resolves to:
@@ -187,7 +187,7 @@ datasources:
 
 Usage:
 ```bash
-kontra scout local_data.users
+kontra profile local_data.users
 ```
 
 Resolves to: `data/users.parquet`
@@ -206,7 +206,7 @@ datasources:
 
 Usage:
 ```bash
-kontra scout data_lake.events
+kontra profile data_lake.events
 ```
 
 Resolves to: `s3://my-bucket/warehouse/events.parquet`

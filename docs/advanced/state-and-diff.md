@@ -193,15 +193,15 @@ Annotations are stored in a normalized schema:
 Compare data profiles over time:
 
 ```bash
-kontra scout data.parquet --save     # save profile
+kontra profile data.parquet --save-profile  # save profile
 # ... later ...
-kontra scout-diff data.parquet       # compare to previous
+kontra profile-diff data.parquet            # compare to previous
 ```
 
 ```python
 # Python API
-profile = kontra.scout(df, save=True)
-diff = kontra.scout_diff("data.parquet")
+profile = kontra.profile(df, save=True)
+diff = kontra.profile_diff("data.parquet")
 
 for change in diff.changes:
     print(f"{change.column}.{change.field}: {change.before} -> {change.after}")

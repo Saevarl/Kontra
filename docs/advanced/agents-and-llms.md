@@ -22,7 +22,7 @@ print(result.to_llm())
 # PASSED: 13 rules
 
 # Profile
-profile = kontra.scout("data.parquet")
+profile = kontra.profile("data.parquet")
 print(profile.to_llm())
 # DATASET: users.parquet (50K rows, 8 cols)
 # COLS: user_id(int64,100%,unique), email(str,98%), status(str,100%,3vals), ...
@@ -87,7 +87,7 @@ kontra.set_config("/etc/kontra/config.yml")
 
 # All subsequent calls use this config
 result = kontra.validate("prod_db.users", rules=[...])
-profile = kontra.scout("prod_db.orders")
+profile = kontra.profile("prod_db.orders")
 
 # Check current setting
 path = kontra.get_config_path()
@@ -116,8 +116,8 @@ sources = kontra.list_datasources()
 When an agent needs to generate validation rules from data:
 
 ```python
-profile = kontra.scout("data.parquet", preset="deep")
-suggestions = kontra.suggest_rules(profile)
+profile = kontra.profile("data.parquet", preset="interrogate")
+suggestions = kontra.draft(profile)
 
 # Filter by confidence
 high_confidence = suggestions.filter(min_confidence=0.9)

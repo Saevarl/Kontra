@@ -10,7 +10,7 @@ from typing import Optional
 
 import typer
 
-from kontra.cli.commands import config, diff, scout, validate
+from kontra.cli.commands import config, diff, profile, validate
 from kontra.version import VERSION
 
 app = typer.Typer(help="Kontra CLI — Developer-first Data Quality Engine")
@@ -29,7 +29,7 @@ def _version(
 
 # Register all commands
 validate.register(app)
-scout.register(app)
+profile.register(app)  # Also registers deprecated 'scout' alias
 diff.register(app)
 config.register(app)
 

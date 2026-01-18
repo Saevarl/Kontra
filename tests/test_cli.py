@@ -246,26 +246,116 @@ rules:
 # =============================================================================
 
 
-class TestScout:
-    """Tests for kontra scout command."""
+class TestProfile:
+    """Tests for kontra profile command."""
 
-    def test_scout_basic(self, sample_parquet):
-        """Scout profiles a dataset."""
-        result = runner.invoke(app, ["scout", str(sample_parquet)])
+    def test_profile_basic(self, sample_parquet):
+        """Profile profiles a dataset."""
+        result = runner.invoke(app, ["profile", str(sample_parquet)])
         assert result.exit_code == 0
         # Should show column info
         assert "id" in result.output or "name" in result.output
 
+    def test_profile_scout_preset(self, sample_parquet):
+        """Profile with scout preset (quick recon)."""
+        result = runner.invoke(app, [
+            "profile", str(sample_parquet),
+            "--preset", "scout"
+        ])
+        assert result.exit_code == 0
+
+    def test_profile_scan_preset(self, sample_parquet):
+        """Profile with scan preset (default, full stats)."""
+        result = runner.invoke(app, [
+            "profile", str(sample_parquet),
+            "--preset", "scan"
+        ])
+        assert result.exit_code == 0
+
+    def test_profile_interrogate_preset(self, sample_parquet):
+        """Profile with interrogate preset (deep)."""
+        result = runner.invoke(app, [
+            "profile", str(sample_parquet),
+            "--preset", "interrogate"
+        ])
+        assert result.exit_code == 0
+
+    def test_profile_json_output(self, sample_parquet):
+        """Profile with JSON output."""
+        result = runner.invoke(app, [
+            "profile", str(sample_parquet),
+            "-o", "json"
+        ])
+        assert result.exit_code == 0
+
+        # Should be valid JSON
+        output = json.loads(result.output)
+        assert "columns" in output
+
+    def test_profile_draft_rules(self, sample_parquet):
+        """Profile --draft generates contract YAML."""
+        result = runner.invoke(app, [
+            "profile", str(sample_parquet),
+            "--draft"
+        ])
+        assert result.exit_code == 0
+        assert "rules:" in result.output
+        assert "name:" in result.output
+
+    def test_profile_columns_filter(self, sample_parquet):
+        """Profile with --columns filter."""
+        result = runner.invoke(app, [
+            "profile", str(sample_parquet),
+            "--columns", "id,name"
+        ])
+        assert result.exit_code == 0
+
+    def test_profile_sample(self, sample_parquet):
+        """Profile with --sample."""
+        result = runner.invoke(app, [
+            "profile", str(sample_parquet),
+            "--sample", "3"
+        ])
+        assert result.exit_code == 0
+
+    def test_profile_include_patterns(self, sample_parquet):
+        """Profile with --include-patterns."""
+        result = runner.invoke(app, [
+            "profile", str(sample_parquet),
+            "--include-patterns"
+        ])
+        assert result.exit_code == 0
+
+    def test_profile_file_not_found(self):
+        """Profile returns non-zero exit code for missing file."""
+        result = runner.invoke(app, ["profile", "nonexistent.parquet"])
+        assert result.exit_code != 0  # Could be 2 (config error) or 3 (runtime error)
+
+
+class TestScout:
+    """Tests for deprecated kontra scout command (backward compat)."""
+
+    def test_scout_basic(self, sample_parquet):
+        """Scout profiles a dataset (deprecated)."""
+        result = runner.invoke(app, ["scout", str(sample_parquet)])
+        assert result.exit_code == 0
+        # Should show deprecation warning
+        assert "deprecated" in result.output.lower()
+        # Should show column info
+        assert "id" in result.output or "name" in result.output
+
     def test_scout_lite_preset(self, sample_parquet):
-        """Scout with lite preset."""
+        """Scout with lite preset (deprecated -> scout)."""
         result = runner.invoke(app, [
             "scout", str(sample_parquet),
             "--preset", "lite"
         ])
         assert result.exit_code == 0
+        # Should warn about deprecated preset
+        assert "deprecated" in result.output.lower()
 
     def test_scout_deep_preset(self, sample_parquet):
-        """Scout with deep preset."""
+        """Scout with deep preset (deprecated -> interrogate)."""
         result = runner.invoke(app, [
             "scout", str(sample_parquet),
             "--preset", "deep"
@@ -273,15 +363,18 @@ class TestScout:
         assert result.exit_code == 0
 
     def test_scout_json_output(self, sample_parquet):
-        """Scout with JSON output."""
+        """Scout with JSON output - extract JSON after warning."""
         result = runner.invoke(app, [
             "scout", str(sample_parquet),
             "-o", "json"
         ])
         assert result.exit_code == 0
 
-        # Should be valid JSON
-        output = json.loads(result.output)
+        # Extract JSON from output (skip deprecation warning lines)
+        lines = result.output.strip().split('\n')
+        json_start = next(i for i, line in enumerate(lines) if line.strip().startswith('{'))
+        json_output = '\n'.join(lines[json_start:])
+        output = json.loads(json_output)
         assert "columns" in output
 
     def test_scout_suggest_rules(self, sample_parquet):

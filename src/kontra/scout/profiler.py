@@ -35,9 +35,12 @@ from .dtype_mapping import normalize_dtype
 
 
 # Preset configurations
+# New names (v0.7+): scout, scan, interrogate
+# Old names (deprecated): lite, standard, deep
 PRESETS = {
-    "lite": {
-        # Fast: schema + row count + basic null/distinct only
+    # --- New preset names ---
+    "scout": {
+        # Quick recon: schema + row count + basic null/distinct only
         # Uses metadata-only path when available (pg_stats, Parquet footer)
         "include_numeric_stats": False,
         "include_string_stats": False,
@@ -48,8 +51,8 @@ PRESETS = {
         "list_values_threshold": 5,
         "metadata_only": True,  # Use metadata-only path when backend supports it
     },
-    "standard": {
-        # Balanced: full stats, moderate top values
+    "scan": {
+        # Systematic pass: full stats, moderate top values
         # Uses strategic profiling when backend supports it (PostgreSQL)
         "include_numeric_stats": True,
         "include_string_stats": True,
@@ -61,8 +64,8 @@ PRESETS = {
         "metadata_only": False,
         "strategic_standard": True,  # Use smart probing when available
     },
-    "deep": {
-        # Comprehensive: everything including percentiles
+    "interrogate": {
+        # Deep investigation: everything including percentiles
         "include_numeric_stats": True,
         "include_string_stats": True,
         "include_temporal_stats": True,
@@ -72,19 +75,49 @@ PRESETS = {
         "list_values_threshold": 20,
         "metadata_only": False,
     },
-    "llm": {
-        # Token-optimized: key stats for LLM context injection
-        # Focus: schema, null rates, cardinality, semantic types, top values
-        # Skip: detailed numeric stats, string lengths, percentiles
+    # --- Deprecated aliases (for backward compatibility) ---
+    "lite": {
+        # DEPRECATED: Use "scout" instead
         "include_numeric_stats": False,
         "include_string_stats": False,
-        "include_temporal_stats": True,  # date range is useful
-        "include_top_values": True,  # crucial for allowed_values inference
+        "include_temporal_stats": False,
+        "include_top_values": False,
+        "include_percentiles": False,
+        "top_n": 0,
+        "list_values_threshold": 5,
+        "metadata_only": True,
+    },
+    "standard": {
+        # DEPRECATED: Use "scan" instead
+        "include_numeric_stats": True,
+        "include_string_stats": True,
+        "include_temporal_stats": True,
+        "include_top_values": True,
         "include_percentiles": False,
         "top_n": 5,
-        "list_values_threshold": 15,
+        "list_values_threshold": 10,
+        "metadata_only": False,
+        "strategic_standard": True,
+    },
+    "deep": {
+        # DEPRECATED: Use "interrogate" instead
+        "include_numeric_stats": True,
+        "include_string_stats": True,
+        "include_temporal_stats": True,
+        "include_top_values": True,
+        "include_percentiles": True,
+        "top_n": 10,
+        "list_values_threshold": 20,
         "metadata_only": False,
     },
+}
+
+# Mapping from old preset names to new names (for deprecation warnings)
+_DEPRECATED_PRESETS = {
+    "lite": "scout",
+    "standard": "scan",
+    "deep": "interrogate",
+    "llm": "scan",  # llm preset is removed, recommend scan + to_llm()
 }
 
 

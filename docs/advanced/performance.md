@@ -225,22 +225,19 @@ Scout uses three presets with different speed/detail tradeoffs:
 ### Choosing a Preset
 
 ```python
-# Quick schema exploration
-profile = kontra.scout("data.parquet", preset="lite")
+# Quick recon (metadata only)
+profile = kontra.profile("data.parquet", preset="scout")
 
-# Balanced detail (default)
-profile = kontra.scout("data.parquet", preset="standard")
+# Systematic pass (full stats) [default]
+profile = kontra.profile("data.parquet", preset="scan")
 
-# Full analysis for reports
-profile = kontra.scout("data.parquet", preset="deep")
-
-# LLM-optimized (schema + key stats)
-profile = kontra.scout("data.parquet", preset="llm")
+# Deep investigation (everything + percentiles)
+profile = kontra.profile("data.parquet", preset="interrogate")
 ```
 
-### Standard vs Deep Trade-offs
+### Scan vs Interrogate Trade-offs
 
-Standard gives you ~80% of the information at ~1% of the cost:
+Scan gives you ~80% of the information at ~1% of the cost:
 
 | Metric | Standard | Deep |
 |--------|----------|------|

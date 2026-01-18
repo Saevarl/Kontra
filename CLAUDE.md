@@ -57,8 +57,8 @@ kontra validate <contract.yml> --data prod_db.users
 kontra validate <contract.yml> -o json
 
 # Profile data
-kontra scout <data_source>
-kontra scout <data_source> --suggest-rules
+kontra profile <data_source>
+kontra profile <data_source> --draft
 
 # View configuration
 kontra config show
@@ -157,7 +157,7 @@ src/kontra/
 
 **Execution Plan**: `CompiledPlan` holds predicates (vectorizable), fallback_rules (non-vectorizable), sql_rules (for executor), required_cols.
 
-**Scout**: Data profiler with presets (lite, standard, deep, llm). Can suggest validation rules from profile.
+**Scout**: Data profiler with presets (scout, scan, interrogate). Can draft validation rules from profile.
 
 **State**: Tracks validation history for `kontra diff`. Backends: local file, S3, PostgreSQL.
 
@@ -192,10 +192,10 @@ src/kontra/
 
 - `tests/test_cli.py` - CLI command tests
 - `tests/test_integration.py` - End-to-end ValidationEngine tests
-- `tests/test_python_api.py` - Python API tests (validate, scout, rules helpers)
+- `tests/test_python_api.py` - Python API tests (validate, profile, rules helpers)
 - `tests/test_reporters.py` - JSON/Rich reporter tests
 - `tests/test_config_settings.py` - Configuration system tests
-- `tests/test_scout.py` - ScoutProfiler tests
+- `tests/test_scout_*.py` - Profiler tests (backends, reporters, diff)
 - `tests/test_state.py` - State management tests
 - `tests/test_tier_equivalence.py` - Verify all tiers agree on violation existence
 - `tests/test_rules_*.py` - Individual rule tests

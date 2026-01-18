@@ -12,10 +12,10 @@ pip install kontra
 
 ```bash
 # Profile your data
-kontra scout data.parquet
+kontra profile data.parquet
 
-# Generate a starting contract
-kontra scout data.parquet --suggest-rules > contract.yml
+# Draft a starting contract
+kontra profile data.parquet --draft > contract.yml
 
 # Validate
 kontra validate contract.yml

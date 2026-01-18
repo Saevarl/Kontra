@@ -63,7 +63,7 @@ result = kontra.validate("data.parquet", "contracts/base.yml", rules=[
 ### Profile Data
 
 ```python
-profile = kontra.scout("data.parquet")
+profile = kontra.profile("data.parquet")
 print(f"Rows: {profile.row_count}")
 print(f"Columns: {profile.column_count}")
 
@@ -71,11 +71,16 @@ for col in profile.columns:
     print(f"  {col.name}: {col.dtype}, {col.null_rate:.0%} null")
 ```
 
-### Generate Rules from Profile
+Presets control profiling depth:
+- `"scout"` - Quick recon (metadata only)
+- `"scan"` - Systematic pass (full stats) [default]
+- `"interrogate"` - Deep investigation (everything + percentiles)
+
+### Draft Rules from Profile
 
 ```python
-profile = kontra.scout("data.parquet", preset="deep")
-suggestions = kontra.suggest_rules(profile)
+profile = kontra.profile("data.parquet", preset="interrogate")
+suggestions = kontra.draft(profile)
 
 # Use directly
 result = kontra.validate("data.parquet", rules=suggestions.to_dict())
@@ -520,8 +525,8 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 | Function | Description |
 |----------|-------------|
 | `kontra.validate(data, contract, **opts)` | Validate data |
-| `kontra.scout(data, **opts)` | Profile data |
-| `kontra.suggest_rules(profile)` | Generate rules from profile |
+| `kontra.profile(data, **opts)` | Profile data (presets: scout, scan, interrogate) |
+| `kontra.draft(profile)` | Draft rules from profile |
 | `kontra.diff(contract, **opts)` | Compare validation runs |
 | `kontra.list_rules()` | List all available rule types |
 | `@kontra.validate_decorator(...)` | Decorator for pipeline validation |

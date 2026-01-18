@@ -5,7 +5,7 @@ Kontra - Developer-first Data Quality Engine
 Usage:
     # CLI
     $ kontra validate contract.yml
-    $ kontra scout data.parquet
+    $ kontra profile data.parquet
 
     # Python API - Simple validation
     import kontra
@@ -21,11 +21,11 @@ Usage:
     ])
 
     # Python API - Profile data
-    profile = kontra.scout(df)
+    profile = kontra.profile(df)
     print(profile)
 
-    # Python API - Suggest rules from profile
-    suggestions = kontra.suggest_rules(profile)
+    # Python API - Draft rules from profile
+    suggestions = kontra.draft(profile)
     suggestions.save("contracts/users.yml")
 """
 
@@ -414,9 +414,9 @@ def validate(
     )
 
 
-def scout(
+def profile(
     data: Union[str, pl.DataFrame],
-    preset: str = "standard",
+    preset: str = "scan",
     *,
     columns: Optional[List[str]] = None,
     sample: Optional[int] = None,
@@ -428,7 +428,10 @@ def scout(
 
     Args:
         data: DataFrame (Polars) or path/URI to data file
-        preset: Profiling depth ("lite", "standard", "deep", "llm")
+        preset: Profiling depth:
+            - "scout": Quick recon (metadata only)
+            - "scan": Systematic pass (full stats) [default]
+            - "interrogate": Deep investigation (everything + percentiles)
         columns: Only profile these columns
         sample: Sample N rows (default: all)
         save: Save profile to history
@@ -438,11 +441,29 @@ def scout(
         DatasetProfile with column statistics
 
     Example:
-        profile = kontra.scout("data.parquet")
+        profile = kontra.profile("data.parquet")
         print(f"Rows: {profile.row_count}")
         for col in profile.columns:
             print(f"{col.name}: {col.dtype}")
+
+        # Quick metadata-only profile
+        profile = kontra.profile("big_data.parquet", preset="scout")
+
+        # Deep profile with percentiles
+        profile = kontra.profile("data.parquet", preset="interrogate")
     """
+    import warnings
+    from kontra.scout.profiler import _DEPRECATED_PRESETS
+
+    # Warn on deprecated preset names
+    if preset in _DEPRECATED_PRESETS:
+        new_name = _DEPRECATED_PRESETS[preset]
+        warnings.warn(
+            f"Preset '{preset}' is deprecated, use '{new_name}' instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     if isinstance(data, pl.DataFrame):
         # For DataFrame input, write to temp file
         import tempfile
@@ -474,23 +495,26 @@ def scout(
         return profiler.profile()
 
 
-def suggest_rules(
+def draft(
     profile: DatasetProfile,
     min_confidence: float = 0.5,
 ) -> Suggestions:
     """
-    Generate validation rule suggestions from a profile.
+    Draft validation rules from a profile.
+
+    Analyzes the profile and suggests rules based on observed patterns.
+    These are starting points - refine them based on domain knowledge.
 
     Args:
-        profile: DatasetProfile from kontra.scout()
+        profile: DatasetProfile from kontra.profile()
         min_confidence: Minimum confidence score (0.0-1.0)
 
     Returns:
         Suggestions with .to_yaml(), .save(), .filter()
 
     Example:
-        profile = kontra.scout(df, preset="deep")
-        suggestions = kontra.suggest_rules(profile)
+        profile = kontra.profile(df, preset="interrogate")
+        suggestions = kontra.draft(profile)
 
         # Filter high confidence
         high_conf = suggestions.filter(min_confidence=0.9)
@@ -502,6 +526,52 @@ def suggest_rules(
         result = kontra.validate(df, rules=suggestions.to_dict())
     """
     return Suggestions.from_profile(profile, min_confidence=min_confidence)
+
+
+# =============================================================================
+# Deprecated Aliases (for backward compatibility)
+# =============================================================================
+
+
+def scout(
+    data: Union[str, pl.DataFrame],
+    preset: str = "standard",
+    *,
+    columns: Optional[List[str]] = None,
+    sample: Optional[int] = None,
+    save: bool = True,
+    **kwargs,
+) -> DatasetProfile:
+    """
+    DEPRECATED: Use kontra.profile() instead.
+
+    Profile a dataset.
+    """
+    import warnings
+    warnings.warn(
+        "kontra.scout() is deprecated, use kontra.profile() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return profile(data, preset=preset, columns=columns, sample=sample, save=save, **kwargs)
+
+
+def suggest_rules(
+    profile: DatasetProfile,
+    min_confidence: float = 0.5,
+) -> Suggestions:
+    """
+    DEPRECATED: Use kontra.draft() instead.
+
+    Generate validation rule suggestions from a profile.
+    """
+    import warnings
+    warnings.warn(
+        "kontra.suggest_rules() is deprecated, use kontra.draft() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return draft(profile, min_confidence=min_confidence)
 
 
 def explain(
@@ -635,7 +705,7 @@ def diff(
         raise StateCorruptedError(contract, str(e))
 
 
-def scout_diff(
+def profile_diff(
     source: str,
     *,
     since: Optional[str] = None,
@@ -652,7 +722,7 @@ def scout_diff(
         Returns None if no history available
 
     Example:
-        diff = kontra.scout_diff("data.parquet", since="7d")
+        diff = kontra.profile_diff("data.parquet", since="7d")
         if diff and diff.has_schema_changes:
             print("Schema changed!")
             for col in diff.columns_added:
@@ -660,6 +730,25 @@ def scout_diff(
     """
     # TODO: Implement profile history lookup
     return None
+
+
+def scout_diff(
+    source: str,
+    *,
+    since: Optional[str] = None,
+) -> Optional[ProfileDiff]:
+    """
+    DEPRECATED: Use kontra.profile_diff() instead.
+
+    Compare profile runs over time.
+    """
+    import warnings
+    warnings.warn(
+        "kontra.scout_diff() is deprecated, use kontra.profile_diff() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return profile_diff(source, since=since)
 
 
 # =============================================================================
@@ -1414,11 +1503,15 @@ __all__ = [
     "__version__",
     # Core functions
     "validate",
-    "scout",
-    "suggest_rules",
+    "profile",
+    "draft",
     "explain",
     "diff",
-    "scout_diff",
+    "profile_diff",
+    # Deprecated aliases (kept for backward compatibility)
+    "scout",           # Use profile() instead
+    "suggest_rules",   # Use draft() instead
+    "scout_diff",      # Use profile_diff() instead
     # History functions
     "list_runs",
     "get_run",
