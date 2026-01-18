@@ -312,10 +312,11 @@ def validate(
             "For other data types, use file paths, URIs, or named datasources."
         )
 
-    # Resolve environment config
+    # Resolve config (always, for severity_weights and other settings)
+    cfg = resolve_effective_config(env_name=env)
+
+    # Apply config defaults (CLI args take precedence)
     if env:
-        cfg = resolve_effective_config(env_name=env)
-        # Apply config defaults (CLI args take precedence)
         if preplan == "auto" and cfg.preplan:
             preplan = cfg.preplan
         if pushdown == "auto" and cfg.pushdown:
@@ -409,6 +410,7 @@ def validate(
         sample=sample,
         sample_budget=sample_budget,
         sample_columns=sample_columns,
+        severity_weights=cfg.severity_weights,
     )
 
 

@@ -256,6 +256,7 @@ class RuleResult:
         column: Column name if applicable
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
         annotations: List of annotations on this rule (opt-in, loaded via get_run_with_annotations)
+        severity_weight: User-defined numeric weight (None if unconfigured)
 
     Sampling properties:
         samples: List of sample failing rows, or None if unavailable
@@ -283,6 +284,9 @@ class RuleResult:
 
     # Annotations (opt-in, loaded via get_run_with_annotations)
     annotations: Optional[List[Dict[str, Any]]] = None
+
+    # LLM juice: user-defined severity weight (None if unconfigured)
+    severity_weight: Optional[float] = None
 
     def __repr__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
@@ -323,6 +327,8 @@ class RuleResult:
             samples_source=d.get("samples_source"),
             samples_reason=d.get("samples_reason"),
             samples_truncated=d.get("samples_truncated", False),
+            # LLM juice
+            severity_weight=d.get("severity_weight"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -356,6 +362,10 @@ class RuleResult:
         if self.annotations is not None:
             d["annotations"] = self.annotations
 
+        # LLM juice (only include if configured)
+        if self.severity_weight is not None:
+            d["severity_weight"] = self.severity_weight
+
         return d
 
     def to_llm(self) -> str:
@@ -365,6 +375,10 @@ class RuleResult:
 
         if self.failed_count > 0:
             parts.append(f"({self.failed_count:,} failures)")
+
+        # Include severity weight if configured (LLM juice)
+        if self.severity_weight is not None:
+            parts.append(f"[w={self.severity_weight}]")
 
         # Add samples if available
         if self.samples:
@@ -429,6 +443,7 @@ class ValidationResult:
         rules: List of RuleResult objects
         blocking_failures: List of failed blocking rules
         warnings: List of failed warning rules
+        quality_score: Deterministic score 0.0-1.0 (None if weights unconfigured)
         stats: Optional statistics dict
         annotations: List of run-level annotations (opt-in, loaded via get_run_with_annotations)
 
@@ -479,6 +494,52 @@ class ValidationResult:
         """Get all failed warning rules."""
         return [r for r in self.rules if not r.passed and r.severity == "warning"]
 
+    @property
+    def quality_score(self) -> Optional[float]:
+        """
+        Deterministic quality score derived from violation data.
+
+        Formula:
+            quality_score = 1.0 - weighted_violation_rate
+            weighted_violation_rate = Σ(failed_count * severity_weight) / (total_rows * Σ(weights))
+
+        Returns:
+            Float 0.0-1.0, or None if:
+            - severity_weights not configured
+            - total_rows is 0
+            - No rules have weights
+
+        Note:
+            This score is pure data - Kontra never interprets it as "good" or "bad".
+            Consumers/agents use it for trend reasoning.
+        """
+        # Check if any rule has a weight (weights configured)
+        rules_with_weights = [r for r in self.rules if r.severity_weight is not None]
+        if not rules_with_weights:
+            return None
+
+        # Avoid division by zero
+        if self.total_rows == 0:
+            return None
+
+        # Calculate weighted violation sum
+        weighted_violations = sum(
+            r.failed_count * r.severity_weight
+            for r in rules_with_weights
+        )
+
+        # Calculate total possible weighted violations
+        # (if every row failed every rule)
+        total_weight = sum(r.severity_weight for r in rules_with_weights)
+        max_weighted_violations = self.total_rows * total_weight
+
+        if max_weighted_violations == 0:
+            return 1.0  # No possible violations
+
+        # Quality = 1 - violation_rate
+        violation_rate = weighted_violations / max_weighted_violations
+        return max(0.0, min(1.0, 1.0 - violation_rate))
+
     @classmethod
     def from_engine_result(
         cls,
@@ -489,6 +550,7 @@ class ValidationResult:
         sample: int = 5,
         sample_budget: int = 50,
         sample_columns: Optional[Union[List[str], str]] = None,
+        severity_weights: Optional[Dict[str, float]] = None,
     ) -> "ValidationResult":
         """Create from ValidationEngine.run() result dict.
 
@@ -500,6 +562,7 @@ class ValidationResult:
             sample: Per-rule sample cap (0 to disable)
             sample_budget: Global sample cap across all rules
             sample_columns: Columns to include in samples (None=all, list=specific, "relevant"=rule columns)
+            severity_weights: User-defined severity weights from config (None if unconfigured)
         """
         summary = result.get("summary", {})
         results_list = result.get("results", [])
@@ -517,6 +580,13 @@ class ValidationResult:
                 ctx = context_map.get(rule_result.rule_id)
                 if ctx:
                     rule_result.context = ctx
+
+        # Populate severity weights from config (LLM juice)
+        if severity_weights is not None:
+            for rule_result in rules:
+                weight = severity_weights.get(rule_result.severity)
+                if weight is not None:
+                    rule_result.severity_weight = weight
 
         # Calculate counts
         total = summary.get("total_rules", len(rules))
@@ -839,6 +909,9 @@ class ValidationResult:
         }
         if self.annotations is not None:
             d["annotations"] = self.annotations
+        # LLM juice (only include if configured)
+        if self.quality_score is not None:
+            d["quality_score"] = self.quality_score
         return d
 
     def to_json(self, indent: Optional[int] = None) -> str:
@@ -859,7 +932,8 @@ class ValidationResult:
 
         status = "PASSED" if self.passed else "FAILED"
         rows_str = f" ({self.total_rows:,} rows)" if self.total_rows > 0 else ""
-        lines.append(f"VALIDATION: {self.dataset} {status}{rows_str}")
+        score_str = f" [score={self.quality_score:.2f}]" if self.quality_score is not None else ""
+        lines.append(f"VALIDATION: {self.dataset} {status}{rows_str}{score_str}")
 
         # Blocking failures
         blocking = self.blocking_failures

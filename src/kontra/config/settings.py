@@ -157,6 +157,12 @@ class KontraConfig(BaseModel):
     datasources: Dict[str, Any] = Field(default_factory=dict)  # Flexible for different types
     environments: Dict[str, EnvironmentConfig] = Field(default_factory=dict)
 
+    # LLM juice: user-defined severity weights (Kontra carries but never acts on these)
+    severity_weights: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="User-defined numeric weights for severity levels. Kontra carries these but never uses them internally."
+    )
+
     @field_validator("version")
     @classmethod
     def validate_version(cls, v: str) -> str:
@@ -222,9 +228,12 @@ class EffectiveConfig:
     config_file_path: Optional[Path] = None
     environment: Optional[str] = None
 
+    # LLM juice: user-defined severity weights (None if unconfigured)
+    severity_weights: Optional[Dict[str, float]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for display."""
-        return {
+        d = {
             "preplan": self.preplan,
             "pushdown": self.pushdown,
             "projection": self.projection,
@@ -240,6 +249,9 @@ class EffectiveConfig:
                 "include_patterns": self.scout_include_patterns,
             },
         }
+        if self.severity_weights is not None:
+            d["severity_weights"] = self.severity_weights
+        return d
 
 
 # =============================================================================
@@ -437,6 +449,9 @@ def resolve_effective_config(
         effective.scout_list_values_threshold = file_config.scout.list_values_threshold
         effective.scout_top_n = file_config.scout.top_n
         effective.scout_include_patterns = file_config.scout.include_patterns
+
+        # LLM juice: severity weights (user-defined, Kontra carries but never acts)
+        effective.severity_weights = file_config.severity_weights
 
     # Layer 2: Apply environment overlay
     if env_name:
