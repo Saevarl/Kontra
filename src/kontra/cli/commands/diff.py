@@ -17,7 +17,7 @@ from kontra.cli.utils import parse_duration
 
 
 def register(app: typer.Typer) -> None:
-    """Register the diff and scout-diff commands with the app."""
+    """Register the diff and profile-diff commands with the app."""
 
     @app.command("diff")
     def diff_cmd(
@@ -262,8 +262,8 @@ def register(app: typer.Typer) -> None:
                 typer.secho(f"Error: {msg}", fg=typer.colors.RED)
             raise typer.Exit(code=EXIT_RUNTIME_ERROR)
 
-    @app.command("scout-diff")
-    def scout_diff_cmd(
+    @app.command("profile-diff")
+    def profile_diff_cmd(
         source: Optional[str] = typer.Argument(
             None, help="Source URI or fingerprint. If not provided, uses most recent."
         ),
@@ -281,19 +281,19 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """
-        Show changes between scout profiles over time.
+        Show changes between profiles over time.
 
         Compares the most recent profile to a previous one and shows
         schema changes, data quality shifts, and distribution changes.
 
         Prerequisites:
-            Run `kontra scout <source> --save-profile` to save profiles.
+            Run `kontra profile <source> --save-profile` to save profiles.
 
         Examples:
-            kontra scout-diff                    # Compare last two profiles
-            kontra scout-diff data.parquet       # Specific source
-            kontra scout-diff --since 7d         # Compare to 7 days ago
-            kontra scout-diff -o llm             # Token-optimized output
+            kontra profile-diff                    # Compare last two profiles
+            kontra profile-diff data.parquet       # Specific source
+            kontra profile-diff --since 7d         # Compare to 7 days ago
+            kontra profile-diff -o llm             # Token-optimized output
         """
         try:
             from kontra.scout.store import fingerprint_source, get_default_profile_store
@@ -317,7 +317,7 @@ def register(app: typer.Typer) -> None:
                 sources = store.list_sources()
                 if not sources:
                     typer.secho(
-                        "No saved profiles found. Run 'kontra scout <source> --save-profile' first.",
+                        "No saved profiles found. Run 'kontra profile <source> --save-profile' first.",
                         fg=typer.colors.YELLOW,
                     )
                     raise typer.Exit(code=EXIT_SUCCESS)
@@ -427,3 +427,22 @@ def register(app: typer.Typer) -> None:
             else:
                 typer.secho(f"Error: {msg}", fg=typer.colors.RED)
             raise typer.Exit(code=EXIT_RUNTIME_ERROR)
+
+    # Deprecated alias for scout-diff
+    @app.command("scout-diff", hidden=True)
+    def scout_diff_cmd(
+        source: Optional[str] = typer.Argument(None),
+        output_format: Literal["rich", "json", "llm"] = typer.Option(
+            "rich", "--output-format", "-o"
+        ),
+        since: Optional[str] = typer.Option(None, "--since", "-s"),
+        verbose: bool = typer.Option(False, "--verbose", "-v"),
+    ) -> None:
+        """Deprecated: Use 'kontra profile-diff' instead."""
+        typer.secho(
+            "Warning: 'kontra scout-diff' is deprecated, use 'kontra profile-diff' instead.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        # Call profile-diff with same args
+        profile_diff_cmd(source, output_format, since, verbose)
