@@ -18,6 +18,7 @@ Supports Parquet, CSV, PostgreSQL, SQL Server, local files, and S3. Uses a hybri
 | `kontra-manifest.md` | Before design/feature decisions | Core beliefs, design constraints, what Kontra is NOT |
 | `docs/working/execution_design_notes.md` | Before execution/optimization changes | Tier semantics, trade-offs, known issues |
 | `docs/working/kontra-agent-transformation-manifest.md` | Before agent/transformation features | Probe abstraction, language discipline, invariants |
+| `docs/working/agent-transformation-mvp.md` | When implementing transformation probes | Scoped MVP: compare + profile_relationship |
 
 The codebase health document contains module-specific guidelines (e.g., how to add new SQL executors, how state backends handle annotations). Following these prevents introducing patterns that will need to be refactored later.
 
