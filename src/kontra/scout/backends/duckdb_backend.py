@@ -228,6 +228,36 @@ class DuckDBBackend:
                 if uri.lower().startswith("s3://"):
                     uri = uri[5:]
 
+            # Handle Azure (ADLS Gen2, Azure Blob)
+            if self.handle.scheme in ("abfs", "abfss", "az"):
+                opts = self.handle.fs_opts or {}
+                kwargs: Dict[str, Any] = {}
+
+                if opts.get("azure_account_name"):
+                    kwargs["account_name"] = opts["azure_account_name"]
+                if opts.get("azure_account_key"):
+                    kwargs["account_key"] = opts["azure_account_key"]
+                if opts.get("azure_sas_token"):
+                    # PyArrow expects SAS token as 'sas_token' credential
+                    sas = opts["azure_sas_token"]
+                    if sas.startswith("?"):
+                        sas = sas[1:]
+                    kwargs["sas_token"] = sas
+
+                try:
+                    fs = pafs.AzureFileSystem(**kwargs)
+                    # Strip scheme prefix for PyArrow
+                    if uri.lower().startswith("abfss://"):
+                        uri = uri[8:]
+                    elif uri.lower().startswith("abfs://"):
+                        uri = uri[7:]
+                    elif uri.lower().startswith("az://"):
+                        uri = uri[5:]
+                except Exception:
+                    # Azure filesystem not available or credentials invalid
+                    # Fall back to DuckDB-based profiling
+                    return None
+
             pf = pq.ParquetFile(uri, filesystem=fs)
             self._parquet_metadata = pf.metadata
             return self._parquet_metadata

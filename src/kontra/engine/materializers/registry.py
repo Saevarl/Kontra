@@ -98,7 +98,8 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
         )
 
     # Remote files with known formats: use DuckDB for efficient I/O
-    is_remote = handle.scheme in ("s3", "http", "https")
+    # Includes S3, HTTP(S), and Azure (ADLS Gen2, Azure Blob)
+    is_remote = handle.scheme in ("s3", "http", "https", "abfs", "abfss", "az")
     is_known_format = handle.format in ("parquet", "csv")
 
     if is_remote and is_known_format:

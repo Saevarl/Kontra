@@ -137,8 +137,11 @@ class DatasetHandle:
         if scheme == "s3":
             _inject_s3_env(fs_opts)
 
+        # Azure Data Lake Storage / Azure Blob Storage
+        if scheme in ("abfs", "abfss", "az"):
+            _inject_azure_env(fs_opts)
+
         # HTTP(S): typically public or signed URLs. No defaults needed here.
-        # abfs/abfss (Azure) can be handled when we introduce the Azure materializer/executor.
         # Local `""`/`file` schemes: no fs_opts.
 
         # PostgreSQL: resolve connection parameters from URI + environment
@@ -203,3 +206,53 @@ def _inject_s3_env(opts: Dict[str, str]) -> None:
         opts["s3_use_ssl"] = use_ssl
     if max_conns:
         opts["s3_max_connections"] = str(max_conns)
+
+
+def _inject_azure_env(opts: Dict[str, str]) -> None:
+    """
+    Read Azure Storage environment variables and copy them into `opts` using
+    normalized keys that our DuckDB session factory expects.
+
+    Supports multiple auth methods:
+    - Account key: AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY
+    - SAS token: AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_SAS_TOKEN
+    - Connection string: AZURE_STORAGE_CONNECTION_STRING
+    - Service principal (OAuth): AZURE_TENANT_ID + AZURE_CLIENT_ID + AZURE_CLIENT_SECRET
+
+    All keys are optional. DuckDB's azure extension will use what's available.
+    """
+    # Account name (required for most auth methods)
+    account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
+    if account_name:
+        opts["azure_account_name"] = account_name
+
+    # Account key auth
+    account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+    if account_key:
+        opts["azure_account_key"] = account_key
+
+    # SAS token auth (alternative to account key)
+    sas_token = os.getenv("AZURE_STORAGE_SAS_TOKEN")
+    if sas_token:
+        opts["azure_sas_token"] = sas_token
+
+    # Connection string auth (contains account name + key/SAS)
+    conn_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if conn_string:
+        opts["azure_connection_string"] = conn_string
+
+    # OAuth / Service Principal auth
+    tenant_id = os.getenv("AZURE_TENANT_ID")
+    client_id = os.getenv("AZURE_CLIENT_ID")
+    client_secret = os.getenv("AZURE_CLIENT_SECRET")
+    if tenant_id:
+        opts["azure_tenant_id"] = tenant_id
+    if client_id:
+        opts["azure_client_id"] = client_id
+    if client_secret:
+        opts["azure_client_secret"] = client_secret
+
+    # Custom endpoint (for Databricks, sovereign clouds, Azurite emulator)
+    endpoint = os.getenv("AZURE_STORAGE_ENDPOINT")
+    if endpoint:
+        opts["azure_endpoint"] = endpoint

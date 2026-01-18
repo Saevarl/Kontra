@@ -161,13 +161,67 @@ def _configure_azure(
     con: duckdb.DuckDBPyConnection, fs_opts: Dict[str, str]
 ) -> None:
     """
-    TODO: Configure the Azure extension for ADLS Gen2 (abfs://).
+    Configure the Azure extension for ADLS Gen2 (abfs://, abfss://) and Azure Blob (az://).
 
-    This will involve:
-    1. Installing and loading the 'azure' extension.
-    2. Setting credentials (e.g., 'azure_storage_connection_string')
-       from the fs_opts dictionary.
-    3. Potentially implementing an fsspec/adlfs fallback.
+    DuckDB 0.10+ has native Azure support via the 'azure' extension.
+    This handles authentication and endpoint configuration.
+
+    Expected fs_opts keys:
+    - azure_account_name: Storage account name
+    - azure_account_key: Storage account key
+    - azure_sas_token: SAS token (alternative to key)
+    - azure_connection_string: Full connection string (alternative)
+    - azure_tenant_id: For OAuth/service principal
+    - azure_client_id: For OAuth/service principal
+    - azure_client_secret: For OAuth/service principal
+    - azure_endpoint: Custom endpoint (Databricks, sovereign clouds, Azurite)
+
+    Raises:
+        RuntimeError: If Azure extension is not available (DuckDB < 0.10.0)
     """
-    # This feature is not yet implemented.
-    pass
+    # Install and load the Azure extension
+    try:
+        con.execute("INSTALL azure;")
+        con.execute("LOAD azure;")
+    except Exception as e:
+        raise RuntimeError(
+            f"Azure extension not available. DuckDB >= 0.10.0 is required for Azure support. "
+            f"Error: {e}"
+        ) from e
+
+    # Account name (required for key/SAS auth)
+    if account_name := fs_opts.get("azure_account_name"):
+        _safe_set(con, "azure_storage_account_name", account_name)
+
+    # Account key auth
+    if account_key := fs_opts.get("azure_account_key"):
+        _safe_set(con, "azure_account_key", account_key)
+
+    # SAS token auth (alternative to account key)
+    # Note: DuckDB expects the token without leading '?'
+    if sas_token := fs_opts.get("azure_sas_token"):
+        # Strip leading '?' if present
+        if sas_token.startswith("?"):
+            sas_token = sas_token[1:]
+        _safe_set(con, "azure_sas_token", sas_token)
+
+    # Connection string auth
+    if conn_string := fs_opts.get("azure_connection_string"):
+        _safe_set(con, "azure_storage_connection_string", conn_string)
+
+    # OAuth / Service Principal auth
+    if tenant_id := fs_opts.get("azure_tenant_id"):
+        _safe_set(con, "azure_tenant_id", tenant_id)
+    if client_id := fs_opts.get("azure_client_id"):
+        _safe_set(con, "azure_client_id", client_id)
+    if client_secret := fs_opts.get("azure_client_secret"):
+        _safe_set(con, "azure_client_secret", client_secret)
+
+    # Custom endpoint (for Databricks, sovereign clouds, Azurite emulator)
+    if endpoint := fs_opts.get("azure_endpoint"):
+        _safe_set(con, "azure_endpoint", endpoint)
+
+    # Performance settings (same as S3)
+    _safe_set(con, "http_timeout", "600")  # 10 minutes for large files
+    _safe_set(con, "http_retries", "5")
+    _safe_set(con, "http_retry_wait_ms", "2000")
