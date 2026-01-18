@@ -137,6 +137,57 @@ state_backend: s3://my-bucket/kontra-state/
 
 Requires `pip install kontra[s3]` and AWS credentials.
 
+### SQL Server
+
+State stored in database tables.
+
+```yaml
+state_backend: mssql://${MSSQL_HOST}/${MSSQL_DATABASE}
+```
+
+Or via URI:
+```yaml
+state_backend: sqlserver://user:password@host:1433/database
+```
+
+## Annotations
+
+Annotations provide "memory without authority"—agents and humans can record context about validation runs without affecting Kontra's behavior:
+
+```python
+import kontra
+
+# Annotate the latest run
+kontra.annotate(
+    "users_contract.yml",
+    actor_type="agent",
+    actor_id="repair-agent-v2",
+    annotation_type="resolution",
+    summary="Fixed null emails by backfilling from user_profiles",
+)
+
+# Annotate a specific rule
+kontra.annotate(
+    "users_contract.yml",
+    rule_id="COL:email:not_null",
+    actor_type="human",
+    actor_id="alice@example.com",
+    annotation_type="false_positive",
+    summary="Service accounts are expected to have null emails",
+)
+
+# Load run with annotations
+result = kontra.get_run_with_annotations("users_contract.yml")
+for ann in result.annotations or []:
+    print(f"[{ann['annotation_type']}] {ann['summary']}")
+```
+
+**Key invariant**: Kontra never reads annotations during validation or diff. They're purely for consumer use.
+
+Annotations are stored in a normalized schema:
+- `kontra_annotations` table (PostgreSQL, SQL Server)
+- `<run_id>.ann.jsonl` files (local, S3)
+
 ## Profile Diff (Scout Diff)
 
 Compare data profiles over time:

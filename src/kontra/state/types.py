@@ -14,6 +14,121 @@ from typing import Any, Dict, List, Optional
 from kontra.version import VERSION
 
 
+# -----------------------------------------------------------------------------
+# Annotation Types (v0.5)
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class Annotation:
+    """
+    Annotation on a validation run or specific rule result.
+
+    Annotations provide "memory without authority" - agents and humans
+    can record context about runs (resolutions, root causes, acknowledgments)
+    without affecting Kontra's behavior.
+
+    Invariants:
+    - Append-only: annotations are never updated or deleted
+    - Uninterpreted: Kontra stores annotation_type but doesn't define vocabulary
+    - Opt-in reads: annotations never appear unless explicitly requested
+    - Never read during validation or diff
+
+    Common annotation_type values (suggested, not enforced):
+    - "resolution": I fixed this
+    - "root_cause": This failed because...
+    - "false_positive": This isn't actually a problem
+    - "acknowledged": I saw this, will address later
+    - "suppressed": Intentionally ignoring this
+    - "note": General comment
+    """
+
+    # Identity
+    id: Optional[int] = None  # Database-assigned ID (None for new annotations)
+    run_id: int = 0  # Reference to kontra_runs.id
+    rule_result_id: Optional[int] = None  # Reference to kontra_rule_results.id (None for run-level)
+
+    # Who created it
+    actor_type: str = "agent"  # "agent" | "human" | "system"
+    actor_id: str = ""  # e.g., "repair-agent-v2", "alice@example.com"
+
+    # What it says
+    annotation_type: str = ""  # Uninterpreted by Kontra
+    summary: str = ""  # Human-readable summary
+    payload: Optional[Dict[str, Any]] = None  # Arbitrary structured data
+
+    # When
+    created_at: Optional[datetime] = None
+
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now(timezone.utc)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        d: Dict[str, Any] = {
+            "run_id": self.run_id,
+            "actor_type": self.actor_type,
+            "actor_id": self.actor_id,
+            "annotation_type": self.annotation_type,
+            "summary": self.summary,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+        if self.id is not None:
+            d["id"] = self.id
+        if self.rule_result_id is not None:
+            d["rule_result_id"] = self.rule_result_id
+        if self.payload is not None:
+            d["payload"] = self.payload
+        return d
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Annotation":
+        """Create from dictionary."""
+        created_at = d.get("created_at")
+        if isinstance(created_at, str):
+            created_at = created_at.replace("Z", "+00:00")
+            created_at = datetime.fromisoformat(created_at)
+
+        return cls(
+            id=d.get("id"),
+            run_id=d.get("run_id", 0),
+            rule_result_id=d.get("rule_result_id"),
+            actor_type=d.get("actor_type", "agent"),
+            actor_id=d.get("actor_id", ""),
+            annotation_type=d.get("annotation_type", ""),
+            summary=d.get("summary", ""),
+            payload=d.get("payload"),
+            created_at=created_at,
+        )
+
+    def to_json(self) -> str:
+        """Serialize to JSON string (single line for JSONL)."""
+        return json.dumps(self.to_dict(), default=str)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "Annotation":
+        """Deserialize from JSON string."""
+        return cls.from_dict(json.loads(json_str))
+
+    def to_llm(self) -> str:
+        """Token-optimized format for LLM context."""
+        ts = self.created_at.strftime("%Y-%m-%d %H:%M") if self.created_at else "?"
+        parts = [
+            f"[{self.annotation_type}]",
+            f"by {self.actor_type}:{self.actor_id}",
+            f"@ {ts}",
+        ]
+        if self.summary:
+            parts.append(f'"{self.summary}"')
+        return " ".join(parts)
+
+
+# -----------------------------------------------------------------------------
+# Severity and Failure Mode Enums
+# -----------------------------------------------------------------------------
+
+
 class Severity(str, Enum):
     """
     Rule severity levels for pipeline control.
@@ -145,7 +260,13 @@ class RuleState:
     # Column info (if applicable)
     column: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    # Database-assigned ID for normalized schema (v0.5)
+    id: Optional[int] = None
+
+    # Annotations (opt-in, never loaded by default)
+    annotations: Optional[List["Annotation"]] = None
+
+    def to_dict(self, include_annotations: bool = False) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         d: Dict[str, Any] = {
             "rule_id": self.rule_id,
@@ -163,11 +284,19 @@ class RuleState:
             d["message"] = self.message
         if self.column:
             d["column"] = self.column
+        if self.id is not None:
+            d["id"] = self.id
+        if include_annotations and self.annotations:
+            d["annotations"] = [a.to_dict() for a in self.annotations]
         return d
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> RuleState:
+    def from_dict(cls, d: Dict[str, Any]) -> "RuleState":
         """Create from dictionary."""
+        annotations = None
+        if "annotations" in d and d["annotations"]:
+            annotations = [Annotation.from_dict(a) for a in d["annotations"]]
+
         return cls(
             rule_id=d["rule_id"],
             rule_name=d["rule_name"],
@@ -179,6 +308,8 @@ class RuleState:
             details=d.get("details"),
             message=d.get("message"),
             column=d.get("column"),
+            id=d.get("id"),
+            annotations=annotations,
         )
 
     @classmethod
@@ -280,15 +411,21 @@ class ValidationState:
     rules: List[RuleState]
 
     # Metadata
-    schema_version: str = "1.0"
+    schema_version: str = "2.0"  # v2.0 for normalized schema
     engine_version: str = field(default_factory=lambda: VERSION)
 
     # Optional context
     duration_ms: Optional[int] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    # Database-assigned ID for normalized schema (v0.5)
+    id: Optional[int] = None
+
+    # Annotations (opt-in, never loaded by default)
+    annotations: Optional[List["Annotation"]] = None
+
+    def to_dict(self, include_annotations: bool = False) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return {
+        d: Dict[str, Any] = {
             "schema_version": self.schema_version,
             "engine_version": self.engine_version,
             "contract_fingerprint": self.contract_fingerprint,
@@ -297,18 +434,27 @@ class ValidationState:
             "dataset_uri": self.dataset_uri,
             "run_at": self.run_at.isoformat(),
             "summary": self.summary.to_dict(),
-            "rules": [r.to_dict() for r in self.rules],
+            "rules": [r.to_dict(include_annotations=include_annotations) for r in self.rules],
             "duration_ms": self.duration_ms,
         }
+        if self.id is not None:
+            d["id"] = self.id
+        if include_annotations and self.annotations:
+            d["annotations"] = [a.to_dict() for a in self.annotations]
+        return d
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> ValidationState:
+    def from_dict(cls, d: Dict[str, Any]) -> "ValidationState":
         """Create from dictionary."""
         run_at = d["run_at"]
         if isinstance(run_at, str):
             # Parse ISO format, handle both Z and +00:00 suffixes
             run_at = run_at.replace("Z", "+00:00")
             run_at = datetime.fromisoformat(run_at)
+
+        annotations = None
+        if "annotations" in d and d["annotations"]:
+            annotations = [Annotation.from_dict(a) for a in d["annotations"]]
 
         return cls(
             schema_version=d.get("schema_version", "1.0"),
@@ -321,14 +467,20 @@ class ValidationState:
             summary=StateSummary.from_dict(d["summary"]),
             rules=[RuleState.from_dict(r) for r in d["rules"]],
             duration_ms=d.get("duration_ms"),
+            id=d.get("id"),
+            annotations=annotations,
         )
 
-    def to_json(self, indent: int = 2) -> str:
+    def to_json(self, indent: int = 2, include_annotations: bool = False) -> str:
         """Serialize to JSON string."""
-        return json.dumps(self.to_dict(), indent=indent, default=str)
+        return json.dumps(
+            self.to_dict(include_annotations=include_annotations),
+            indent=indent,
+            default=str,
+        )
 
     @classmethod
-    def from_json(cls, json_str: str) -> ValidationState:
+    def from_json(cls, json_str: str) -> "ValidationState":
         """Deserialize from JSON string."""
         return cls.from_dict(json.loads(json_str))
 

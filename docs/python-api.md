@@ -377,6 +377,7 @@ result = kontra.validate(
     preplan="auto",      # "on" | "off" | "auto"
     pushdown="auto",     # "on" | "off" | "auto"
     projection=True,     # column pruning
+    csv_mode="auto",     # "auto" | "duckdb" | "parquet" (for CSV files)
     env="production",    # environment from config
     save=True,           # save to history (default: True, use False to disable)
 )
@@ -436,6 +437,70 @@ if diff.regressed:
 
 For full diff capabilities, see [State & Diff](advanced/state-and-diff.md).
 
+### Annotations
+
+Annotations provide "memory without authority"—agents and humans can record context about validation runs without affecting Kontra's behavior:
+
+```python
+# Annotate the latest run for a contract
+kontra.annotate(
+    "users_contract.yml",
+    actor_type="agent",
+    actor_id="repair-agent-v2",
+    annotation_type="resolution",
+    summary="Fixed null emails by backfilling from user_profiles",
+)
+
+# Annotate a specific rule
+kontra.annotate(
+    "users_contract.yml",
+    rule_id="COL:email:not_null",
+    actor_type="human",
+    actor_id="alice@example.com",
+    annotation_type="false_positive",
+    summary="Service accounts are expected to have null emails",
+)
+
+# Annotate with structured payload
+kontra.annotate(
+    "users_contract.yml",
+    actor_type="agent",
+    actor_id="analysis-agent",
+    annotation_type="root_cause",
+    summary="Upstream data source failed validation",
+    payload={
+        "upstream_source": "crm_export",
+        "failure_time": "2024-01-15T08:30:00Z",
+        "affected_rows": 1523,
+    },
+)
+```
+
+**Invariant**: Kontra never reads annotations during validation or diff. They're purely for consumer use.
+
+Load runs with annotations:
+
+```python
+result = kontra.get_run_with_annotations("users_contract.yml")
+
+# Run-level annotations
+for ann in result.annotations or []:
+    print(f"[{ann['annotation_type']}] {ann['summary']}")
+
+# Rule-level annotations
+for rule in result.rules:
+    for ann in rule.annotations or []:
+        print(f"  {rule.rule_id}: [{ann['annotation_type']}] {ann['summary']}")
+```
+
+Common annotation types (suggested, not enforced):
+- `"resolution"`: I fixed this
+- `"root_cause"`: This failed because...
+- `"false_positive"`: This isn't actually a problem
+- `"acknowledged"`: I saw this, will address later
+- `"suppressed"`: Intentionally ignoring this
+- `"note"`: General comment
+
 ### LLM-Optimized Output
 
 ```python
@@ -469,13 +534,20 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 | `kontra.get_run(contract, run_id=None)` | Get specific run (default: latest) |
 | `kontra.has_runs(contract)` | Check if history exists for contract |
 
+### Annotation Functions
+
+| Function | Description |
+|----------|-------------|
+| `kontra.annotate(contract, ...)` | Add annotation to a run or rule |
+| `kontra.get_run_with_annotations(contract)` | Get run with annotations loaded |
+
 ### Result Types
 
 | Type | Key Properties |
 |------|----------------|
-| `ValidationResult` | `passed`, `total_rows`, `rules`, `blocking_failures`, `warnings`, `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
+| `ValidationResult` | `passed`, `total_rows`, `rules`, `blocking_failures`, `warnings`, `annotations` (opt-in), `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
 | `FailureSamples` | `count`, `rule_id`, `to_dict()`, `to_json()`, `to_llm()` (iterable) |
-| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column`, `details`, `context`, `samples`, `samples_source`, `samples_reason` |
+| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column`, `details`, `context`, `annotations` (opt-in), `samples`, `samples_source`, `samples_reason` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 | `Profile` | `row_count`, `column_count`, `columns` |
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |

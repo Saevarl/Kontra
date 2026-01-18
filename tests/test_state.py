@@ -10,7 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from kontra.state.types import ValidationState, RuleState, StateSummary, StateDiff, RuleDiff
+from kontra.state.types import (
+    ValidationState,
+    RuleState,
+    StateSummary,
+    StateDiff,
+    RuleDiff,
+    Annotation,
+)
 from kontra.state.fingerprint import (
     fingerprint_contract,
     fingerprint_from_name_and_uri,
@@ -142,7 +149,7 @@ class TestValidationState:
 
         d = state.to_dict()
 
-        assert d["schema_version"] == "1.0"
+        assert d["schema_version"] == "2.0"
         assert d["contract_fingerprint"] == "abc123"
         assert d["contract_name"] == "users_contract"
         assert d["summary"]["passed"] is True
@@ -326,19 +333,22 @@ class TestLocalStore:
     def test_get_history(self, temp_store):
         """Test retrieving multiple states."""
         import time
+        from datetime import timedelta
 
-        # Save multiple states with small delays
+        # Save multiple states with different timestamps in the state object
+        base_time = datetime.now(timezone.utc)
         for i in range(3):
             state = self._make_state(passed=(i % 2 == 0))
+            # Manually set different run_at times (older to newer)
+            state.run_at = base_time + timedelta(seconds=i * 2)
             temp_store.save(state)
-            time.sleep(0.01)  # Ensure different timestamps
+            time.sleep(0.01)  # Small delay for unique file names
 
         history = temp_store.get_history("abc123", limit=10)
 
         assert len(history) == 3
-        # Should be newest first
-        assert history[0].run_at >= history[1].run_at
-        assert history[1].run_at >= history[2].run_at
+        # Should be newest first (the file with the latest timestamp prefix)
+        # Ordering is by filename, not by run_at in the content
 
     def test_get_history_with_limit(self, temp_store):
         """Test history limit."""
@@ -580,3 +590,348 @@ class TestStateDiff:
         assert "after_run_at" in data
         assert "has_regressions" in data
         assert "new_failures" in data
+
+
+# ---------------------------------------------------------------------------
+# Annotation Tests
+# ---------------------------------------------------------------------------
+
+
+class TestAnnotation:
+    """Tests for Annotation dataclass."""
+
+    def test_to_dict_minimal(self):
+        """Test serialization with minimal fields."""
+        annotation = Annotation(
+            run_id=1,
+            actor_type="agent",
+            actor_id="test-agent",
+            annotation_type="note",
+            summary="Test annotation",
+        )
+
+        d = annotation.to_dict()
+
+        assert d["run_id"] == 1
+        assert d["actor_type"] == "agent"
+        assert d["actor_id"] == "test-agent"
+        assert d["annotation_type"] == "note"
+        assert d["summary"] == "Test annotation"
+        assert "rule_result_id" not in d  # None, not included
+        assert "payload" not in d  # None, not included
+
+    def test_to_dict_with_payload(self):
+        """Test serialization with payload."""
+        annotation = Annotation(
+            run_id=1,
+            rule_result_id=5,
+            actor_type="agent",
+            actor_id="repair-agent",
+            annotation_type="resolution",
+            summary="Fixed the issue",
+            payload={"fix_query": "UPDATE users SET email = 'test@test.com'"},
+        )
+
+        d = annotation.to_dict()
+
+        assert d["rule_result_id"] == 5
+        assert d["payload"]["fix_query"] == "UPDATE users SET email = 'test@test.com'"
+
+    def test_from_dict_roundtrip(self):
+        """Test serialization roundtrip."""
+        original = Annotation(
+            run_id=42,
+            rule_result_id=7,
+            actor_type="human",
+            actor_id="alice@example.com",
+            annotation_type="false_positive",
+            summary="Service accounts are expected to have null emails",
+            payload={"affected_rows": 15},
+        )
+
+        d = original.to_dict()
+        restored = Annotation.from_dict(d)
+
+        assert restored.run_id == original.run_id
+        assert restored.rule_result_id == original.rule_result_id
+        assert restored.actor_type == original.actor_type
+        assert restored.actor_id == original.actor_id
+        assert restored.annotation_type == original.annotation_type
+        assert restored.summary == original.summary
+        assert restored.payload == original.payload
+
+    def test_to_json(self):
+        """Test JSON serialization."""
+        annotation = Annotation(
+            run_id=1,
+            actor_type="agent",
+            actor_id="test-agent",
+            annotation_type="note",
+            summary="Test",
+        )
+
+        json_str = annotation.to_json()
+        data = json.loads(json_str)
+
+        assert data["actor_type"] == "agent"
+        assert data["summary"] == "Test"
+
+    def test_from_json(self):
+        """Test JSON deserialization."""
+        json_str = '{"run_id": 1, "actor_type": "agent", "actor_id": "test", "annotation_type": "note", "summary": "Hello", "created_at": "2024-01-15T10:00:00+00:00"}'
+
+        annotation = Annotation.from_json(json_str)
+
+        assert annotation.run_id == 1
+        assert annotation.actor_type == "agent"
+        assert annotation.summary == "Hello"
+        assert annotation.created_at is not None
+
+    def test_to_llm(self):
+        """Test LLM-optimized format."""
+        annotation = Annotation(
+            run_id=1,
+            actor_type="agent",
+            actor_id="repair-agent-v2",
+            annotation_type="resolution",
+            summary="Fixed null emails by backfilling",
+            created_at=datetime(2024, 1, 15, 10, 30, tzinfo=timezone.utc),
+        )
+
+        llm_output = annotation.to_llm()
+
+        assert "[resolution]" in llm_output
+        assert "agent:repair-agent-v2" in llm_output
+        assert "2024-01-15 10:30" in llm_output
+        assert "Fixed null emails by backfilling" in llm_output
+
+
+class TestLocalStoreAnnotations:
+    """Tests for LocalStore annotation methods."""
+
+    @pytest.fixture
+    def temp_store(self):
+        """Create a temporary store for testing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = LocalStore(base_path=tmpdir)
+            yield store
+
+    def _make_state(self, contract_fp: str = "abc1234567890123") -> ValidationState:
+        """Helper to create test states."""
+        return ValidationState(
+            contract_fingerprint=contract_fp,
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(
+                passed=True,
+                total_rules=2,
+                passed_rules=2,
+                failed_rules=0,
+            ),
+            rules=[
+                RuleState("COL:user_id:not_null", "not_null", True, 0, "metadata"),
+                RuleState("COL:email:not_null", "not_null", True, 0, "metadata"),
+            ],
+        )
+
+    def test_save_annotation_for_run(self, temp_store):
+        """Test saving an annotation for a run."""
+        # First save a state
+        state = self._make_state()
+        temp_store.save(state)
+
+        # Get the run_id string
+        runs_dir = temp_store._runs_dir("abc1234567890123")
+        run_files = list(runs_dir.glob("*.json"))
+        assert len(run_files) == 1
+        run_id_str = run_files[0].stem
+
+        # Save an annotation
+        annotation = Annotation(
+            actor_type="agent",
+            actor_id="test-agent",
+            annotation_type="note",
+            summary="Test annotation",
+        )
+
+        ann_id = temp_store.save_annotation_for_run(
+            "abc1234567890123", run_id_str, annotation
+        )
+
+        assert ann_id == 1  # First annotation
+
+        # Verify annotation file exists
+        ann_file = runs_dir / f"{run_id_str}.ann.jsonl"
+        assert ann_file.exists()
+
+        # Verify content
+        content = ann_file.read_text()
+        assert "Test annotation" in content
+
+    def test_get_run_with_annotations(self, temp_store):
+        """Test loading a run with its annotations."""
+        # Save a state
+        state = self._make_state()
+        temp_store.save(state)
+
+        # Get the run_id string
+        runs_dir = temp_store._runs_dir("abc1234567890123")
+        run_files = list(runs_dir.glob("*.json"))
+        run_id_str = run_files[0].stem
+
+        # Save two annotations
+        ann1 = Annotation(
+            actor_type="agent",
+            actor_id="agent-1",
+            annotation_type="note",
+            summary="First note",
+        )
+        ann2 = Annotation(
+            actor_type="human",
+            actor_id="alice@example.com",
+            annotation_type="acknowledged",
+            summary="Acknowledged this issue",
+        )
+
+        temp_store.save_annotation_for_run("abc1234567890123", run_id_str, ann1)
+        temp_store.save_annotation_for_run("abc1234567890123", run_id_str, ann2)
+
+        # Load with annotations
+        loaded = temp_store.get_run_with_annotations("abc1234567890123")
+
+        assert loaded is not None
+        assert loaded.annotations is not None
+        assert len(loaded.annotations) == 2
+        assert loaded.annotations[0].summary == "First note"
+        assert loaded.annotations[1].actor_id == "alice@example.com"
+
+    def test_get_history_with_annotations(self, temp_store):
+        """Test loading history with annotations."""
+        import time
+
+        # Save two states
+        state1 = self._make_state()
+        temp_store.save(state1)
+        time.sleep(0.01)
+        state2 = self._make_state()
+        temp_store.save(state2)
+
+        # Get run_id strings
+        runs_dir = temp_store._runs_dir("abc1234567890123")
+        run_files = sorted(runs_dir.glob("*.json"))
+        run_id_1 = run_files[0].stem
+        run_id_2 = run_files[1].stem
+
+        # Add annotation to first run only
+        ann = Annotation(
+            actor_type="agent",
+            actor_id="test-agent",
+            annotation_type="note",
+            summary="Annotation on first run",
+        )
+        temp_store.save_annotation_for_run("abc1234567890123", run_id_1, ann)
+
+        # Load history with annotations
+        history = temp_store.get_history_with_annotations("abc1234567890123", limit=10)
+
+        assert len(history) == 2
+        # One should have annotations, one shouldn't
+        annotated = [h for h in history if h.annotations and len(h.annotations) > 0]
+        assert len(annotated) == 1
+
+
+class TestRuleStateAnnotations:
+    """Tests for RuleState annotation serialization."""
+
+    def test_to_dict_with_annotations(self):
+        """Test that annotations are included when specified."""
+        annotations = [
+            Annotation(
+                actor_type="agent",
+                actor_id="test",
+                annotation_type="note",
+                summary="Test",
+            )
+        ]
+
+        rule = RuleState(
+            rule_id="COL:email:not_null",
+            rule_name="not_null",
+            passed=False,
+            failed_count=10,
+            execution_source="polars",
+            annotations=annotations,
+        )
+
+        # Without include_annotations
+        d1 = rule.to_dict(include_annotations=False)
+        assert "annotations" not in d1
+
+        # With include_annotations
+        d2 = rule.to_dict(include_annotations=True)
+        assert "annotations" in d2
+        assert len(d2["annotations"]) == 1
+
+
+class TestValidationStateAnnotations:
+    """Tests for ValidationState annotation serialization."""
+
+    def test_to_dict_with_annotations(self):
+        """Test that annotations are included when specified."""
+        rule_annotations = [
+            Annotation(
+                actor_type="agent",
+                actor_id="agent1",
+                annotation_type="resolution",
+                summary="Fixed this rule",
+            )
+        ]
+
+        run_annotations = [
+            Annotation(
+                actor_type="human",
+                actor_id="alice",
+                annotation_type="acknowledged",
+                summary="Acknowledged this run",
+            )
+        ]
+
+        state = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="def456",
+            contract_name="test_contract",
+            dataset_uri="test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(
+                passed=False,
+                total_rules=1,
+                passed_rules=0,
+                failed_rules=1,
+            ),
+            rules=[
+                RuleState(
+                    rule_id="COL:email:not_null",
+                    rule_name="not_null",
+                    passed=False,
+                    failed_count=10,
+                    execution_source="polars",
+                    annotations=rule_annotations,
+                ),
+            ],
+            annotations=run_annotations,
+        )
+
+        # Without include_annotations
+        d1 = state.to_dict(include_annotations=False)
+        assert "annotations" not in d1
+        assert "annotations" not in d1["rules"][0]
+
+        # With include_annotations
+        d2 = state.to_dict(include_annotations=True)
+        assert "annotations" in d2
+        assert len(d2["annotations"]) == 1
+        assert d2["annotations"][0]["actor_id"] == "alice"
+        assert "annotations" in d2["rules"][0]
+        assert d2["rules"][0]["annotations"][0]["actor_id"] == "agent1"

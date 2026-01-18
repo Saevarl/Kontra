@@ -216,6 +216,357 @@ class SqlServerBackend:
         """Return schema.table identifier."""
         return f"{self.esc_ident(self.params.schema)}.{self.esc_ident(self.params.table)}"
 
+    def _get_object_id(self) -> Optional[int]:
+        """Get the object_id for the table."""
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """
+            SELECT o.object_id
+            FROM sys.objects o
+            JOIN sys.schemas s ON o.schema_id = s.schema_id
+            WHERE s.name = %s AND o.name = %s
+            """,
+            (self.params.schema, self.params.table),
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else None
+
+    def supports_metadata_only(self) -> bool:
+        """Check if this backend supports metadata-only profiling."""
+        return True
+
+    def profile_metadata_only(
+        self, schema: List[Tuple[str, str]], row_count: int
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Profile columns using SQL Server metadata (minimal table access).
+
+        SQL Server doesn't store null_frac like PostgreSQL. We use:
+        - sys.dm_db_stats_histogram for distinct count estimates
+        - sys.columns for basic column info
+
+        Note: For null counts, we fall back to a sampled query since
+        SQL Server metadata doesn't include null statistics directly.
+        """
+        cursor = self._conn.cursor()
+        object_id = self._get_object_id()
+
+        if not object_id:
+            # Fallback: return empty metadata
+            return {col_name: {"null_count": 0, "distinct_count": 0} for col_name, _ in schema}
+
+        # Get stats for each column from sys.dm_db_stats_histogram
+        # This gives us distinct count estimates
+        stats_info: Dict[str, Dict[str, Any]] = {}
+
+        for col_name, raw_type in schema:
+            stats_info[col_name] = {
+                "null_count": 0,
+                "distinct_count": 0,
+                "is_estimate": True,
+            }
+
+        # Query column statistics
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    c.name AS column_name,
+                    s.stats_id,
+                    sp.rows,
+                    sp.rows_sampled,
+                    sp.modification_counter
+                FROM sys.stats s
+                JOIN sys.stats_columns sc ON s.object_id = sc.object_id AND s.stats_id = sc.stats_id
+                JOIN sys.columns c ON sc.object_id = c.object_id AND sc.column_id = c.column_id
+                CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+                WHERE s.object_id = %s AND sc.stats_column_id = 1
+                """,
+                (object_id,),
+            )
+            for row in cursor.fetchall():
+                col_name = row[0]
+                if col_name in stats_info:
+                    stats_info[col_name]["rows"] = row[2]
+                    stats_info[col_name]["rows_sampled"] = row[3]
+        except Exception:
+            pass
+
+        # Get distinct counts from histogram
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    c.name AS column_name,
+                    SUM(h.distinct_range_rows) + COUNT(*) AS distinct_estimate
+                FROM sys.stats s
+                JOIN sys.stats_columns sc ON s.object_id = sc.object_id AND s.stats_id = sc.stats_id
+                JOIN sys.columns c ON sc.object_id = c.object_id AND sc.column_id = c.column_id
+                CROSS APPLY sys.dm_db_stats_histogram(s.object_id, s.stats_id) h
+                WHERE s.object_id = %s AND sc.stats_column_id = 1
+                GROUP BY c.name
+                """,
+                (object_id,),
+            )
+            for row in cursor.fetchall():
+                col_name = row[0]
+                if col_name in stats_info:
+                    stats_info[col_name]["distinct_count"] = int(row[1]) if row[1] else 0
+        except Exception:
+            # dm_db_stats_histogram might not be available (requires SQL Server 2016 SP1 CU2+)
+            pass
+
+        # For null counts, use a sampled query (SQL Server doesn't store null stats)
+        # Use TABLESAMPLE for efficiency
+        try:
+            null_exprs = []
+            for col_name, _ in schema:
+                c = self.esc_ident(col_name)
+                null_exprs.append(
+                    f"SUM(CASE WHEN {c} IS NULL THEN 1 ELSE 0 END) AS [{col_name}_nulls]"
+                )
+
+            table = self._qualified_table()
+            # Sample 1% for null estimation
+            sql = f"""
+                SELECT {', '.join(null_exprs)}
+                FROM {table}
+                TABLESAMPLE (1 PERCENT)
+            """
+            cursor.execute(sql)
+            row = cursor.fetchone()
+
+            if row:
+                for i, (col_name, _) in enumerate(schema):
+                    sample_nulls = row[i] or 0
+                    # Extrapolate to full table (rough estimate)
+                    stats_info[col_name]["null_count"] = int(sample_nulls * 100)
+        except Exception:
+            # TABLESAMPLE might fail on small tables, fall back to full count
+            try:
+                null_exprs = []
+                for col_name, _ in schema:
+                    c = self.esc_ident(col_name)
+                    null_exprs.append(
+                        f"SUM(CASE WHEN {c} IS NULL THEN 1 ELSE 0 END) AS [{col_name}_nulls]"
+                    )
+                sql = f"SELECT {', '.join(null_exprs)} FROM {self._qualified_table()}"
+                cursor.execute(sql)
+                row = cursor.fetchone()
+                if row:
+                    for i, (col_name, _) in enumerate(schema):
+                        stats_info[col_name]["null_count"] = int(row[i] or 0)
+                        stats_info[col_name]["is_estimate"] = False
+            except Exception:
+                pass
+
+        return stats_info
+
+    def get_table_freshness(self) -> Dict[str, Any]:
+        """
+        Get table statistics freshness from sys.dm_db_stats_properties.
+
+        Returns dict with:
+        - modification_counter: rows modified since last stats update
+        - rows: row count from stats
+        - last_updated: timestamp of last stats update
+        - stale_ratio: modification_counter / rows
+        - is_fresh: True if stale_ratio < 0.2
+        """
+        cursor = self._conn.cursor()
+        object_id = self._get_object_id()
+
+        if not object_id:
+            return {
+                "modification_counter": 0,
+                "rows": 0,
+                "last_updated": None,
+                "stale_ratio": 1.0,
+                "is_fresh": False,
+            }
+
+        try:
+            cursor.execute(
+                """
+                SELECT TOP 1
+                    sp.last_updated,
+                    sp.modification_counter,
+                    sp.rows
+                FROM sys.stats s
+                CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+                WHERE s.object_id = %s
+                ORDER BY sp.last_updated DESC
+                """,
+                (object_id,),
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return {
+                    "modification_counter": 0,
+                    "rows": 0,
+                    "last_updated": None,
+                    "stale_ratio": 1.0,
+                    "is_fresh": False,
+                }
+
+            last_updated = row[0]
+            modification_counter = row[1] or 0
+            rows = row[2] or 0
+
+            stale_ratio = modification_counter / max(rows, 1) if rows > 0 else 1.0
+
+            return {
+                "modification_counter": modification_counter,
+                "rows": rows,
+                "last_updated": last_updated,
+                "stale_ratio": stale_ratio,
+                "is_fresh": stale_ratio < 0.2,
+            }
+        except Exception:
+            return {
+                "modification_counter": 0,
+                "rows": 0,
+                "last_updated": None,
+                "stale_ratio": 1.0,
+                "is_fresh": False,
+            }
+
+    def supports_strategic_standard(self) -> bool:
+        """Check if this backend supports strategic standard profiling."""
+        return True
+
+    def execute_sampled_stats_query(
+        self, exprs: List[str], sample_pct: float = 1.0
+    ) -> Dict[str, Any]:
+        """
+        Execute aggregation query with TABLESAMPLE (block sampling).
+
+        SQL Server's TABLESAMPLE works at the page level, so for small tables
+        low percentages may return 0 rows. We fall back to full table scan
+        for tables under 10K rows or if sampling returns no data.
+
+        Args:
+            exprs: List of SQL expressions to compute
+            sample_pct: Percentage to sample (default 1%)
+
+        Returns:
+            Dict of expression alias -> value
+        """
+        if not exprs:
+            return {}
+
+        table = self._qualified_table()
+
+        # For small tables, TABLESAMPLE may return 0 rows at low percentages
+        # Use a minimum of 10% for tables under 10K rows
+        row_count = self.get_row_count()
+        if row_count < 10000:
+            # Skip sampling for small tables - just do full scan
+            return self.execute_stats_query(exprs)
+
+        sql = f"""
+            SELECT {', '.join(exprs)}
+            FROM {table}
+            TABLESAMPLE ({sample_pct} PERCENT)
+        """
+
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(sql)
+            row = cursor.fetchone()
+            col_names = [desc[0] for desc in cursor.description]
+            result = dict(zip(col_names, row)) if row else {}
+
+            # Check if we got data - if all values are None, fall back to full scan
+            if all(v is None for v in result.values()):
+                return self.execute_stats_query(exprs)
+
+            return result
+        except Exception:
+            # Fall back to full query if TABLESAMPLE fails
+            return self.execute_stats_query(exprs)
+
+    def fetch_low_cardinality_values_batched(
+        self, columns: List[str]
+    ) -> Dict[str, List[Tuple[Any, int]]]:
+        """
+        Fetch value distributions for multiple low-cardinality columns in one query.
+
+        Uses UNION ALL to batch multiple GROUP BY queries into a single round-trip.
+        """
+        if not columns:
+            return {}
+
+        table = self._qualified_table()
+        parts = []
+        for col in columns:
+            c = self.esc_ident(col)
+            parts.append(f"""
+                SELECT '{col}' AS col_name, CAST({c} AS NVARCHAR(MAX)) AS val, COUNT(*) AS cnt
+                FROM {table}
+                WHERE {c} IS NOT NULL
+                GROUP BY {c}
+            """)
+
+        sql = " UNION ALL ".join(parts) + " ORDER BY col_name, cnt DESC"
+
+        result: Dict[str, List[Tuple[Any, int]]] = {col: [] for col in columns}
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(sql)
+            for row in cursor.fetchall():
+                col_name, val, cnt = row
+                if col_name in result:
+                    result[col_name].append((val, int(cnt)))
+        except Exception:
+            pass
+
+        return result
+
+    def classify_columns(
+        self, schema: List[Tuple[str, str]], row_count: int
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Classify columns based on histogram metadata for strategic profiling.
+
+        Classification rules:
+        - low: distinct < 20 → fetch all via GROUP BY
+        - medium: distinct 20-10000 → sample for top values
+        - high: distinct > 10000 → trust histogram only
+        """
+        # First get metadata
+        metadata = self.profile_metadata_only(schema, row_count)
+
+        result = {}
+        for col_name, raw_type in schema:
+            col_meta = metadata.get(col_name, {})
+            distinct_count = col_meta.get("distinct_count", 0)
+
+            # If we don't have distinct count, estimate from row_count
+            if distinct_count == 0:
+                distinct_count = row_count  # Assume high cardinality
+
+            # Classify cardinality
+            if distinct_count < 20:
+                cardinality = "low"
+                strategy = "group_by"
+            elif distinct_count <= 10000:
+                cardinality = "medium"
+                strategy = "sample"
+            else:
+                cardinality = "high"
+                strategy = "metadata_only"
+
+            result[col_name] = {
+                "cardinality": cardinality,
+                "distinct_count": distinct_count,
+                "strategy": strategy,
+                "dtype": normalize_dtype(raw_type),
+            }
+
+        return result
+
 
 def normalize_sqlserver_type(raw_type: str) -> str:
     """

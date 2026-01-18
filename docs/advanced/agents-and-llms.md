@@ -47,7 +47,7 @@ health = kontra.health()
 #     "status": "ok",
 #     "config_found": True,
 #     "config_path": "/app/.kontra/config.yml",
-#     "rule_count": 12,
+#     "rule_count": 13,
 #     "rules": ["not_null", "unique", "range", ...]
 # }
 
@@ -157,91 +157,47 @@ except KontraError as e:
 ```python
 import kontra
 
-def validate_user_data(data_source: str) -> str:
-    """Agent-callable function to validate user data."""
+def validate_data(data_source: str, contract: str) -> dict:
+    """Agent-callable validation function."""
 
-    # Profile first
-    profile = kontra.scout(data_source, preset="llm")
+    result = kontra.validate(data_source, contract=contract)
 
-    # Check for obvious issues
-    if profile.row_count == 0:
-        return "EMPTY: Dataset has no rows"
+    if result.blocking_failures:
+        # Critical issues - include context for routing
+        failure = result.blocking_failures[0]
+        return {
+            "status": "blocked",
+            "rule": failure.rule_id,
+            "message": failure.message,
+            "failed_count": failure.failed_count,
+            "owner": failure.context.get("owner") if failure.context else None,
+        }
 
-    # Validate with standard rules
-    result = kontra.validate(data_source, rules=[
-        {"name": "not_null", "params": {"column": "user_id"}},
-        {"name": "unique", "params": {"column": "user_id"}},
-        {"name": "not_null", "params": {"column": "email"}},
-    ])
+    if result.warnings:
+        # Non-critical issues
+        return {
+            "status": "warnings",
+            "count": len(result.warnings),
+            "summary": result.to_llm(),
+        }
 
-    # Return token-optimized output
-    return result.to_llm()
+    return {"status": "passed", "summary": result.to_llm()}
 ```
 
-## Example: LLM Retry Pattern
+Contracts can include `severity` (blocking/warning/info) and `context` (consumer-defined metadata) per rule:
 
-When validating LLM outputs and retrying on failure, use `rule.message`, `rule.details`, and `rule.context` to build actionable feedback:
+```yaml
+rules:
+  - name: not_null
+    params: { column: user_id }
+    severity: blocking
+    context:
+      owner: data_platform
+      fix_hint: User ID is required
 
-```python
-import kontra
-from kontra import rules
-import json
-
-def validate_with_retry(llm_fn, prompt: str, contract_path: str, max_retries: int = 3):
-    """Validate LLM output and retry with actionable feedback on failure."""
-
-    for attempt in range(max_retries):
-        # Get LLM output
-        output = llm_fn(prompt)
-
-        # Parse output (LLM returns JSON)
-        try:
-            data = json.loads(output)
-        except json.JSONDecodeError:
-            prompt = f"{prompt}\n\nYour response was not valid JSON. Please respond with valid JSON."
-            continue
-
-        # Validate
-        result = kontra.validate(data, contract=contract_path, save=False)
-
-        if result.passed:
-            return data
-
-        # Build actionable feedback from rule results
-        feedback_lines = []
-        for r in result.blocking_failures:
-            line = f"- {r.message}"
-
-            # Add expected values from details if available
-            if r.details:
-                if "expected" in r.details:
-                    line += f" (allowed: {r.details['expected']})"
-                if "expected_min" in r.details or "expected_max" in r.details:
-                    min_v = r.details.get("expected_min", "")
-                    max_v = r.details.get("expected_max", "")
-                    line += f" (range: [{min_v}, {max_v}])"
-
-            # Add fix hint from context if available
-            if r.context and r.context.get("fix_hint"):
-                line += f" → {r.context['fix_hint']}"
-
-            feedback_lines.append(line)
-
-        # Update prompt with feedback
-        prompt = f"""{prompt}
-
-Your previous response failed validation. Fix these issues:
-{chr(10).join(feedback_lines)}
-"""
-
-    raise ValueError(f"Validation failed after {max_retries} attempts")
+  - name: range
+    params: { column: age, min: 0 }
+    severity: warning
 ```
 
-**Key points:**
-
-- **`rule.message`**: Human-readable description of what failed (e.g., "email contains null values")
-- **`rule.details`**: Structured data about the failure (expected values, actual values, counts)
-- **`rule.context`**: Consumer-defined metadata from the contract (owner, fix hints, tags)
-- **`save=False`**: Disables state persistence for ephemeral validation (no history tracking)
-
-The retry pattern keeps Kontra as a measurement primitive—it provides the data, your code builds the feedback.
+See [Rule Context](../python-api.md#rule-context-in-contracts) for details.

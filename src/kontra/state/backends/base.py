@@ -3,16 +3,20 @@
 StateBackend protocol definition.
 
 All state storage implementations must conform to this protocol.
+
+v0.5 adds:
+- Normalized schema (kontra_runs, kontra_rule_results)
+- Annotations (kontra_annotations) with append-only semantics
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kontra.state.types import ValidationState
+    from kontra.state.types import Annotation, ValidationState
 
 
 class StateBackend(ABC):
@@ -152,3 +156,128 @@ class StateBackend(ABC):
             List of contract fingerprint strings
         """
         return []
+
+    # -------------------------------------------------------------------------
+    # Annotation Methods (v0.5)
+    # -------------------------------------------------------------------------
+    #
+    # Annotations are append-only records that agents/humans can attach to
+    # validation runs. Kontra never reads annotations during validation or diff.
+    #
+    # Default implementations do nothing. Database backends override with
+    # actual persistence logic.
+
+    @staticmethod
+    def _attach_annotations_to_state(
+        state: "ValidationState",
+        annotations: List["Annotation"],
+    ) -> None:
+        """
+        Attach annotations to a ValidationState, grouping by rule_result_id.
+
+        Modifies state in-place:
+        - Sets state.annotations to run-level annotations (rule_result_id is None)
+        - Sets rule.annotations for each rule result
+
+        Args:
+            state: The ValidationState to modify
+            annotations: List of annotations to attach
+        """
+        # Group annotations by rule_result_id
+        run_annotations: List["Annotation"] = []
+        rule_annotations: Dict[int, List["Annotation"]] = {}
+
+        for ann in annotations:
+            if ann.rule_result_id is None:
+                run_annotations.append(ann)
+            else:
+                rule_annotations.setdefault(ann.rule_result_id, []).append(ann)
+
+        state.annotations = run_annotations
+        for rule in state.rules:
+            if rule.id is not None:
+                rule.annotations = rule_annotations.get(rule.id, [])
+            else:
+                rule.annotations = []
+
+    def save_annotation(self, annotation: "Annotation") -> int:
+        """
+        Save an annotation.
+
+        Annotations are append-only. Each save creates a new record.
+
+        Args:
+            annotation: The Annotation to persist
+
+        Returns:
+            The database-assigned ID of the new annotation
+
+        Raises:
+            IOError: If the save fails
+            ValueError: If annotation references non-existent run/rule
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support annotations"
+        )
+
+    def get_annotations(
+        self,
+        run_id: int,
+        rule_result_id: Optional[int] = None,
+    ) -> List["Annotation"]:
+        """
+        Get annotations for a run or specific rule result.
+
+        Args:
+            run_id: The run ID to get annotations for
+            rule_result_id: If provided, filter to annotations on this rule
+
+        Returns:
+            List of Annotation objects, newest first
+        """
+        return []
+
+    def get_run_with_annotations(
+        self,
+        contract_fingerprint: str,
+        run_id: Optional[int] = None,
+    ) -> Optional["ValidationState"]:
+        """
+        Get a validation state with its annotations loaded.
+
+        Args:
+            contract_fingerprint: The contract's fingerprint hash
+            run_id: Specific run ID. If None, gets the latest run.
+
+        Returns:
+            ValidationState with annotations populated, or None
+        """
+        # Default: get latest and attach empty annotations
+        state = self.get_latest(contract_fingerprint) if run_id is None else None
+        if state:
+            state.annotations = []
+            for rule in state.rules:
+                rule.annotations = []
+        return state
+
+    def get_history_with_annotations(
+        self,
+        contract_fingerprint: str,
+        limit: int = 10,
+    ) -> List["ValidationState"]:
+        """
+        Get recent history with annotations loaded.
+
+        Args:
+            contract_fingerprint: The contract's fingerprint hash
+            limit: Maximum number of states to return
+
+        Returns:
+            List of ValidationState objects with annotations, newest first
+        """
+        states = self.get_history(contract_fingerprint, limit=limit)
+        for state in states:
+            state.annotations = []
+            for rule in state.rules:
+                rule.annotations = []
+        return states

@@ -186,18 +186,38 @@ class TestNotNullEquivalence:
     EXPECTED_VIOLATIONS = 5  # 5 NULL emails in tier_test_data
 
     def test_sql_vs_polars(self, tier_test_data, write_contract):
-        """SQL and Polars should report same NULL count."""
+        """SQL and Polars should agree on pass/fail for not_null.
+
+        Note: SQL uses EXISTS for not_null (fast, early termination).
+        EXISTS returns failed_count=1 for any failure, not exact counts.
+        This is by design - "validate validates" (fast pass/fail).
+        Use Scout for exact counts when needed.
+        """
         cpath = write_contract(dataset=tier_test_data, rules=[self.RULE])
 
         sql_result = run_with_tier(cpath, "sql")
         polars_result = run_with_tier(cpath, "polars")
 
-        sql_count = get_violation_count(sql_result, self.RULE_ID)
-        polars_count = get_violation_count(polars_result, self.RULE_ID)
+        sql_rule = get_rule_result(sql_result, self.RULE_ID)
+        polars_rule = get_rule_result(polars_result, self.RULE_ID)
 
-        assert sql_count == polars_count == self.EXPECTED_VIOLATIONS, (
-            f"not_null mismatch: SQL={sql_count}, Polars={polars_count}, expected={self.EXPECTED_VIOLATIONS}"
+        # Pass/fail must agree
+        sql_passed = sql_rule.get("passed", True)
+        polars_passed = polars_rule.get("passed", True)
+        assert sql_passed == polars_passed, (
+            f"not_null pass/fail mismatch: SQL={sql_passed}, Polars={polars_passed}"
         )
+
+        # Both should detect violations
+        polars_count = polars_rule.get("failed_count", 0)
+        assert polars_count == self.EXPECTED_VIOLATIONS, (
+            f"Polars not_null count mismatch: got={polars_count}, expected={self.EXPECTED_VIOLATIONS}"
+        )
+
+        # SQL returns at least 1 when failing (EXISTS semantics)
+        sql_count = sql_rule.get("failed_count", 0)
+        if not sql_passed:
+            assert sql_count >= 1, f"SQL should report >=1 violation, got {sql_count}"
 
     def test_preplan_vs_polars_pass_fail_equivalence(self, tier_test_data, write_contract):
         """Preplan and Polars should agree on pass/fail outcome.
@@ -459,20 +479,30 @@ class TestNullVsEmptyString:
     """Verify NULL and empty string are handled consistently across tiers."""
 
     def test_not_null_distinguishes_null_from_empty(self, edge_case_data, write_contract):
-        """not_null should count NULLs, not empty strings."""
+        """not_null should count NULLs, not empty strings.
+
+        Note: SQL uses EXISTS for not_null, returning failed_count=1 for any failure.
+        Polars returns exact counts. We verify pass/fail equivalence.
+        """
         rule = {"name": "not_null", "params": {"column": "nullable_str"}}
         cpath = write_contract(dataset=edge_case_data, rules=[rule])
 
         sql_result = run_with_tier(cpath, "sql")
         polars_result = run_with_tier(cpath, "polars")
 
-        sql_count = get_violation_count(sql_result, "COL:nullable_str:not_null")
-        polars_count = get_violation_count(polars_result, "COL:nullable_str:not_null")
+        sql_rule = get_rule_result(sql_result, "COL:nullable_str:not_null")
+        polars_rule = get_rule_result(polars_result, "COL:nullable_str:not_null")
 
-        # Should count only actual NULLs (8 in edge_case_data), not empty strings
-        assert sql_count == polars_count, (
-            f"NULL vs empty mismatch: SQL={sql_count}, Polars={polars_count}"
+        # Pass/fail must agree
+        sql_passed = sql_rule.get("passed", True)
+        polars_passed = polars_rule.get("passed", True)
+        assert sql_passed == polars_passed, (
+            f"NULL vs empty pass/fail mismatch: SQL={sql_passed}, Polars={polars_passed}"
         )
+
+        # Polars counts actual NULLs (8 in edge_case_data), not empty strings
+        polars_count = polars_rule.get("failed_count", 0)
+        assert polars_count == 8, f"Polars should count 8 NULLs, got {polars_count}"
 
 
 class TestFloatPrecision:
@@ -529,7 +559,13 @@ class TestMultiRuleEquivalence:
     ]
 
     def test_all_rules_consistent(self, tier_test_data, write_contract):
-        """All rules should report same violations regardless of tier mix."""
+        """All rules should report consistent violations regardless of tier mix.
+
+        Note: SQL uses EXISTS for not_null (returns failed_count=1 for any failure).
+        Other rules return exact counts. We check:
+        - not_null: pass/fail equivalence
+        - Other rules: exact count equivalence
+        """
         cpath = write_contract(dataset=tier_test_data, rules=self.RULES)
 
         # Run with different tier configurations
@@ -541,12 +577,28 @@ class TestMultiRuleEquivalence:
             name = rule["name"]
             rule_id = f"COL:{col}:{name}" if col else f"DATASET:{name}"
 
-            auto_count = get_violation_count(auto_result, rule_id)
-            polars_count = get_violation_count(polars_result, rule_id)
+            auto_rule = get_rule_result(auto_result, rule_id)
+            polars_rule = get_rule_result(polars_result, rule_id)
 
-            assert auto_count == polars_count, (
-                f"{rule_id} mismatch: auto={auto_count}, polars={polars_count}"
+            auto_passed = auto_rule.get("passed", True)
+            polars_passed = polars_rule.get("passed", True)
+
+            # Pass/fail must always agree
+            assert auto_passed == polars_passed, (
+                f"{rule_id} pass/fail mismatch: auto={auto_passed}, polars={polars_passed}"
             )
+
+            if name == "not_null":
+                # SQL uses EXISTS for not_null - returns 1 for any failure
+                # Only verify pass/fail equivalence (already done above)
+                pass
+            else:
+                # Other rules should have exact count equivalence
+                auto_count = auto_rule.get("failed_count", 0)
+                polars_count = polars_rule.get("failed_count", 0)
+                assert auto_count == polars_count, (
+                    f"{rule_id} count mismatch: auto={auto_count}, polars={polars_count}"
+                )
 
 
 # =============================================================================

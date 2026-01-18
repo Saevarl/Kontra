@@ -38,6 +38,7 @@ from .dtype_mapping import normalize_dtype
 PRESETS = {
     "lite": {
         # Fast: schema + row count + basic null/distinct only
+        # Uses metadata-only path when available (pg_stats, Parquet footer)
         "include_numeric_stats": False,
         "include_string_stats": False,
         "include_temporal_stats": False,
@@ -45,9 +46,11 @@ PRESETS = {
         "include_percentiles": False,
         "top_n": 0,
         "list_values_threshold": 5,
+        "metadata_only": True,  # Use metadata-only path when backend supports it
     },
     "standard": {
         # Balanced: full stats, moderate top values
+        # Uses strategic profiling when backend supports it (PostgreSQL)
         "include_numeric_stats": True,
         "include_string_stats": True,
         "include_temporal_stats": True,
@@ -55,6 +58,8 @@ PRESETS = {
         "include_percentiles": False,
         "top_n": 5,
         "list_values_threshold": 10,
+        "metadata_only": False,
+        "strategic_standard": True,  # Use smart probing when available
     },
     "deep": {
         # Comprehensive: everything including percentiles
@@ -65,6 +70,7 @@ PRESETS = {
         "include_percentiles": True,
         "top_n": 10,
         "list_values_threshold": 20,
+        "metadata_only": False,
     },
     "llm": {
         # Token-optimized: key stats for LLM context injection
@@ -77,6 +83,7 @@ PRESETS = {
         "include_percentiles": False,
         "top_n": 5,
         "list_values_threshold": 15,
+        "metadata_only": False,
     },
 }
 
@@ -191,6 +198,12 @@ class ScoutProfiler:
         # Percentiles (only used if include_percentiles is True)
         self.percentiles = percentiles or [25, 50, 75, 99]
 
+        # Metadata-only mode (for lite preset)
+        self.metadata_only = preset_config.get("metadata_only", False)
+
+        # Strategic standard mode (for standard preset on PostgreSQL)
+        self.strategic_standard = preset_config.get("strategic_standard", False)
+
         # Backend is created on profile() call
         self.backend = None
 
@@ -254,6 +267,26 @@ class ScoutProfiler:
         if not schema:
             return []
 
+        # Check if we can use metadata-only path (faster, no table scan)
+        use_metadata_only = (
+            self.metadata_only
+            and hasattr(self.backend, "supports_metadata_only")
+            and self.backend.supports_metadata_only()
+        )
+
+        if use_metadata_only:
+            return self._profile_columns_from_metadata(schema, row_count)
+
+        # Check if we can use strategic standard path (PostgreSQL optimization)
+        use_strategic_standard = (
+            self.strategic_standard
+            and hasattr(self.backend, "supports_strategic_standard")
+            and self.backend.supports_strategic_standard()
+        )
+
+        if use_strategic_standard:
+            return self._profile_columns_strategic(schema, row_count)
+
         # Build aggregation expressions for each column
         exprs: List[str] = []
         col_info: List[Tuple[str, str, str]] = []  # (name, raw_type, normalized_type)
@@ -280,6 +313,209 @@ class ScoutProfiler:
             self._fetch_top_values(profile, row_count)
             if profile.distinct_count <= self.list_values_threshold:
                 self._fetch_all_values(profile)
+
+        return profiles
+
+    def _profile_columns_from_metadata(
+        self, schema: List[Tuple[str, str]], row_count: int
+    ) -> List[ColumnProfile]:
+        """
+        Profile columns using metadata only (no table scan).
+
+        Used for 'lite' preset when backend supports it (PostgreSQL pg_stats, Parquet footer).
+        Returns estimates, not exact counts.
+        """
+        # Get metadata from backend
+        metadata = self.backend.profile_metadata_only(schema, row_count)
+
+        profiles: List[ColumnProfile] = []
+        for col_name, raw_type in schema:
+            dtype = normalize_dtype(raw_type)
+            col_meta = metadata.get(col_name, {})
+
+            null_count = col_meta.get("null_count", 0)
+            distinct_count = col_meta.get("distinct_count", 0)
+
+            non_null_count = row_count - null_count
+            null_rate = null_count / row_count if row_count > 0 else 0.0
+            uniqueness_ratio = (
+                distinct_count / non_null_count if non_null_count > 0 else 0.0
+            )
+
+            profile = ColumnProfile(
+                name=col_name,
+                dtype=dtype,
+                dtype_raw=raw_type,
+                row_count=row_count,
+                null_count=null_count,
+                null_rate=null_rate,
+                distinct_count=distinct_count,
+                uniqueness_ratio=uniqueness_ratio,
+                is_low_cardinality=distinct_count <= self.list_values_threshold,
+            )
+
+            # Use most_common_vals from pg_stats for low-cardinality columns
+            mcv = col_meta.get("most_common_vals")
+            if mcv and profile.is_low_cardinality:
+                profile.values = mcv
+
+            profiles.append(profile)
+
+        return profiles
+
+    def _profile_columns_strategic(
+        self, schema: List[Tuple[str, str]], row_count: int
+    ) -> List[ColumnProfile]:
+        """
+        Profile columns using strategic queries (PostgreSQL optimization).
+
+        This method optimizes standard preset for PostgreSQL by:
+        1. Using metadata (pg_stats) for null/distinct counts
+        2. Classifying columns by cardinality to choose optimal strategy
+        3. Using TABLESAMPLE SYSTEM (not BERNOULLI) for numeric stats
+        4. Batching low-cardinality GROUP BY queries
+        5. Trusting pg_stats MCVs for high-cardinality columns
+
+        Much faster than full table scan approach.
+        """
+        import os
+
+        # Step 1: Get freshness info
+        freshness = self.backend.get_table_freshness()
+        is_fresh = freshness.get("is_fresh", False)
+
+        if os.getenv("KONTRA_VERBOSE"):
+            stale_ratio = freshness.get("stale_ratio", 1.0)
+            print(f"[INFO] PostgreSQL stats freshness: stale_ratio={stale_ratio:.2f}, is_fresh={is_fresh}")
+
+        # Step 2: Get metadata (null/distinct) and classify columns
+        metadata = self.backend.profile_metadata_only(schema, row_count)
+        classification = self.backend.classify_columns(schema, row_count)
+
+        # Step 3: Build profile objects with metadata
+        profiles: List[ColumnProfile] = []
+        numeric_cols = []
+        low_cardinality_cols = []
+
+        for col_name, raw_type in schema:
+            dtype = normalize_dtype(raw_type)
+            col_meta = metadata.get(col_name, {})
+            col_class = classification.get(col_name, {})
+
+            null_count = col_meta.get("null_count", 0)
+            distinct_count = col_meta.get("distinct_count", 0)
+
+            non_null_count = row_count - null_count
+            null_rate = null_count / row_count if row_count > 0 else 0.0
+            uniqueness_ratio = (
+                distinct_count / non_null_count if non_null_count > 0 else 0.0
+            )
+
+            profile = ColumnProfile(
+                name=col_name,
+                dtype=dtype,
+                dtype_raw=raw_type,
+                row_count=row_count,
+                null_count=null_count,
+                null_rate=null_rate,
+                distinct_count=distinct_count,
+                uniqueness_ratio=uniqueness_ratio,
+                is_low_cardinality=distinct_count <= self.list_values_threshold,
+            )
+
+            # Track columns needing additional queries
+            if _is_numeric(dtype) and self.include_numeric_stats:
+                numeric_cols.append((col_name, profile))
+
+            if col_class.get("strategy") == "group_by":
+                low_cardinality_cols.append(col_name)
+            elif col_class.get("strategy") == "metadata_only":
+                # Use MCVs from pg_stats for top_values
+                mcv = col_meta.get("most_common_vals")
+                if mcv and self.include_top_values:
+                    profile.top_values = [
+                        TopValue(value=v, count=0, pct=0.0)
+                        for v in mcv[:self.top_n]
+                    ]
+                    if profile.is_low_cardinality:
+                        profile.values = mcv
+
+            profiles.append(profile)
+
+        # Step 4: Numeric stats via TABLESAMPLE SYSTEM (fast block sampling)
+        if numeric_cols:
+            numeric_exprs = []
+            # SQL Server uses STDEV, PostgreSQL/DuckDB use STDDEV
+            stddev_fn = "STDEV" if self.backend.source_format == "sqlserver" else "STDDEV"
+            for col_name, _ in numeric_cols:
+                c = self.backend.esc_ident(col_name)
+                numeric_exprs.extend([
+                    f"MIN({c}) AS {self.backend.esc_ident(f'__min__{col_name}')}",
+                    f"MAX({c}) AS {self.backend.esc_ident(f'__max__{col_name}')}",
+                    f"AVG({c}) AS {self.backend.esc_ident(f'__mean__{col_name}')}",
+                    f"{stddev_fn}({c}) AS {self.backend.esc_ident(f'__std__{col_name}')}",
+                ])
+
+            # Use SYSTEM sampling (block-level) - much faster than BERNOULLI
+            # If stats are fresh, use smaller sample; if stale, use larger sample
+            sample_pct = 1.0 if is_fresh else 5.0
+            numeric_results = self.backend.execute_sampled_stats_query(
+                numeric_exprs, sample_pct=sample_pct
+            )
+
+            # Populate numeric stats
+            for col_name, profile in numeric_cols:
+                profile.numeric = NumericStats(
+                    min=self._to_float(numeric_results.get(f"__min__{col_name}")),
+                    max=self._to_float(numeric_results.get(f"__max__{col_name}")),
+                    mean=self._to_float(numeric_results.get(f"__mean__{col_name}")),
+                    std=self._to_float(numeric_results.get(f"__std__{col_name}")),
+                    median=None,  # Skip median in strategic mode (expensive)
+                    percentiles={},
+                )
+
+        # Step 5: Low-cardinality columns via batched GROUP BY
+        if low_cardinality_cols and self.include_top_values:
+            low_card_values = self.backend.fetch_low_cardinality_values_batched(
+                low_cardinality_cols
+            )
+
+            # Populate values and top_values
+            for profile in profiles:
+                if profile.name in low_card_values:
+                    values_with_counts = low_card_values[profile.name]
+                    profile.values = [v for v, _ in values_with_counts]
+                    profile.top_values = [
+                        TopValue(
+                            value=v,
+                            count=c,
+                            pct=(c / row_count * 100) if row_count > 0 else 0.0,
+                        )
+                        for v, c in values_with_counts[:self.top_n]
+                    ]
+
+        # Step 6: Medium cardinality - sample top values
+        medium_card_cols = [
+            p.name for p in profiles
+            if classification.get(p.name, {}).get("strategy") == "sample"
+            and p.top_values is None
+        ]
+
+        if medium_card_cols and self.include_top_values:
+            for col_name in medium_card_cols:
+                profile = next(p for p in profiles if p.name == col_name)
+                try:
+                    rows = self.backend.fetch_top_values(col_name, self.top_n)
+                    profile.top_values = [
+                        TopValue(
+                            value=val,
+                            count=int(cnt),
+                            pct=(int(cnt) / row_count * 100) if row_count > 0 else 0.0,
+                        )
+                        for val, cnt in rows
+                    ]
+                except Exception:
+                    pass
 
         return profiles
 

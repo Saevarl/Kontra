@@ -1,6 +1,6 @@
-# src/kontra/state/backends/postgres.py
+# src/kontra/state/backends/sqlserver.py
 """
-PostgreSQL state storage with normalized schema (v0.5).
+SQL Server state storage with normalized schema (v0.5).
 
 Schema:
     kontra_runs - Run-level metadata
@@ -25,18 +25,18 @@ from kontra.state.types import (
 )
 
 
-class PostgresStore(StateBackend):
+class SQLServerStore(StateBackend):
     """
-    PostgreSQL database state storage backend with normalized schema.
+    SQL Server database state storage backend with normalized schema.
 
-    Uses psycopg3 (psycopg) for database access. Automatically creates
+    Uses pyodbc for database access. Automatically creates
     the required tables if they don't exist.
 
-    URI format: postgres://user:pass@host:port/database
-                postgresql://user:pass@host:port/database
+    URI format: mssql://user:pass@host:port/database
+                sqlserver://user:pass@host:port/database
 
-    Also supports standard PostgreSQL environment variables:
-        PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE
+    Also supports environment variables:
+        MSSQL_HOST, MSSQL_PORT, MSSQL_USER, MSSQL_PASSWORD, MSSQL_DATABASE
     """
 
     # Table names
@@ -44,26 +44,24 @@ class PostgresStore(StateBackend):
     RULE_RESULTS_TABLE = "kontra_rule_results"
     ANNOTATIONS_TABLE = "kontra_annotations"
 
-    # Legacy table for migration detection
-    LEGACY_TABLE = "kontra_state"
-
+    # DDL for creating tables (SQL Server syntax)
     CREATE_TABLES_SQL = """
-    -- Run-level metadata
-    CREATE TABLE IF NOT EXISTS kontra_runs (
-        id SERIAL PRIMARY KEY,
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kontra_runs' AND xtype='U')
+    CREATE TABLE kontra_runs (
+        id INT IDENTITY(1,1) PRIMARY KEY,
 
         -- Identity
-        contract_fingerprint TEXT NOT NULL,
-        contract_name TEXT NOT NULL,
-        dataset_fingerprint TEXT,
-        dataset_name TEXT,
+        contract_fingerprint NVARCHAR(255) NOT NULL,
+        contract_name NVARCHAR(255) NOT NULL,
+        dataset_fingerprint NVARCHAR(255),
+        dataset_name NVARCHAR(500),
 
         -- Timing
-        run_at TIMESTAMPTZ NOT NULL,
+        run_at DATETIMEOFFSET NOT NULL,
         duration_ms INT,
 
         -- Summary
-        passed BOOLEAN NOT NULL,
+        passed BIT NOT NULL,
         total_rows BIGINT,
         total_rules INT NOT NULL,
         passed_rules INT NOT NULL,
@@ -75,89 +73,91 @@ class PostgresStore(StateBackend):
         info_failures INT NOT NULL DEFAULT 0,
 
         -- Execution metadata
-        execution_stats JSONB,
+        execution_stats NVARCHAR(MAX),  -- JSON string
 
         -- Schema version
-        schema_version TEXT NOT NULL DEFAULT '2.0',
-        engine_version TEXT
+        schema_version NVARCHAR(50) NOT NULL DEFAULT '2.0',
+        engine_version NVARCHAR(50)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_kontra_runs_contract_time
+    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='idx_kontra_runs_contract_time')
+    CREATE INDEX idx_kontra_runs_contract_time
         ON kontra_runs (contract_fingerprint, run_at DESC);
 
-    CREATE INDEX IF NOT EXISTS idx_kontra_runs_passed
+    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='idx_kontra_runs_passed')
+    CREATE INDEX idx_kontra_runs_passed
         ON kontra_runs (contract_fingerprint, passed, run_at DESC);
 
-    -- Per-rule results
-    CREATE TABLE IF NOT EXISTS kontra_rule_results (
-        id SERIAL PRIMARY KEY,
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kontra_rule_results' AND xtype='U')
+    CREATE TABLE kontra_rule_results (
+        id INT IDENTITY(1,1) PRIMARY KEY,
         run_id INT NOT NULL REFERENCES kontra_runs(id) ON DELETE CASCADE,
 
         -- Rule identity
-        rule_id TEXT NOT NULL,
-        rule_name TEXT NOT NULL,
+        rule_id NVARCHAR(255) NOT NULL,
+        rule_name NVARCHAR(100) NOT NULL,
 
         -- Result
-        passed BOOLEAN NOT NULL,
+        passed BIT NOT NULL,
         failed_count BIGINT NOT NULL DEFAULT 0,
 
         -- Metadata
-        severity TEXT NOT NULL,
-        message TEXT,
-        column_name TEXT,
-        execution_source TEXT,
+        severity NVARCHAR(20) NOT NULL,
+        message NVARCHAR(MAX),
+        column_name NVARCHAR(255),
+        execution_source NVARCHAR(50),
 
         -- Variable structure
-        failure_mode TEXT,
-        details JSONB,
-        context JSONB,
-        samples JSONB
+        failure_mode NVARCHAR(100),
+        details NVARCHAR(MAX),   -- JSON string
+        context NVARCHAR(MAX),   -- JSON string
+        samples NVARCHAR(MAX)    -- JSON string
     );
 
-    CREATE INDEX IF NOT EXISTS idx_kontra_rule_results_run
+    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='idx_kontra_rule_results_run')
+    CREATE INDEX idx_kontra_rule_results_run
         ON kontra_rule_results (run_id);
 
-    CREATE INDEX IF NOT EXISTS idx_kontra_rule_results_rule_id
+    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='idx_kontra_rule_results_rule_id')
+    CREATE INDEX idx_kontra_rule_results_rule_id
         ON kontra_rule_results (rule_id, run_id DESC);
 
-    -- Annotations (append-only)
-    CREATE TABLE IF NOT EXISTS kontra_annotations (
-        id SERIAL PRIMARY KEY,
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='kontra_annotations' AND xtype='U')
+    CREATE TABLE kontra_annotations (
+        id INT IDENTITY(1,1) PRIMARY KEY,
 
         -- What this annotates
         run_id INT NOT NULL REFERENCES kontra_runs(id) ON DELETE CASCADE,
         rule_result_id INT REFERENCES kontra_rule_results(id) ON DELETE CASCADE,
 
         -- Who created it
-        actor_type TEXT NOT NULL,
-        actor_id TEXT NOT NULL,
+        actor_type NVARCHAR(50) NOT NULL,
+        actor_id NVARCHAR(255) NOT NULL,
 
         -- What it says
-        annotation_type TEXT NOT NULL,
-        summary TEXT NOT NULL,
-        payload JSONB,
+        annotation_type NVARCHAR(100) NOT NULL,
+        summary NVARCHAR(MAX) NOT NULL,
+        payload NVARCHAR(MAX),  -- JSON string
 
         -- When
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        created_at DATETIMEOFFSET NOT NULL DEFAULT SYSDATETIMEOFFSET()
     );
 
-    CREATE INDEX IF NOT EXISTS idx_kontra_annotations_run
+    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='idx_kontra_annotations_run')
+    CREATE INDEX idx_kontra_annotations_run
         ON kontra_annotations (run_id);
 
-    CREATE INDEX IF NOT EXISTS idx_kontra_annotations_rule
-        ON kontra_annotations (rule_result_id)
-        WHERE rule_result_id IS NOT NULL;
-
-    CREATE INDEX IF NOT EXISTS idx_kontra_annotations_time
+    IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='idx_kontra_annotations_time')
+    CREATE INDEX idx_kontra_annotations_time
         ON kontra_annotations (created_at DESC);
     """
 
     def __init__(self, uri: str):
         """
-        Initialize the PostgreSQL store.
+        Initialize the SQL Server store.
 
         Args:
-            uri: PostgreSQL connection URI
+            uri: SQL Server connection URI
 
         The URI can be a full connection string or just the scheme,
         with connection details from environment variables.
@@ -170,51 +170,39 @@ class PostgresStore(StateBackend):
     @staticmethod
     def _parse_connection_params(uri: str) -> Dict[str, Any]:
         """
-        Parse PostgreSQL connection parameters from URI and environment.
+        Parse SQL Server connection parameters from URI and environment.
 
-        Priority: URI values > DATABASE_URL > PGXXX env vars > defaults
+        Priority: URI values > MSSQL_XXX env vars > defaults
         """
         parsed = urlparse(uri)
 
         # Start with defaults
         params: Dict[str, Any] = {
-            "host": "localhost",
-            "port": 5432,
-            "user": os.getenv("USER", "postgres"),
+            "server": "localhost",
+            "port": 1433,
+            "user": None,
             "password": None,
-            "dbname": None,
+            "database": None,
+            "driver": "{ODBC Driver 17 for SQL Server}",
         }
 
-        # Layer 1: Standard PGXXX environment variables
-        if os.getenv("PGHOST"):
-            params["host"] = os.getenv("PGHOST")
-        if os.getenv("PGPORT"):
-            params["port"] = int(os.getenv("PGPORT"))
-        if os.getenv("PGUSER"):
-            params["user"] = os.getenv("PGUSER")
-        if os.getenv("PGPASSWORD"):
-            params["password"] = os.getenv("PGPASSWORD")
-        if os.getenv("PGDATABASE"):
-            params["dbname"] = os.getenv("PGDATABASE")
+        # Layer 1: Environment variables
+        if os.getenv("MSSQL_HOST"):
+            params["server"] = os.getenv("MSSQL_HOST")
+        if os.getenv("MSSQL_PORT"):
+            params["port"] = int(os.getenv("MSSQL_PORT"))
+        if os.getenv("MSSQL_USER"):
+            params["user"] = os.getenv("MSSQL_USER")
+        if os.getenv("MSSQL_PASSWORD"):
+            params["password"] = os.getenv("MSSQL_PASSWORD")
+        if os.getenv("MSSQL_DATABASE"):
+            params["database"] = os.getenv("MSSQL_DATABASE")
+        if os.getenv("MSSQL_DRIVER"):
+            params["driver"] = os.getenv("MSSQL_DRIVER")
 
-        # Layer 2: DATABASE_URL (common in PaaS)
-        database_url = os.getenv("DATABASE_URL")
-        if database_url:
-            db_parsed = urlparse(database_url)
-            if db_parsed.hostname:
-                params["host"] = db_parsed.hostname
-            if db_parsed.port:
-                params["port"] = db_parsed.port
-            if db_parsed.username:
-                params["user"] = db_parsed.username
-            if db_parsed.password:
-                params["password"] = db_parsed.password
-            if db_parsed.path and db_parsed.path != "/":
-                params["dbname"] = db_parsed.path.strip("/").split("/")[0]
-
-        # Layer 3: Explicit URI values (highest priority)
+        # Layer 2: Explicit URI values (highest priority)
         if parsed.hostname:
-            params["host"] = parsed.hostname
+            params["server"] = parsed.hostname
         if parsed.port:
             params["port"] = parsed.port
         if parsed.username:
@@ -222,7 +210,7 @@ class PostgresStore(StateBackend):
         if parsed.password:
             params["password"] = parsed.password
         if parsed.path and parsed.path != "/":
-            params["dbname"] = parsed.path.strip("/").split("/")[0]
+            params["database"] = parsed.path.strip("/").split("/")[0]
 
         # Parse query parameters
         query_params = parse_qs(parsed.query)
@@ -238,36 +226,41 @@ class PostgresStore(StateBackend):
             return self._conn
 
         try:
-            import psycopg
+            import pyodbc
         except ImportError as e:
             raise RuntimeError(
-                "PostgreSQL state backend requires 'psycopg'. "
-                "Install with: pip install psycopg[binary]"
+                "SQL Server state backend requires 'pyodbc'. "
+                "Install with: pip install pyodbc"
             ) from e
 
         # Build connection string
-        conn_str = f"host={self._conn_params['host']} port={self._conn_params['port']}"
+        conn_str_parts = [
+            f"DRIVER={self._conn_params['driver']}",
+            f"SERVER={self._conn_params['server']},{self._conn_params['port']}",
+        ]
+        if self._conn_params.get("database"):
+            conn_str_parts.append(f"DATABASE={self._conn_params['database']}")
         if self._conn_params.get("user"):
-            conn_str += f" user={self._conn_params['user']}"
+            conn_str_parts.append(f"UID={self._conn_params['user']}")
         if self._conn_params.get("password"):
-            conn_str += f" password={self._conn_params['password']}"
-        if self._conn_params.get("dbname"):
-            conn_str += f" dbname={self._conn_params['dbname']}"
+            conn_str_parts.append(f"PWD={self._conn_params['password']}")
+
+        conn_str = ";".join(conn_str_parts)
 
         try:
-            self._conn = psycopg.connect(conn_str)
+            self._conn = pyodbc.connect(conn_str)
             self._ensure_tables()
         except Exception as e:
             raise ConnectionError(
-                f"Failed to connect to PostgreSQL: {e}\n\n"
+                f"Failed to connect to SQL Server: {e}\n\n"
                 "Set environment variables:\n"
-                "  export PGHOST=localhost\n"
-                "  export PGPORT=5432\n"
-                "  export PGUSER=your_user\n"
-                "  export PGPASSWORD=your_password\n"
-                "  export PGDATABASE=your_database\n\n"
+                "  export MSSQL_HOST=localhost\n"
+                "  export MSSQL_PORT=1433\n"
+                "  export MSSQL_USER=your_user\n"
+                "  export MSSQL_PASSWORD=your_password\n"
+                "  export MSSQL_DATABASE=your_database\n\n"
                 "Or use full URI:\n"
-                "  postgres://user:pass@host:5432/database"
+                "  mssql://user:pass@host:1433/database"
             ) from e
 
         return self._conn
@@ -278,8 +271,12 @@ class PostgresStore(StateBackend):
             return
 
         conn = self._conn
-        with conn.cursor() as cur:
-            cur.execute(self.CREATE_TABLES_SQL)
+        cursor = conn.cursor()
+        # Execute each statement separately (SQL Server doesn't like batches with CREATE)
+        for statement in self.CREATE_TABLES_SQL.split(";"):
+            statement = statement.strip()
+            if statement:
+                cursor.execute(statement)
         conn.commit()
         self._tables_created = True
 
@@ -306,9 +303,9 @@ class PostgresStore(StateBackend):
             info_failures,
             schema_version,
             engine_version
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-        ) RETURNING id
+        ) OUTPUT INSERTED.id VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
         """
 
         # Insert rule result
@@ -327,51 +324,52 @@ class PostgresStore(StateBackend):
             details,
             context,
             samples
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-        ) RETURNING id
+        ) OUTPUT INSERTED.id VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
         """
 
         try:
-            with conn.cursor() as cur:
-                # Insert run
-                cur.execute(run_sql, (
-                    state.contract_fingerprint,
-                    state.contract_name,
-                    state.dataset_fingerprint,
-                    state.dataset_uri,
-                    state.run_at,
-                    state.duration_ms,
-                    state.summary.passed,
-                    state.summary.row_count,
-                    state.summary.total_rules,
-                    state.summary.passed_rules,
-                    state.summary.failed_rules,
-                    state.summary.blocking_failures,
-                    state.summary.warning_failures,
-                    state.summary.info_failures,
-                    state.schema_version,
-                    state.engine_version,
-                ))
-                run_id = cur.fetchone()[0]
+            cursor = conn.cursor()
 
-                # Insert rule results
-                for rule in state.rules:
-                    cur.execute(rule_sql, (
-                        run_id,
-                        rule.rule_id,
-                        rule.rule_name,
-                        rule.passed,
-                        rule.failed_count,
-                        rule.severity,
-                        rule.message,
-                        rule.column,
-                        rule.execution_source,
-                        rule.failure_mode,
-                        json.dumps(rule.details) if rule.details else None,
-                        None,  # context - not stored in RuleState currently
-                        None,  # samples - not stored in state currently
-                    ))
+            # Insert run
+            cursor.execute(run_sql, (
+                state.contract_fingerprint,
+                state.contract_name,
+                state.dataset_fingerprint,
+                state.dataset_uri,
+                state.run_at,
+                state.duration_ms,
+                state.summary.passed,
+                state.summary.row_count,
+                state.summary.total_rules,
+                state.summary.passed_rules,
+                state.summary.failed_rules,
+                state.summary.blocking_failures,
+                state.summary.warning_failures,
+                state.summary.info_failures,
+                state.schema_version,
+                state.engine_version,
+            ))
+            run_id = cursor.fetchone()[0]
+
+            # Insert rule results
+            for rule in state.rules:
+                cursor.execute(rule_sql, (
+                    run_id,
+                    rule.rule_id,
+                    rule.rule_name,
+                    rule.passed,
+                    rule.failed_count,
+                    rule.severity,
+                    rule.message,
+                    rule.column,
+                    rule.execution_source,
+                    rule.failure_mode,
+                    json.dumps(rule.details) if rule.details else None,
+                    None,  # context
+                    None,  # samples
+                ))
 
             conn.commit()
 
@@ -380,7 +378,7 @@ class PostgresStore(StateBackend):
 
         except Exception as e:
             conn.rollback()
-            raise IOError(f"Failed to save state to PostgreSQL: {e}") from e
+            raise IOError(f"Failed to save state to SQL Server: {e}") from e
 
     def _build_state_from_rows(
         self,
@@ -388,7 +386,7 @@ class PostgresStore(StateBackend):
         rule_rows: List[tuple],
     ) -> ValidationState:
         """Build a ValidationState from database rows."""
-        # Parse run row
+        # Parse run row (note: pyodbc returns in order, not named)
         (
             run_id, contract_fingerprint, contract_name, dataset_fingerprint,
             dataset_name, run_at, duration_ms, passed, total_rows, total_rules,
@@ -398,7 +396,7 @@ class PostgresStore(StateBackend):
 
         # Build summary
         summary = StateSummary(
-            passed=passed,
+            passed=bool(passed),
             total_rules=total_rules,
             passed_rules=passed_rules,
             failed_rules=failed_rules,
@@ -417,15 +415,23 @@ class PostgresStore(StateBackend):
                 failure_mode, details, context, samples
             ) = rule_row
 
+            # Parse details from JSON string
+            parsed_details = None
+            if details:
+                try:
+                    parsed_details = json.loads(details)
+                except Exception:
+                    pass
+
             rule = RuleState(
                 rule_id=rule_id,
                 rule_name=rule_name,
-                passed=rule_passed,
+                passed=bool(rule_passed),
                 failed_count=failed_count,
                 execution_source=execution_source or "unknown",
                 severity=severity,
                 failure_mode=failure_mode,
-                details=details,
+                details=parsed_details,
                 message=message,
                 column=column_name,
                 id=rule_result_id,
@@ -438,7 +444,7 @@ class PostgresStore(StateBackend):
             dataset_fingerprint=dataset_fingerprint,
             contract_name=contract_name,
             dataset_uri=dataset_name or "",
-            run_at=run_at,
+            run_at=run_at if isinstance(run_at, datetime) else datetime.now(timezone.utc),
             summary=summary,
             rules=rules,
             schema_version=schema_version or "2.0",
@@ -451,14 +457,13 @@ class PostgresStore(StateBackend):
         conn = self._get_conn()
 
         run_sql = f"""
-        SELECT id, contract_fingerprint, contract_name, dataset_fingerprint,
+        SELECT TOP 1 id, contract_fingerprint, contract_name, dataset_fingerprint,
                dataset_name, run_at, duration_ms, passed, total_rows, total_rules,
                passed_rules, failed_rules, blocking_failures, warning_failures,
                info_failures, execution_stats, schema_version, engine_version
         FROM {self.RUNS_TABLE}
-        WHERE contract_fingerprint = %s
+        WHERE contract_fingerprint = ?
         ORDER BY run_at DESC
-        LIMIT 1
         """
 
         rule_sql = f"""
@@ -466,22 +471,22 @@ class PostgresStore(StateBackend):
                severity, message, column_name, execution_source,
                failure_mode, details, context, samples
         FROM {self.RULE_RESULTS_TABLE}
-        WHERE run_id = %s
+        WHERE run_id = ?
         ORDER BY id
         """
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(run_sql, (contract_fingerprint,))
-                run_row = cur.fetchone()
-                if not run_row:
-                    return None
+            cursor = conn.cursor()
+            cursor.execute(run_sql, (contract_fingerprint,))
+            run_row = cursor.fetchone()
+            if not run_row:
+                return None
 
-                run_id = run_row[0]
-                cur.execute(rule_sql, (run_id,))
-                rule_rows = cur.fetchall()
+            run_id = run_row[0]
+            cursor.execute(rule_sql, (run_id,))
+            rule_rows = cursor.fetchall()
 
-                return self._build_state_from_rows(run_row, rule_rows)
+            return self._build_state_from_rows(run_row, rule_rows)
         except Exception:
             return None
 
@@ -494,14 +499,13 @@ class PostgresStore(StateBackend):
         conn = self._get_conn()
 
         run_sql = f"""
-        SELECT id, contract_fingerprint, contract_name, dataset_fingerprint,
+        SELECT TOP (?) id, contract_fingerprint, contract_name, dataset_fingerprint,
                dataset_name, run_at, duration_ms, passed, total_rows, total_rules,
                passed_rules, failed_rules, blocking_failures, warning_failures,
                info_failures, execution_stats, schema_version, engine_version
         FROM {self.RUNS_TABLE}
-        WHERE contract_fingerprint = %s
+        WHERE contract_fingerprint = ?
         ORDER BY run_at DESC
-        LIMIT %s
         """
 
         rule_sql = f"""
@@ -509,37 +513,35 @@ class PostgresStore(StateBackend):
                severity, message, column_name, execution_source,
                failure_mode, details, context, samples
         FROM {self.RULE_RESULTS_TABLE}
-        WHERE run_id = ANY(%s)
+        WHERE run_id IN (?)
         ORDER BY run_id, id
         """
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(run_sql, (contract_fingerprint, limit))
-                run_rows = cur.fetchall()
-                if not run_rows:
-                    return []
+            cursor = conn.cursor()
+            cursor.execute(run_sql, (limit, contract_fingerprint))
+            run_rows = cursor.fetchall()
+            if not run_rows:
+                return []
 
-                # Get all rule results in one query
-                run_ids = [row[0] for row in run_rows]
-                cur.execute(rule_sql, (run_ids,))
-                all_rule_rows = cur.fetchall()
+            # Get all rule results (one query per run for simplicity)
+            states = []
+            rule_sql_single = f"""
+            SELECT id, run_id, rule_id, rule_name, passed, failed_count,
+                   severity, message, column_name, execution_source,
+                   failure_mode, details, context, samples
+            FROM {self.RULE_RESULTS_TABLE}
+            WHERE run_id = ?
+            ORDER BY id
+            """
+            for run_row in run_rows:
+                run_id = run_row[0]
+                cursor.execute(rule_sql_single, (run_id,))
+                rule_rows = cursor.fetchall()
+                state = self._build_state_from_rows(run_row, rule_rows)
+                states.append(state)
 
-                # Group rule rows by run_id
-                rules_by_run: Dict[int, List[tuple]] = {}
-                for rule_row in all_rule_rows:
-                    run_id = rule_row[1]
-                    rules_by_run.setdefault(run_id, []).append(rule_row)
-
-                # Build states
-                states = []
-                for run_row in run_rows:
-                    run_id = run_row[0]
-                    rule_rows = rules_by_run.get(run_id, [])
-                    state = self._build_state_from_rows(run_row, rule_rows)
-                    states.append(state)
-
-                return states
+            return states
         except Exception:
             return []
 
@@ -552,14 +554,13 @@ class PostgresStore(StateBackend):
         conn = self._get_conn()
 
         run_sql = f"""
-        SELECT id, contract_fingerprint, contract_name, dataset_fingerprint,
+        SELECT TOP 1 id, contract_fingerprint, contract_name, dataset_fingerprint,
                dataset_name, run_at, duration_ms, passed, total_rows, total_rules,
                passed_rules, failed_rules, blocking_failures, warning_failures,
                info_failures, execution_stats, schema_version, engine_version
         FROM {self.RUNS_TABLE}
-        WHERE contract_fingerprint = %s AND run_at <= %s
+        WHERE contract_fingerprint = ? AND run_at <= ?
         ORDER BY run_at DESC
-        LIMIT 1
         """
 
         rule_sql = f"""
@@ -567,22 +568,22 @@ class PostgresStore(StateBackend):
                severity, message, column_name, execution_source,
                failure_mode, details, context, samples
         FROM {self.RULE_RESULTS_TABLE}
-        WHERE run_id = %s
+        WHERE run_id = ?
         ORDER BY id
         """
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(run_sql, (contract_fingerprint, timestamp))
-                run_row = cur.fetchone()
-                if not run_row:
-                    return None
+            cursor = conn.cursor()
+            cursor.execute(run_sql, (contract_fingerprint, timestamp))
+            run_row = cursor.fetchone()
+            if not run_row:
+                return None
 
-                run_id = run_row[0]
-                cur.execute(rule_sql, (run_id,))
-                rule_rows = cur.fetchall()
+            run_id = run_row[0]
+            cursor.execute(rule_sql, (run_id,))
+            rule_rows = cursor.fetchall()
 
-                return self._build_state_from_rows(run_row, rule_rows)
+            return self._build_state_from_rows(run_row, rule_rows)
         except Exception:
             return None
 
@@ -597,19 +598,18 @@ class PostgresStore(StateBackend):
         # Delete runs not in the top keep_count (cascade deletes rule_results)
         sql_delete = f"""
         DELETE FROM {self.RUNS_TABLE}
-        WHERE contract_fingerprint = %s
+        WHERE contract_fingerprint = ?
         AND id NOT IN (
-            SELECT id FROM {self.RUNS_TABLE}
-            WHERE contract_fingerprint = %s
+            SELECT TOP (?) id FROM {self.RUNS_TABLE}
+            WHERE contract_fingerprint = ?
             ORDER BY run_at DESC
-            LIMIT %s
         )
         """
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql_delete, (contract_fingerprint, contract_fingerprint, keep_count))
-                deleted = cur.rowcount
+            cursor = conn.cursor()
+            cursor.execute(sql_delete, (contract_fingerprint, keep_count, contract_fingerprint))
+            deleted = cursor.rowcount
             conn.commit()
             return deleted
         except Exception:
@@ -626,10 +626,10 @@ class PostgresStore(StateBackend):
         """
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-                return [row[0] for row in rows]
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            return [row[0] for row in rows]
         except Exception:
             return []
 
@@ -647,15 +647,15 @@ class PostgresStore(StateBackend):
         conn = self._get_conn()
 
         try:
-            with conn.cursor() as cur:
-                if contract_fingerprint:
-                    cur.execute(
-                        f"DELETE FROM {self.RUNS_TABLE} WHERE contract_fingerprint = %s",
-                        (contract_fingerprint,)
-                    )
-                else:
-                    cur.execute(f"DELETE FROM {self.RUNS_TABLE}")
-                deleted = cur.rowcount
+            cursor = conn.cursor()
+            if contract_fingerprint:
+                cursor.execute(
+                    f"DELETE FROM {self.RUNS_TABLE} WHERE contract_fingerprint = ?",
+                    (contract_fingerprint,)
+                )
+            else:
+                cursor.execute(f"DELETE FROM {self.RUNS_TABLE}")
+            deleted = cursor.rowcount
             conn.commit()
             return deleted
         except Exception:
@@ -674,24 +674,24 @@ class PostgresStore(StateBackend):
         INSERT INTO {self.ANNOTATIONS_TABLE} (
             run_id, rule_result_id, actor_type, actor_id,
             annotation_type, summary, payload, created_at
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s
-        ) RETURNING id
+        ) OUTPUT INSERTED.id VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?
+        )
         """
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql, (
-                    annotation.run_id,
-                    annotation.rule_result_id,
-                    annotation.actor_type,
-                    annotation.actor_id,
-                    annotation.annotation_type,
-                    annotation.summary,
-                    json.dumps(annotation.payload) if annotation.payload else None,
-                    annotation.created_at or datetime.now(timezone.utc),
-                ))
-                annotation_id = cur.fetchone()[0]
+            cursor = conn.cursor()
+            cursor.execute(sql, (
+                annotation.run_id,
+                annotation.rule_result_id,
+                annotation.actor_type,
+                annotation.actor_id,
+                annotation.annotation_type,
+                annotation.summary,
+                json.dumps(annotation.payload) if annotation.payload else None,
+                annotation.created_at or datetime.now(timezone.utc),
+            ))
+            annotation_id = cursor.fetchone()[0]
             conn.commit()
 
             annotation.id = annotation_id
@@ -713,7 +713,7 @@ class PostgresStore(StateBackend):
             SELECT id, run_id, rule_result_id, actor_type, actor_id,
                    annotation_type, summary, payload, created_at
             FROM {self.ANNOTATIONS_TABLE}
-            WHERE run_id = %s AND rule_result_id = %s
+            WHERE run_id = ? AND rule_result_id = ?
             ORDER BY created_at DESC
             """
             params = (run_id, rule_result_id)
@@ -722,35 +722,44 @@ class PostgresStore(StateBackend):
             SELECT id, run_id, rule_result_id, actor_type, actor_id,
                    annotation_type, summary, payload, created_at
             FROM {self.ANNOTATIONS_TABLE}
-            WHERE run_id = %s
+            WHERE run_id = ?
             ORDER BY created_at DESC
             """
             params = (run_id,)
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                rows = cur.fetchall()
+            cursor = conn.cursor()
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
 
-                annotations = []
-                for row in rows:
-                    (
-                        ann_id, run_id, rule_result_id, actor_type, actor_id,
-                        annotation_type, summary, payload, created_at
-                    ) = row
-                    annotation = Annotation(
-                        id=ann_id,
-                        run_id=run_id,
-                        rule_result_id=rule_result_id,
-                        actor_type=actor_type,
-                        actor_id=actor_id,
-                        annotation_type=annotation_type,
-                        summary=summary,
-                        payload=payload,
-                        created_at=created_at,
-                    )
-                    annotations.append(annotation)
-                return annotations
+            annotations = []
+            for row in rows:
+                (
+                    ann_id, run_id_val, rule_result_id_val, actor_type, actor_id,
+                    annotation_type, summary, payload, created_at
+                ) = row
+
+                # Parse payload from JSON string
+                parsed_payload = None
+                if payload:
+                    try:
+                        parsed_payload = json.loads(payload)
+                    except Exception:
+                        pass
+
+                annotation = Annotation(
+                    id=ann_id,
+                    run_id=run_id_val,
+                    rule_result_id=rule_result_id_val,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    annotation_type=annotation_type,
+                    summary=summary,
+                    payload=parsed_payload,
+                    created_at=created_at if isinstance(created_at, datetime) else None,
+                )
+                annotations.append(annotation)
+            return annotations
         except Exception:
             return []
 
@@ -765,24 +774,23 @@ class PostgresStore(StateBackend):
         # Get the run
         if run_id is not None:
             run_sql = f"""
-            SELECT id, contract_fingerprint, contract_name, dataset_fingerprint,
+            SELECT TOP 1 id, contract_fingerprint, contract_name, dataset_fingerprint,
                    dataset_name, run_at, duration_ms, passed, total_rows, total_rules,
                    passed_rules, failed_rules, blocking_failures, warning_failures,
                    info_failures, execution_stats, schema_version, engine_version
             FROM {self.RUNS_TABLE}
-            WHERE id = %s AND contract_fingerprint = %s
+            WHERE id = ? AND contract_fingerprint = ?
             """
             run_params = (run_id, contract_fingerprint)
         else:
             run_sql = f"""
-            SELECT id, contract_fingerprint, contract_name, dataset_fingerprint,
+            SELECT TOP 1 id, contract_fingerprint, contract_name, dataset_fingerprint,
                    dataset_name, run_at, duration_ms, passed, total_rows, total_rules,
                    passed_rules, failed_rules, blocking_failures, warning_failures,
                    info_failures, execution_stats, schema_version, engine_version
             FROM {self.RUNS_TABLE}
-            WHERE contract_fingerprint = %s
+            WHERE contract_fingerprint = ?
             ORDER BY run_at DESC
-            LIMIT 1
             """
             run_params = (contract_fingerprint,)
 
@@ -791,7 +799,7 @@ class PostgresStore(StateBackend):
                severity, message, column_name, execution_source,
                failure_mode, details, context, samples
         FROM {self.RULE_RESULTS_TABLE}
-        WHERE run_id = %s
+        WHERE run_id = ?
         ORDER BY id
         """
 
@@ -799,51 +807,59 @@ class PostgresStore(StateBackend):
         SELECT id, run_id, rule_result_id, actor_type, actor_id,
                annotation_type, summary, payload, created_at
         FROM {self.ANNOTATIONS_TABLE}
-        WHERE run_id = %s
+        WHERE run_id = ?
         ORDER BY created_at DESC
         """
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(run_sql, run_params)
-                run_row = cur.fetchone()
-                if not run_row:
-                    return None
+            cursor = conn.cursor()
+            cursor.execute(run_sql, run_params)
+            run_row = cursor.fetchone()
+            if not run_row:
+                return None
 
-                actual_run_id = run_row[0]
+            actual_run_id = run_row[0]
 
-                # Get rules
-                cur.execute(rule_sql, (actual_run_id,))
-                rule_rows = cur.fetchall()
+            # Get rules
+            cursor.execute(rule_sql, (actual_run_id,))
+            rule_rows = cursor.fetchall()
 
-                # Get annotations
-                cur.execute(ann_sql, (actual_run_id,))
-                ann_rows = cur.fetchall()
+            # Get annotations
+            cursor.execute(ann_sql, (actual_run_id,))
+            ann_rows = cursor.fetchall()
 
-                # Build state
-                state = self._build_state_from_rows(run_row, rule_rows)
+            # Build state
+            state = self._build_state_from_rows(run_row, rule_rows)
 
-                # Build annotations list
-                annotations = []
-                for row in ann_rows:
-                    (
-                        ann_id, run_id_val, rule_result_id, actor_type, actor_id,
-                        annotation_type, summary, payload, created_at
-                    ) = row
-                    annotations.append(Annotation(
-                        id=ann_id,
-                        run_id=run_id_val,
-                        rule_result_id=rule_result_id,
-                        actor_type=actor_type,
-                        actor_id=actor_id,
-                        annotation_type=annotation_type,
-                        summary=summary,
-                        payload=payload,
-                        created_at=created_at,
-                    ))
+            # Build annotations list
+            annotations = []
+            for row in ann_rows:
+                (
+                    ann_id, run_id_val, rule_result_id_val, actor_type, actor_id,
+                    annotation_type, summary, payload, created_at
+                ) = row
 
-                self._attach_annotations_to_state(state, annotations)
-                return state
+                parsed_payload = None
+                if payload:
+                    try:
+                        parsed_payload = json.loads(payload)
+                    except Exception:
+                        pass
+
+                annotations.append(Annotation(
+                    id=ann_id,
+                    run_id=run_id_val,
+                    rule_result_id=rule_result_id_val,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    annotation_type=annotation_type,
+                    summary=summary,
+                    payload=parsed_payload,
+                    created_at=created_at if isinstance(created_at, datetime) else None,
+                ))
+
+            self._attach_annotations_to_state(state, annotations)
+            return state
         except Exception:
             return None
 
@@ -853,8 +869,7 @@ class PostgresStore(StateBackend):
         limit: int = 10,
     ) -> List[ValidationState]:
         """Get recent history with annotations loaded."""
-        # For efficiency, we load history without annotations first,
-        # then load annotations in batch
+        # Get history first
         states = self.get_history(contract_fingerprint, limit=limit)
         if not states:
             return []
@@ -863,50 +878,58 @@ class PostgresStore(StateBackend):
         run_ids = [s.id for s in states if s.id is not None]
 
         if not run_ids:
-            # No IDs, just return empty annotations
             for state in states:
                 state.annotations = []
                 for rule in state.rules:
                     rule.annotations = []
             return states
 
+        # Build IN clause (SQL Server style)
+        placeholders = ",".join("?" * len(run_ids))
         ann_sql = f"""
         SELECT id, run_id, rule_result_id, actor_type, actor_id,
                annotation_type, summary, payload, created_at
         FROM {self.ANNOTATIONS_TABLE}
-        WHERE run_id = ANY(%s)
+        WHERE run_id IN ({placeholders})
         ORDER BY created_at DESC
         """
 
         try:
-            with conn.cursor() as cur:
-                cur.execute(ann_sql, (run_ids,))
-                ann_rows = cur.fetchall()
+            cursor = conn.cursor()
+            cursor.execute(ann_sql, run_ids)
+            ann_rows = cursor.fetchall()
 
             # Build annotations index
-            # Key: (run_id, rule_result_id or None)
             annotations_index: Dict[int, Dict[Optional[int], List[Annotation]]] = {}
 
             for row in ann_rows:
                 (
-                    ann_id, run_id, rule_result_id, actor_type, actor_id,
+                    ann_id, run_id_val, rule_result_id_val, actor_type, actor_id,
                     annotation_type, summary, payload, created_at
                 ) = row
+
+                parsed_payload = None
+                if payload:
+                    try:
+                        parsed_payload = json.loads(payload)
+                    except Exception:
+                        pass
+
                 annotation = Annotation(
                     id=ann_id,
-                    run_id=run_id,
-                    rule_result_id=rule_result_id,
+                    run_id=run_id_val,
+                    rule_result_id=rule_result_id_val,
                     actor_type=actor_type,
                     actor_id=actor_id,
                     annotation_type=annotation_type,
                     summary=summary,
-                    payload=payload,
-                    created_at=created_at,
+                    payload=parsed_payload,
+                    created_at=created_at if isinstance(created_at, datetime) else None,
                 )
 
-                if run_id not in annotations_index:
-                    annotations_index[run_id] = {}
-                annotations_index[run_id].setdefault(rule_result_id, []).append(annotation)
+                if run_id_val not in annotations_index:
+                    annotations_index[run_id_val] = {}
+                annotations_index[run_id_val].setdefault(rule_result_id_val, []).append(annotation)
 
             # Attach to states
             for state in states:
@@ -925,7 +948,6 @@ class PostgresStore(StateBackend):
 
             return states
         except Exception:
-            # On error, return states without annotations
             for state in states:
                 state.annotations = []
                 for rule in state.rules:
@@ -939,9 +961,9 @@ class PostgresStore(StateBackend):
             self._conn = None
 
     def __repr__(self) -> str:
-        host = self._conn_params.get("host", "?")
-        dbname = self._conn_params.get("dbname", "?")
-        return f"PostgresStore(host={host}, dbname={dbname})"
+        server = self._conn_params.get("server", "?")
+        database = self._conn_params.get("database", "?")
+        return f"SQLServerStore(server={server}, database={database})"
 
     def __del__(self):
         self.close()

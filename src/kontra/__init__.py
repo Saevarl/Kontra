@@ -904,6 +904,301 @@ def config(env: Optional[str] = None) -> KontraConfig:
 
 
 # =============================================================================
+# Annotation Functions
+# =============================================================================
+
+
+def annotate(
+    contract: str,
+    *,
+    run_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
+    actor_type: str = "agent",
+    actor_id: str,
+    annotation_type: str,
+    summary: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> int:
+    """
+    Save an annotation on a validation run or specific rule.
+
+    Annotations provide "memory without authority" - agents and humans can
+    record context about runs (resolutions, root causes, acknowledgments)
+    without affecting Kontra's validation behavior.
+
+    Invariants:
+    - Append-only: annotations are never updated or deleted
+    - Uninterpreted: Kontra stores annotation_type but doesn't define vocabulary
+    - Never read during validation or diff
+
+    Args:
+        contract: Contract name or path
+        run_id: Run ID to annotate (default: latest run).
+            For file-based backends: string like "2024-01-15T09-30-00_abc123"
+            For database backends: integer ID as string
+        rule_id: Optional rule ID to annotate a specific rule
+        actor_type: Who is creating the annotation ("agent" | "human" | "system")
+        actor_id: Identifier for the actor (e.g., "repair-agent-v2", "alice@example.com")
+        annotation_type: Type of annotation (e.g., "resolution", "root_cause", "acknowledged")
+        summary: Human-readable summary
+        payload: Optional structured data (dict)
+
+    Returns:
+        Annotation ID (integer)
+
+    Raises:
+        ValueError: If contract or run not found, or rule_id not found in run
+        RuntimeError: If annotation save fails
+
+    Common annotation_type values (suggested, not enforced):
+    - "resolution": I fixed this
+    - "root_cause": This failed because...
+    - "false_positive": This isn't actually a problem
+    - "acknowledged": I saw this, will address later
+    - "suppressed": Intentionally ignoring this
+    - "note": General comment
+
+    Example:
+        # Annotate the latest run for a contract
+        kontra.annotate(
+            "users_contract.yml",
+            actor_type="agent",
+            actor_id="repair-agent-v2",
+            annotation_type="resolution",
+            summary="Fixed null emails by backfilling from user_profiles table",
+        )
+
+        # Annotate a specific rule
+        kontra.annotate(
+            "users_contract.yml",
+            rule_id="COL:email:not_null",
+            actor_type="human",
+            actor_id="alice@example.com",
+            annotation_type="false_positive",
+            summary="These are service accounts, nulls are expected",
+        )
+
+        # Annotate with structured payload
+        kontra.annotate(
+            "users_contract.yml",
+            actor_type="agent",
+            actor_id="analysis-agent",
+            annotation_type="root_cause",
+            summary="Upstream data source failed validation",
+            payload={
+                "upstream_source": "crm_export",
+                "failure_time": "2024-01-15T08:30:00Z",
+                "affected_rows": 1523,
+            },
+        )
+    """
+    from kontra.state.backends import get_default_store
+    from kontra.state.types import Annotation
+    from kontra.state.fingerprint import fingerprint_contract
+    from kontra.config.loader import ContractLoader
+
+    store = get_default_store()
+    if store is None:
+        raise RuntimeError("State store not available")
+
+    # Resolve contract to fingerprint
+    contract_fp = _resolve_contract_fingerprint(contract, store)
+    if contract_fp is None:
+        raise ValueError(f"Contract not found: {contract}")
+
+    # Get the run state
+    if run_id is None:
+        # Get latest run
+        state = store.get_latest(contract_fp)
+        if state is None:
+            raise ValueError(f"No runs found for contract: {contract}")
+    else:
+        # Find specific run
+        states = store.get_history(contract_fp, limit=100)
+        state = None
+
+        # Try to match run_id as integer (database backends) or string timestamp
+        for s in states:
+            # Check run_at timestamp match
+            if s.run_at.isoformat() == run_id:
+                state = s
+                break
+            # Check ID match (for database backends)
+            if s.id is not None and str(s.id) == run_id:
+                state = s
+                break
+
+        if state is None:
+            raise ValueError(f"Run not found: {run_id}")
+
+    # If annotating a specific rule, find the rule_result_id
+    rule_result_id = None
+    if rule_id is not None:
+        found = False
+        for rule in state.rules:
+            if rule.rule_id == rule_id:
+                found = True
+                rule_result_id = rule.id  # May be None for file backends
+                break
+
+        if not found:
+            raise ValueError(f"Rule not found in run: {rule_id}")
+
+    # Create the annotation
+    annotation = Annotation(
+        run_id=state.id or 0,
+        rule_result_id=rule_result_id,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        annotation_type=annotation_type,
+        summary=summary,
+        payload=payload,
+    )
+
+    # Save annotation - method depends on backend type
+    try:
+        # For database backends, save_annotation works directly
+        if hasattr(store, "save_annotation") and not isinstance(store, type):
+            try:
+                return store.save_annotation(annotation)
+            except NotImplementedError:
+                pass
+
+        # For file-based backends, need to find the run_id string
+        if hasattr(store, "save_annotation_for_run"):
+            # Find the run_id string by scanning the runs directory
+            run_id_str = _find_run_id_string(store, contract_fp, state)
+            if run_id_str is None:
+                raise RuntimeError("Could not find run file for annotation")
+            return store.save_annotation_for_run(contract_fp, run_id_str, annotation)
+
+        raise RuntimeError("Backend does not support annotations")
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to save annotation: {e}") from e
+
+
+def _find_run_id_string(store: Any, contract_fp: str, state: Any) -> Optional[str]:
+    """
+    Find the run_id string for a state in file-based backends.
+
+    This is needed because file-based backends use string run IDs but
+    ValidationState.id is an integer hash.
+    """
+    from pathlib import Path
+
+    # LocalStore
+    if hasattr(store, "_runs_dir"):
+        runs_dir = store._runs_dir(contract_fp)
+        if runs_dir.exists():
+            for filepath in runs_dir.glob("*.json"):
+                if filepath.name.endswith(".ann.jsonl"):
+                    continue
+                loaded = store._load_state(filepath)
+                if loaded and loaded.id == state.id:
+                    return filepath.stem
+        return None
+
+    # S3Store - similar pattern but via fsspec
+    if hasattr(store, "_runs_prefix") and hasattr(store, "_get_fs"):
+        fs = store._get_fs()
+        prefix = store._runs_prefix(contract_fp)
+        try:
+            all_files = fs.glob(f"s3://{prefix}/*.json")
+            files = [f for f in all_files if not f.endswith(".ann.jsonl")]
+            for filepath in files:
+                loaded = store._load_state(filepath)
+                if loaded and loaded.id == state.id:
+                    return filepath.rsplit("/", 1)[-1].replace(".json", "")
+        except Exception:
+            pass
+        return None
+
+    return None
+
+
+def get_run_with_annotations(
+    contract: str,
+    run_id: Optional[str] = None,
+) -> Optional[ValidationResult]:
+    """
+    Get a validation run with its annotations loaded.
+
+    By default, annotations are not loaded (they're opt-in for performance).
+    Use this function when you need to see annotations.
+
+    Args:
+        contract: Contract name or path
+        run_id: Run ID (default: latest run)
+
+    Returns:
+        ValidationResult with annotations, or None if not found
+
+    Example:
+        result = kontra.get_run_with_annotations("users_contract.yml")
+        if result:
+            for rule in result.rules:
+                print(f"{rule.rule_id}: {rule.annotations}")
+    """
+    from kontra.state.backends import get_default_store
+
+    store = get_default_store()
+    if store is None:
+        return None
+
+    try:
+        contract_fp = _resolve_contract_fingerprint(contract, store)
+        if contract_fp is None:
+            return None
+
+        # Convert run_id string to integer if needed
+        run_id_int = None
+        if run_id is not None:
+            try:
+                run_id_int = int(run_id)
+            except ValueError:
+                # It's a timestamp or string ID - need to find the matching state
+                states = store.get_history(contract_fp, limit=100)
+                for s in states:
+                    if s.run_at.isoformat() == run_id:
+                        run_id_int = s.id
+                        break
+
+        state = store.get_run_with_annotations(contract_fp, run_id_int)
+        if state is None:
+            return None
+
+        # Convert to ValidationResult
+        return ValidationResult(
+            passed=state.summary.passed,
+            dataset=state.dataset_uri,
+            total_rows=state.summary.row_count or 0,
+            total_rules=state.summary.total_rules,
+            passed_count=state.summary.passed_rules,
+            failed_count=state.summary.blocking_failures,
+            warning_count=state.summary.warning_failures,
+            rules=[
+                RuleResult(
+                    rule_id=r.rule_id,
+                    name=r.rule_name,
+                    passed=r.passed,
+                    failed_count=r.failed_count,
+                    message=r.message or "",
+                    severity=r.severity,
+                    source=r.execution_source,
+                    column=r.column,
+                    annotations=[a.to_dict() for a in r.annotations] if r.annotations else None,
+                )
+                for r in state.rules
+            ],
+            annotations=[a.to_dict() for a in state.annotations] if state.annotations else None,
+        )
+    except Exception as e:
+        log_exception(_logger, "Failed to get run with annotations", e)
+        return None
+
+
+# =============================================================================
 # Service/Agent Support Functions
 # =============================================================================
 
@@ -988,7 +1283,7 @@ def list_rules() -> List[Dict[str, Any]]:
         },
         "dtype": {
             "description": "Fails if column data type doesn't match expected type",
-            "params": {"column": "required", "expected": "required"},
+            "params": {"column": "required", "type": "required"},
             "scope": "column",
         },
         "min_rows": {
@@ -1128,6 +1423,9 @@ __all__ = [
     "has_runs",
     "list_profiles",
     "get_profile",
+    # Annotation functions
+    "annotate",
+    "get_run_with_annotations",
     # Configuration functions
     "resolve",
     "config",

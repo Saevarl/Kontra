@@ -194,3 +194,62 @@ Outputs detailed timing:
 - `execute_ms`: SQL execution
 - `data_load_ms`: data loading (if needed)
 - `polars_ms`: Polars execution
+
+## Scout Presets & Performance
+
+Scout uses three presets with different speed/detail tradeoffs:
+
+| Preset | PostgreSQL | SQL Server | What You Get |
+|--------|------------|------------|--------------|
+| **lite** | ~37ms | ~27ms | Schema, null counts, distinct counts (metadata only) |
+| **standard** | ~68ms | ~40ms | Lite + numeric stats, top values (strategic queries) |
+| **deep** | ~4300ms | ~570ms | Standard + median, percentiles (full scan) |
+
+*Benchmarks on 100K rows*
+
+### How Presets Work
+
+**Lite** reads only metadata:
+- PostgreSQL: `pg_stats` (null_frac, n_distinct, most_common_vals)
+- Parquet: Row-group statistics (null_count, min/max)
+- SQL Server: `sys.dm_db_stats_histogram` + sampled null query
+
+**Standard** uses strategic queries:
+- Metadata for null/distinct counts
+- `TABLESAMPLE SYSTEM` for numeric stats (1% of blocks, not rows)
+- Batched `GROUP BY` for low-cardinality columns only
+- Skips expensive operations (median, percentiles)
+
+**Deep** does a full table scan for exact values.
+
+### Choosing a Preset
+
+```python
+# Quick schema exploration
+profile = kontra.scout("data.parquet", preset="lite")
+
+# Balanced detail (default)
+profile = kontra.scout("data.parquet", preset="standard")
+
+# Full analysis for reports
+profile = kontra.scout("data.parquet", preset="deep")
+
+# LLM-optimized (schema + key stats)
+profile = kontra.scout("data.parquet", preset="llm")
+```
+
+### Standard vs Deep Trade-offs
+
+Standard gives you ~80% of the information at ~1% of the cost:
+
+| Metric | Standard | Deep |
+|--------|----------|------|
+| null_count | ✅ metadata | ✅ exact |
+| distinct_count | ✅ estimated | ✅ exact |
+| min/max | ✅ sampled | ✅ exact |
+| mean/std | ✅ sampled | ✅ exact |
+| median | ❌ | ✅ exact |
+| percentiles | ❌ | ✅ exact |
+| top_values | ✅ low/med cardinality | ✅ all |
+
+Standard's numeric stats come from block sampling, so values may vary slightly from exact (typically within 1-2%).

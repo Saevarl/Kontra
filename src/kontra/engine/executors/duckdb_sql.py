@@ -25,6 +25,21 @@ import duckdb
 from kontra.engine.backends.duckdb_session import create_duckdb_connection
 from kontra.engine.backends.duckdb_utils import esc_ident, lit_str
 from kontra.connectors.handle import DatasetHandle
+from kontra.engine.sql_utils import (
+    esc_ident as sql_esc_ident,
+    agg_min_rows,
+    agg_max_rows,
+    agg_freshness,
+    agg_range,
+    agg_regex,
+    agg_compare,
+    agg_conditional_not_null,
+    agg_conditional_range,
+    exists_not_null,
+    results_from_row,
+    SQL_OP_MAP,
+    RULE_KIND_TO_FAILURE_MODE,
+)
 
 # Optional: s3fs + polars for fallback when DuckDB httpfs fails
 try:
@@ -197,171 +212,8 @@ def _create_source_view(
 
 # ------------------------------- SQL helpers -------------------------------- #
 
-def _agg_not_null(col: str, rule_id: str) -> str:
-    return (
-        f"SUM(CASE WHEN {esc_ident(col)} IS NULL THEN 1 ELSE 0 END) "
-        f"AS {esc_ident(rule_id)}"
-    )
-
-
-def _agg_min_rows(n: int, rule_id: str) -> str:
-    return f"GREATEST(0, {int(n)} - COUNT(*)) AS {esc_ident(rule_id)}"
-
-
-def _agg_max_rows(n: int, rule_id: str) -> str:
-    return f"GREATEST(0, COUNT(*) - {int(n)}) AS {esc_ident(rule_id)}"
-
-
-def _agg_freshness(col: str, max_age_seconds: int, rule_id: str) -> str:
-    """
-    Aggregate expression for freshness rule in DuckDB.
-
-    Returns 0 if data is fresh (MAX(col) >= NOW() - interval), 1 otherwise.
-    """
-    return (
-        f"CASE WHEN MAX({esc_ident(col)}) >= "
-        f"(NOW() - INTERVAL '{int(max_age_seconds)} seconds') "
-        f"THEN 0 ELSE 1 END AS {esc_ident(rule_id)}"
-    )
-
-
-def _agg_range(col: str, min_val, max_val, rule_id: str) -> str:
-    """
-    Aggregate expression for range rule in DuckDB.
-
-    Counts values outside [min, max] range. NULLs are counted as failures.
-    """
-    conditions = []
-    if min_val is not None:
-        conditions.append(f"{esc_ident(col)} < {min_val}")
-    if max_val is not None:
-        conditions.append(f"{esc_ident(col)} > {max_val}")
-
-    out_of_range = " OR ".join(conditions) if conditions else "FALSE"
-
-    return (
-        f"SUM(CASE WHEN {esc_ident(col)} IS NULL OR ({out_of_range}) THEN 1 ELSE 0 END) "
-        f"AS {esc_ident(rule_id)}"
-    )
-
-
-def _agg_regex(col: str, pattern: str, rule_id: str) -> str:
-    """
-    Aggregate expression for regex rule in DuckDB.
-
-    Counts values that don't match the regex pattern. NULLs are counted as failures.
-    Uses DuckDB's regexp_matches() function.
-    """
-    escaped_pattern = pattern.replace("'", "''")
-    return (
-        f"SUM(CASE WHEN {esc_ident(col)} IS NULL "
-        f"OR NOT regexp_matches(CAST({esc_ident(col)} AS VARCHAR), '{escaped_pattern}') "
-        f"THEN 1 ELSE 0 END) AS {esc_ident(rule_id)}"
-    )
-
-
-# SQL comparison operators
-_SQL_OP_MAP = {
-    ">": ">",
-    ">=": ">=",
-    "<": "<",
-    "<=": "<=",
-    "==": "=",
-    "!=": "<>",
-}
-
-
-def _agg_compare(left: str, right: str, op: str, rule_id: str) -> str:
-    """
-    Aggregate expression for compare rule in DuckDB.
-
-    Counts rows where either column is NULL or comparison fails.
-    """
-    l = esc_ident(left)
-    r = esc_ident(right)
-    sql_op = _SQL_OP_MAP.get(op, op)
-    return (
-        f"SUM(CASE WHEN {l} IS NULL OR {r} IS NULL "
-        f"OR NOT ({l} {sql_op} {r}) THEN 1 ELSE 0 END) AS {esc_ident(rule_id)}"
-    )
-
-
-def _agg_conditional_not_null(
-    column: str, when_column: str, when_op: str, when_value: Any, rule_id: str
-) -> str:
-    """
-    Aggregate expression for conditional_not_null rule in DuckDB.
-
-    Counts rows where condition is TRUE AND column is NULL.
-    """
-    col = esc_ident(column)
-    when_col = esc_ident(when_column)
-    sql_op = _SQL_OP_MAP.get(when_op, when_op)
-
-    # Handle NULL value in condition
-    if when_value is None:
-        if when_op == "==":
-            condition = f"{when_col} IS NULL"
-        elif when_op == "!=":
-            condition = f"{when_col} IS NOT NULL"
-        else:
-            condition = "1=0"
-    else:
-        val = lit_str(str(when_value)) if isinstance(when_value, str) else str(when_value)
-        if isinstance(when_value, bool):
-            val = "TRUE" if when_value else "FALSE"
-        condition = f"{when_col} {sql_op} {val}"
-
-    return (
-        f"SUM(CASE WHEN ({condition}) AND {col} IS NULL THEN 1 ELSE 0 END) "
-        f"AS {esc_ident(rule_id)}"
-    )
-
-
-def _agg_conditional_range(
-    column: str,
-    when_column: str,
-    when_op: str,
-    when_value: Any,
-    min_val: Any,
-    max_val: Any,
-    rule_id: str,
-) -> str:
-    """
-    Aggregate expression for conditional_range rule in DuckDB.
-
-    Counts rows where condition is TRUE AND (column is NULL OR outside range).
-    """
-    col = esc_ident(column)
-    when_col = esc_ident(when_column)
-    sql_op = _SQL_OP_MAP.get(when_op, when_op)
-
-    # Handle NULL value in condition
-    if when_value is None:
-        if when_op == "==":
-            condition = f"{when_col} IS NULL"
-        elif when_op == "!=":
-            condition = f"{when_col} IS NOT NULL"
-        else:
-            condition = "1=0"
-    else:
-        val = lit_str(str(when_value)) if isinstance(when_value, str) else str(when_value)
-        if isinstance(when_value, bool):
-            val = "TRUE" if when_value else "FALSE"
-        condition = f"{when_col} {sql_op} {val}"
-
-    # Build range violation part
-    range_parts = [f"{col} IS NULL"]
-    if min_val is not None:
-        range_parts.append(f"{col} < {min_val}")
-    if max_val is not None:
-        range_parts.append(f"{col} > {max_val}")
-    range_violation = " OR ".join(range_parts)
-
-    return (
-        f"SUM(CASE WHEN ({condition}) AND ({range_violation}) THEN 1 ELSE 0 END) "
-        f"AS {esc_ident(rule_id)}"
-    )
+# DuckDB dialect constant
+DIALECT = "duckdb"
 
 
 def _assemble_single_row(selects: List[str]) -> str:
@@ -423,45 +275,85 @@ class DuckDBSqlExecutor(SqlExecutor):
             return False
         return any((s.get("kind") in self.SUPPORTED_RULES) for s in (sql_specs or []))
 
-    def compile(self, sql_specs: List[Dict[str, Any]]) -> str:
-        selects: List[str] = []
+    def compile(self, sql_specs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Compile rule specs into two-phase execution plan.
+
+        Phase 1: EXISTS checks for not_null rules (fast, early-terminate)
+        Phase 2: Aggregate query for remaining rules
+
+        Returns:
+            {
+                "exists_specs": [...],      # Phase 1: not_null rules
+                "aggregate_selects": [...], # Phase 2: aggregate expressions
+                "aggregate_specs": [...],   # Phase 2: specs for aggregates
+                "supported_specs": [...],   # All supported specs
+            }
+        """
+        exists_specs: List[Dict[str, Any]] = []
+        aggregate_selects: List[str] = []
+        aggregate_specs: List[Dict[str, Any]] = []
+        supported_specs: List[Dict[str, Any]] = []
+
         for spec in sql_specs or []:
             kind = spec.get("kind")
             rid = spec.get("rule_id")
             if not (kind and rid):
                 continue
+
             if kind == "not_null":
+                # Phase 1: Use EXISTS for not_null (faster with early termination)
                 col = spec.get("column")
                 if isinstance(col, str) and col:
-                    selects.append(_agg_not_null(col, rid))
+                    exists_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "min_rows":
-                selects.append(_agg_min_rows(int(spec.get("threshold", 0)), rid))
+                aggregate_selects.append(agg_min_rows(int(spec.get("threshold", 0)), rid, DIALECT))
+                aggregate_specs.append(spec)
+                supported_specs.append(spec)
+
             elif kind == "max_rows":
-                selects.append(_agg_max_rows(int(spec.get("threshold", 0)), rid))
+                aggregate_selects.append(agg_max_rows(int(spec.get("threshold", 0)), rid, DIALECT))
+                aggregate_specs.append(spec)
+                supported_specs.append(spec)
+
             elif kind == "freshness":
                 col = spec.get("column")
                 max_age_seconds = spec.get("max_age_seconds")
                 if isinstance(col, str) and col and isinstance(max_age_seconds, int):
-                    selects.append(_agg_freshness(col, max_age_seconds, rid))
+                    aggregate_selects.append(agg_freshness(col, max_age_seconds, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "range":
                 col = spec.get("column")
                 min_val = spec.get("min")
                 max_val = spec.get("max")
                 if isinstance(col, str) and col and (min_val is not None or max_val is not None):
-                    selects.append(_agg_range(col, min_val, max_val, rid))
+                    aggregate_selects.append(agg_range(col, min_val, max_val, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "regex":
                 col = spec.get("column")
                 pattern = spec.get("pattern")
                 if isinstance(col, str) and col and isinstance(pattern, str) and pattern:
-                    selects.append(_agg_regex(col, pattern, rid))
+                    aggregate_selects.append(agg_regex(col, pattern, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "compare":
                 left = spec.get("left")
                 right = spec.get("right")
                 op = spec.get("op")
                 if (isinstance(left, str) and left and
                     isinstance(right, str) and right and
-                    isinstance(op, str) and op in _SQL_OP_MAP):
-                    selects.append(_agg_compare(left, right, op, rid))
+                    isinstance(op, str) and op in SQL_OP_MAP):
+                    aggregate_selects.append(agg_compare(left, right, op, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "conditional_not_null":
                 col = spec.get("column")
                 when_column = spec.get("when_column")
@@ -469,8 +361,11 @@ class DuckDBSqlExecutor(SqlExecutor):
                 when_value = spec.get("when_value")  # Can be None
                 if (isinstance(col, str) and col and
                     isinstance(when_column, str) and when_column and
-                    isinstance(when_op, str) and when_op in _SQL_OP_MAP):
-                    selects.append(_agg_conditional_not_null(col, when_column, when_op, when_value, rid))
+                    isinstance(when_op, str) and when_op in SQL_OP_MAP):
+                    aggregate_selects.append(agg_conditional_not_null(col, when_column, when_op, when_value, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "conditional_range":
                 col = spec.get("column")
                 when_column = spec.get("when_column")
@@ -480,39 +375,93 @@ class DuckDBSqlExecutor(SqlExecutor):
                 max_val = spec.get("max")
                 if (isinstance(col, str) and col and
                     isinstance(when_column, str) and when_column and
-                    isinstance(when_op, str) and when_op in _SQL_OP_MAP and
+                    isinstance(when_op, str) and when_op in SQL_OP_MAP and
                     (min_val is not None or max_val is not None)):
-                    selects.append(_agg_conditional_range(col, when_column, when_op, when_value, min_val, max_val, rid))
-        return _assemble_single_row(selects)
+                    aggregate_selects.append(agg_conditional_range(col, when_column, when_op, when_value, min_val, max_val, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+        return {
+            "exists_specs": exists_specs,
+            "aggregate_selects": aggregate_selects,
+            "aggregate_specs": aggregate_specs,
+            "supported_specs": supported_specs,
+        }
 
     def execute(
         self,
         handle: DatasetHandle,
-        compiled_sql: str,
+        compiled_plan: Dict[str, Any],
         *,
         csv_mode: str = "auto",
     ) -> Dict[str, Any]:
         """
-        Execute compiled SQL, honoring csv_mode for CSV URIs.
+        Execute the compiled plan in two phases, honoring csv_mode for CSV URIs.
+
+        Phase 1: EXISTS checks for not_null (fast, can early-terminate)
+        Phase 2: Aggregate query for remaining rules
+
         Returns:
           {
             "results": [...],
             "staging": {"path": <parquet_path>|None, "tmpdir": <TemporaryDirectory>|None}
           }
         """
+        exists_specs = compiled_plan.get("exists_specs", [])
+        aggregate_selects = compiled_plan.get("aggregate_selects", [])
+
+        if not exists_specs and not aggregate_selects:
+            return {"results": [], "staging": {"path": None, "tmpdir": None}}
+
         con = create_duckdb_connection(handle)
         view = "_data"
         tmpdir: Optional[tempfile.TemporaryDirectory] = None
         staged_path: Optional[str] = None
+        results: List[Dict[str, Any]] = []
+
+        # Build rule_kinds mapping from specs
+        rule_kinds = {}
+        for spec in exists_specs:
+            rule_kinds[spec["rule_id"]] = spec.get("kind")
+        for spec in compiled_plan.get("aggregate_specs", []):
+            rule_kinds[spec["rule_id"]] = spec.get("kind")
 
         try:
             tmpdir, staged_path, _ = _create_source_view(con, handle, view, csv_mode=csv_mode)
-            cur = con.execute(compiled_sql)
-            row = cur.fetchone()
-            cols = [d[0] for d in cur.description] if (row and cur.description) else []
-            mapping = {c: row[i] for i, c in enumerate(cols)} if row else {}
+
+            # Phase 1: EXISTS checks for not_null rules
+            if exists_specs:
+                exists_exprs = [
+                    exists_not_null(
+                        spec["column"],
+                        spec["rule_id"],
+                        esc_ident(view),
+                        "duckdb"
+                    )
+                    for spec in exists_specs
+                ]
+                exists_sql = f"SELECT {', '.join(exists_exprs)};"
+                cur = con.execute(exists_sql)
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description] if (row and cur.description) else []
+
+                if row and cols:
+                    exists_results = results_from_row(cols, row, is_exists=True, rule_kinds=rule_kinds)
+                    results.extend(exists_results)
+
+            # Phase 2: Aggregate query for remaining rules
+            if aggregate_selects:
+                agg_sql = _assemble_single_row(aggregate_selects)
+                cur = con.execute(agg_sql)
+                row = cur.fetchone()
+                cols = [d[0] for d in cur.description] if (row and cur.description) else []
+
+                if row and cols:
+                    agg_results = results_from_row(cols, row, is_exists=False, rule_kinds=rule_kinds)
+                    results.extend(agg_results)
+
             return {
-                "results": _results_from_single_row_map(mapping),
+                "results": results,
                 "staging": {"path": staged_path, "tmpdir": tmpdir},
             }
         except Exception:

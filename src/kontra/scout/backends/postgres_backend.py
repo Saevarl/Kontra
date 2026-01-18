@@ -243,6 +243,265 @@ class PostgreSQLBackend:
                 }
             return self._pg_stats
 
+    def supports_metadata_only(self) -> bool:
+        """Check if this backend supports metadata-only profiling."""
+        return True
+
+    def profile_metadata_only(self, schema: List[Tuple[str, str]], row_count: int) -> Dict[str, Dict[str, Any]]:
+        """
+        Profile columns using only pg_stats metadata (no table scan).
+
+        Returns dict mapping column_name -> {null_count, distinct_count, ...}
+
+        This is used for the 'lite' preset to achieve near-instant profiling.
+        Note: Values are estimates based on PostgreSQL statistics, not exact counts.
+        """
+        pg_stats = self._get_pg_stats()
+        result = {}
+
+        for col_name, raw_type in schema:
+            col_stats = pg_stats.get(col_name, {})
+
+            # null_frac is fraction of nulls (0.0 to 1.0)
+            null_frac = col_stats.get("null_frac", 0.0) or 0.0
+            null_count = int(row_count * null_frac)
+
+            # n_distinct interpretation:
+            # - Positive: exact count of distinct values
+            # - Negative: fraction of rows that are distinct (multiply by row_count)
+            # - 0 or missing: unknown
+            n_distinct = col_stats.get("n_distinct", 0) or 0
+            if n_distinct > 0:
+                distinct_count = int(n_distinct)
+            elif n_distinct < 0:
+                # Negative means fraction: -0.5 means 50% of rows are distinct
+                distinct_count = int(abs(n_distinct) * row_count)
+            else:
+                # Unknown - estimate from null_frac (non-null rows)
+                distinct_count = int(row_count * (1 - null_frac))
+
+            # Parse most_common_vals if available (for low cardinality detection)
+            mcv_raw = col_stats.get("most_common_vals")
+            most_common_vals = None
+            if mcv_raw:
+                # pg_stats returns array as text: {val1,val2,...}
+                try:
+                    # Remove braces and split
+                    if mcv_raw.startswith("{") and mcv_raw.endswith("}"):
+                        vals = mcv_raw[1:-1].split(",")
+                        most_common_vals = [v.strip().strip('"') for v in vals if v.strip()]
+                except Exception:
+                    pass
+
+            result[col_name] = {
+                "null_count": null_count,
+                "distinct_count": distinct_count,
+                "null_frac": null_frac,
+                "n_distinct_raw": n_distinct,
+                "most_common_vals": most_common_vals,
+                "is_estimate": True,  # Flag that these are estimates
+            }
+
+        return result
+
+
+    def get_table_freshness(self) -> Dict[str, Any]:
+        """
+        Get table statistics freshness from pg_stat_user_tables.
+
+        Returns dict with:
+        - n_live_tup: estimated live rows
+        - n_mod_since_analyze: rows modified since last ANALYZE
+        - last_analyze: timestamp of last manual ANALYZE
+        - last_autoanalyze: timestamp of last auto ANALYZE
+        - stale_ratio: n_mod_since_analyze / n_live_tup (0.0 = fresh, 1.0 = very stale)
+        - is_fresh: True if stale_ratio < 0.2
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    n_live_tup,
+                    n_mod_since_analyze,
+                    last_analyze,
+                    last_autoanalyze
+                FROM pg_stat_user_tables
+                WHERE schemaname = %s AND relname = %s
+                """,
+                (self.params.schema, self.params.table),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return {
+                    "n_live_tup": 0,
+                    "n_mod_since_analyze": 0,
+                    "last_analyze": None,
+                    "last_autoanalyze": None,
+                    "stale_ratio": 1.0,
+                    "is_fresh": False,
+                }
+
+            n_live_tup = row[0] or 0
+            n_mod_since_analyze = row[1] or 0
+            last_analyze = row[2]
+            last_autoanalyze = row[3]
+
+            # Calculate staleness ratio
+            stale_ratio = (
+                n_mod_since_analyze / max(n_live_tup, 1)
+                if n_live_tup > 0
+                else 1.0
+            )
+
+            return {
+                "n_live_tup": n_live_tup,
+                "n_mod_since_analyze": n_mod_since_analyze,
+                "last_analyze": last_analyze,
+                "last_autoanalyze": last_autoanalyze,
+                "stale_ratio": stale_ratio,
+                "is_fresh": stale_ratio < 0.2,
+            }
+
+    def supports_strategic_standard(self) -> bool:
+        """Check if this backend supports strategic standard profiling."""
+        return True
+
+    def execute_sampled_stats_query(
+        self, exprs: List[str], sample_pct: float = 1.0
+    ) -> Dict[str, Any]:
+        """
+        Execute aggregation query with TABLESAMPLE SYSTEM (block sampling).
+
+        Unlike BERNOULLI which scans the entire table, SYSTEM samples
+        at the block level - much faster for large tables.
+
+        Args:
+            exprs: List of SQL expressions to compute
+            sample_pct: Percentage of blocks to sample (default 1%)
+
+        Returns:
+            Dict of expression alias -> value
+        """
+        if not exprs:
+            return {}
+
+        table = self._qualified_table()
+        # SYSTEM samples blocks, not rows - much faster than BERNOULLI
+        sql = f"""
+            SELECT {', '.join(exprs)}
+            FROM {table}
+            TABLESAMPLE SYSTEM ({sample_pct})
+        """
+
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(sql)
+                row = cur.fetchone()
+                col_names = [desc[0] for desc in cur.description]
+                return dict(zip(col_names, row)) if row else {}
+        except Exception:
+            # Fall back to full query if TABLESAMPLE fails
+            return self.execute_stats_query(exprs)
+
+    def fetch_low_cardinality_values_batched(
+        self, columns: List[str]
+    ) -> Dict[str, List[Tuple[Any, int]]]:
+        """
+        Fetch value distributions for multiple low-cardinality columns in one query.
+
+        Uses UNION ALL to batch multiple GROUP BY queries into a single round-trip.
+
+        Args:
+            columns: List of column names to profile
+
+        Returns:
+            Dict mapping column_name -> [(value, count), ...]
+        """
+        if not columns:
+            return {}
+
+        table = self._qualified_table()
+        parts = []
+        for col in columns:
+            c = self.esc_ident(col)
+            # Cast to text for uniformity, include column name for identification
+            parts.append(f"""
+                SELECT '{col}' AS col_name, {c}::text AS val, COUNT(*) AS cnt
+                FROM {table}
+                WHERE {c} IS NOT NULL
+                GROUP BY {c}
+            """)
+
+        sql = " UNION ALL ".join(parts) + " ORDER BY col_name, cnt DESC"
+
+        result: Dict[str, List[Tuple[Any, int]]] = {col: [] for col in columns}
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(sql)
+                for row in cur.fetchall():
+                    col_name, val, cnt = row
+                    if col_name in result:
+                        result[col_name].append((val, int(cnt)))
+        except Exception:
+            pass
+
+        return result
+
+    def classify_columns(
+        self, schema: List[Tuple[str, str]], row_count: int
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Classify columns based on pg_stats metadata for strategic profiling.
+
+        Returns dict mapping column_name -> {
+            "cardinality": "low" | "medium" | "high",
+            "n_distinct": raw n_distinct value,
+            "estimated_distinct": estimated distinct count,
+            "strategy": "group_by" | "sample" | "metadata_only"
+        }
+
+        Classification rules:
+        - low: n_distinct < 20 → fetch all via GROUP BY
+        - medium: n_distinct 20-10000 → sample for top values
+        - high: n_distinct > 10000 → trust metadata MCVs only
+        """
+        pg_stats = self._get_pg_stats()
+        result = {}
+
+        for col_name, raw_type in schema:
+            col_stats = pg_stats.get(col_name, {})
+            n_distinct = col_stats.get("n_distinct", 0) or 0
+
+            # Calculate estimated distinct count
+            if n_distinct > 0:
+                estimated_distinct = int(n_distinct)
+            elif n_distinct < 0:
+                estimated_distinct = int(abs(n_distinct) * row_count)
+            else:
+                estimated_distinct = row_count  # Unknown, assume high
+
+            # Classify cardinality
+            if estimated_distinct < 20:
+                cardinality = "low"
+                strategy = "group_by"
+            elif estimated_distinct <= 10000:
+                cardinality = "medium"
+                strategy = "sample"
+            else:
+                cardinality = "high"
+                strategy = "metadata_only"
+
+            result[col_name] = {
+                "cardinality": cardinality,
+                "n_distinct": n_distinct,
+                "estimated_distinct": estimated_distinct,
+                "strategy": strategy,
+                "dtype": normalize_dtype(raw_type),
+            }
+
+        return result
+
 
 def normalize_pg_type(raw_type: str) -> str:
     """

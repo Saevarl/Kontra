@@ -1,15 +1,14 @@
 # src/kontra/state/backends/s3.py
 """
-S3-compatible state storage.
+S3-compatible state storage with normalized format (v0.5).
 
-Stores validation states in S3 bucket with structure:
-
-s3://bucket/prefix/
-└── state/
-    └── <contract_fingerprint>/
-        ├── 2024-01-13T10-30-00.json
-        ├── 2024-01-12T10-30-00.json
-        └── ...
+Directory structure:
+    s3://bucket/prefix/
+    └── state/
+        └── <contract_fingerprint>/
+            └── runs/
+                ├── <run_id>.json       # run metadata + rule results
+                └── <run_id>.ann.jsonl  # annotations (append-only)
 
 Works with:
 - AWS S3
@@ -21,17 +20,19 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+import random
+import string
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from .base import StateBackend
-from kontra.state.types import ValidationState
+from kontra.state.types import Annotation, ValidationState
 
 
 class S3Store(StateBackend):
     """
-    S3-compatible object storage backend.
+    S3-compatible object storage backend with normalized format.
 
     Uses fsspec/s3fs for S3 access. Supports AWS S3, MinIO, and other
     S3-compatible storage systems.
@@ -103,25 +104,117 @@ class S3Store(StateBackend):
 
         return opts
 
-    def _contract_prefix(self, contract_fingerprint: str) -> str:
-        """Get the S3 prefix for a contract's states."""
-        return f"{self.bucket}/{self.prefix}/{contract_fingerprint}"
+    def _runs_prefix(self, contract_fingerprint: str) -> str:
+        """Get the S3 prefix for a contract's runs."""
+        return f"{self.bucket}/{self.prefix}/{contract_fingerprint}/runs"
 
-    def _state_key(self, contract_fingerprint: str, run_at: datetime) -> str:
-        """Generate S3 key for a state."""
-        ts = run_at.isoformat().replace(":", "-").replace("+", "_")
-        return f"{self._contract_prefix(contract_fingerprint)}/{ts}.json"
+    def _generate_run_id(self, run_at: datetime) -> str:
+        """Generate a unique run ID from timestamp."""
+        ts = run_at.strftime("%Y-%m-%dT%H-%M-%S")
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        return f"{ts}_{suffix}"
+
+    def _run_key(self, contract_fingerprint: str, run_id: str) -> str:
+        """Get the S3 key for a run's state file."""
+        return f"{self._runs_prefix(contract_fingerprint)}/{run_id}.json"
+
+    def _annotations_key(self, contract_fingerprint: str, run_id: str) -> str:
+        """Get the S3 key prefix for a run's annotations (legacy JSONL)."""
+        return f"{self._runs_prefix(contract_fingerprint)}/{run_id}.ann.jsonl"
+
+    def _annotation_key(
+        self, contract_fingerprint: str, run_id: str, annotation_id: int
+    ) -> str:
+        """Get the S3 key for a single annotation file."""
+        return f"{self._runs_prefix(contract_fingerprint)}/{run_id}.ann.{annotation_id:06d}.json"
+
+    def _annotations_prefix(self, contract_fingerprint: str, run_id: str) -> str:
+        """Get the S3 prefix for a run's annotation files."""
+        return f"{self._runs_prefix(contract_fingerprint)}/{run_id}.ann."
+
+    def _load_annotations(
+        self, fs, contract_fingerprint: str, run_id_str: str
+    ) -> List[Annotation]:
+        """
+        Load annotations for a run (supports both legacy JSONL and new per-file format).
+
+        Args:
+            fs: The fsspec filesystem
+            contract_fingerprint: The contract fingerprint
+            run_id_str: The string run ID
+
+        Returns:
+            List of annotations
+        """
+        annotations = []
+
+        # Load from legacy JSONL format
+        legacy_key = self._annotations_key(contract_fingerprint, run_id_str)
+        try:
+            with fs.open(f"s3://{legacy_key}", "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        annotations.append(Annotation.from_json(line))
+        except Exception:
+            pass
+
+        # Load from new per-file format
+        prefix = self._annotations_prefix(contract_fingerprint, run_id_str)
+        try:
+            ann_files = fs.glob(f"s3://{prefix}*.json")
+            for ann_file in sorted(ann_files):
+                try:
+                    with fs.open(f"s3://{ann_file}", "r") as f:
+                        content = f.read().strip()
+                        if content:
+                            annotations.append(Annotation.from_json(content))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        return annotations
 
     def save(self, state: ValidationState) -> None:
         """Save a validation state to S3."""
         fs = self._get_fs()
-        key = self._state_key(state.contract_fingerprint, state.run_at)
+
+        # Generate run ID
+        run_id = self._generate_run_id(state.run_at)
+
+        # Store run_id in the state dict
+        state_dict = state.to_dict()
+        state_dict["_run_id"] = run_id
+
+        key = self._run_key(state.contract_fingerprint, run_id)
 
         try:
             with fs.open(f"s3://{key}", "w") as f:
-                f.write(state.to_json())
+                f.write(json.dumps(state_dict, indent=2, default=str))
         except Exception as e:
             raise IOError(f"Failed to save state to S3: {e}") from e
+
+    def _load_state(self, filepath: str) -> Optional[ValidationState]:
+        """Load a state from an S3 path."""
+        fs = self._get_fs()
+        try:
+            with fs.open(f"s3://{filepath}", "r") as f:
+                content = f.read()
+            data = json.loads(content)
+
+            # Extract run_id for later use
+            run_id = data.pop("_run_id", None)
+
+            state = ValidationState.from_dict(data)
+
+            # Store run_id as a synthetic ID (hash)
+            if run_id:
+                state.id = hash(run_id) & 0x7FFFFFFF
+
+            return state
+        except Exception:
+            return None
 
     def get_latest(self, contract_fingerprint: str) -> Optional[ValidationState]:
         """Get the most recent state for a contract."""
@@ -135,30 +228,29 @@ class S3Store(StateBackend):
     ) -> List[ValidationState]:
         """Get recent history for a contract, newest first."""
         fs = self._get_fs()
-        prefix = self._contract_prefix(contract_fingerprint)
+        prefix = self._runs_prefix(contract_fingerprint)
 
         try:
-            # List all JSON files in the contract prefix
-            files = fs.glob(f"s3://{prefix}/*.json")
+            # List all JSON files (excluding annotation files)
+            all_files = fs.glob(f"s3://{prefix}/*.json")
+            files = [
+                f for f in all_files
+                if not f.endswith(".ann.jsonl") and ".ann." not in f.rsplit("/", 1)[-1]
+            ]
         except Exception:
             return []
 
         if not files:
             return []
 
-        # Sort by filename (which contains timestamp), newest first
+        # Sort by filename (timestamp prefix), newest first
         files = sorted(files, reverse=True)
 
         states = []
         for filepath in files[:limit]:
-            try:
-                with fs.open(f"s3://{filepath}", "r") as f:
-                    content = f.read()
-                state = ValidationState.from_json(content)
+            state = self._load_state(filepath)
+            if state:
                 states.append(state)
-            except Exception:
-                # Skip corrupted files
-                continue
 
         return states
 
@@ -169,10 +261,14 @@ class S3Store(StateBackend):
     ) -> int:
         """Delete old states, keeping the most recent ones."""
         fs = self._get_fs()
-        prefix = self._contract_prefix(contract_fingerprint)
+        prefix = self._runs_prefix(contract_fingerprint)
 
         try:
-            files = fs.glob(f"s3://{prefix}/*.json")
+            all_files = fs.glob(f"s3://{prefix}/*.json")
+            files = [
+                f for f in all_files
+                if not f.endswith(".ann.jsonl") and ".ann." not in f.rsplit("/", 1)[-1]
+            ]
         except Exception:
             return 0
 
@@ -186,8 +282,31 @@ class S3Store(StateBackend):
         deleted = 0
         for filepath in files[keep_count:]:
             try:
+                # Delete state file
                 fs.rm(f"s3://{filepath}")
                 deleted += 1
+
+                # Delete corresponding annotations (both legacy JSONL and new per-file)
+                run_id = filepath.rsplit("/", 1)[-1].replace(".json", "")
+
+                # Legacy JSONL
+                ann_key = self._annotations_key(contract_fingerprint, run_id)
+                try:
+                    fs.rm(f"s3://{ann_key}")
+                except Exception:
+                    pass
+
+                # New per-file annotations
+                ann_prefix = self._annotations_prefix(contract_fingerprint, run_id)
+                try:
+                    ann_files = fs.glob(f"s3://{ann_prefix}*.json")
+                    for ann_file in ann_files:
+                        try:
+                            fs.rm(f"s3://{ann_file}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             except Exception:
                 continue
 
@@ -231,12 +350,15 @@ class S3Store(StateBackend):
         deleted = 0
 
         if contract_fingerprint:
-            prefix = self._contract_prefix(contract_fingerprint)
+            prefix = self._runs_prefix(contract_fingerprint)
             try:
-                files = fs.glob(f"s3://{prefix}/*.json")
-                for filepath in files:
-                    fs.rm(f"s3://{filepath}")
-                    deleted += 1
+                # Delete all files (json and jsonl)
+                for pattern in ["*.json", "*.jsonl"]:
+                    files = fs.glob(f"s3://{prefix}/{pattern}")
+                    for filepath in files:
+                        fs.rm(f"s3://{filepath}")
+                        if filepath.endswith(".json") and not filepath.endswith(".ann.jsonl"):
+                            deleted += 1
             except Exception:
                 pass
         else:
@@ -245,6 +367,177 @@ class S3Store(StateBackend):
                 deleted += self.clear(fp)
 
         return deleted
+
+    # -------------------------------------------------------------------------
+    # Annotation Methods
+    # -------------------------------------------------------------------------
+
+    def save_annotation(self, annotation: Annotation) -> int:
+        """
+        Save an annotation (append-only).
+
+        For S3 backends, we need the contract fingerprint and run_id string.
+        """
+        raise NotImplementedError(
+            "S3Store.save_annotation requires contract fingerprint. "
+            "Use save_annotation_for_run instead."
+        )
+
+    def save_annotation_for_run(
+        self,
+        contract_fingerprint: str,
+        run_id_str: str,
+        annotation: Annotation,
+    ) -> int:
+        """
+        Save an annotation for a specific run.
+
+        Each annotation is stored as a separate file to avoid race conditions.
+        File pattern: {run_id}.ann.{annotation_id:06d}.json
+
+        Args:
+            contract_fingerprint: The contract fingerprint
+            run_id_str: The string run ID
+            annotation: The annotation to save
+
+        Returns:
+            The annotation ID
+        """
+        fs = self._get_fs()
+        prefix = self._annotations_prefix(contract_fingerprint, run_id_str)
+
+        # Count existing annotation files to generate next ID
+        existing_count = 0
+        try:
+            # Glob for annotation files (new format)
+            ann_files = fs.glob(f"s3://{prefix}*.json")
+            existing_count = len(ann_files)
+
+            # Also check legacy JSONL for backwards compatibility
+            legacy_key = self._annotations_key(contract_fingerprint, run_id_str)
+            try:
+                with fs.open(f"s3://{legacy_key}", "r") as f:
+                    existing_count += sum(1 for _ in f)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        annotation.id = existing_count + 1
+
+        # Write annotation as a separate file (atomic, no race condition)
+        ann_key = self._annotation_key(
+            contract_fingerprint, run_id_str, annotation.id
+        )
+        try:
+            with fs.open(f"s3://{ann_key}", "w") as f:
+                f.write(annotation.to_json())
+            return annotation.id
+        except Exception as e:
+            raise IOError(f"Failed to save annotation to S3: {e}") from e
+
+    def get_annotations(
+        self,
+        run_id: int,
+        rule_result_id: Optional[int] = None,
+    ) -> List[Annotation]:
+        """Get annotations for a run."""
+        return []
+
+    def get_run_with_annotations(
+        self,
+        contract_fingerprint: str,
+        run_id: Optional[int] = None,
+    ) -> Optional[ValidationState]:
+        """Get a validation state with its annotations loaded."""
+        # Get the state
+        if run_id is None:
+            state = self.get_latest(contract_fingerprint)
+        else:
+            states = self.get_history(contract_fingerprint, limit=100)
+            state = None
+            for s in states:
+                if s.id == run_id:
+                    state = s
+                    break
+
+        if not state:
+            return None
+
+        fs = self._get_fs()
+        prefix = self._runs_prefix(contract_fingerprint)
+
+        # Find the run file to get run_id string
+        run_id_str = None
+        try:
+            all_files = fs.glob(f"s3://{prefix}/*.json")
+            files = [f for f in all_files if not f.endswith(".ann.jsonl")]
+
+            for filepath in files:
+                loaded = self._load_state(filepath)
+                if loaded and loaded.id == state.id:
+                    run_id_str = filepath.rsplit("/", 1)[-1].replace(".json", "")
+                    break
+        except Exception:
+            pass
+
+        if not run_id_str:
+            state.annotations = []
+            for rule in state.rules:
+                rule.annotations = []
+            return state
+
+        # Load annotations (supports both legacy JSONL and new per-file format)
+        annotations = self._load_annotations(
+            fs, contract_fingerprint, run_id_str
+        )
+
+        self._attach_annotations_to_state(state, annotations)
+        return state
+
+    def get_history_with_annotations(
+        self,
+        contract_fingerprint: str,
+        limit: int = 10,
+    ) -> List[ValidationState]:
+        """Get recent history with annotations loaded."""
+        states = self.get_history(contract_fingerprint, limit=limit)
+
+        fs = self._get_fs()
+        prefix = self._runs_prefix(contract_fingerprint)
+
+        # Build ID to run_id_str mapping
+        id_to_run_id: Dict[int, str] = {}
+        try:
+            all_files = fs.glob(f"s3://{prefix}/*.json")
+            files = [f for f in all_files if not f.endswith(".ann.jsonl")]
+
+            for filepath in files:
+                loaded = self._load_state(filepath)
+                if loaded and loaded.id:
+                    run_id_str = filepath.rsplit("/", 1)[-1].replace(".json", "")
+                    id_to_run_id[loaded.id] = run_id_str
+        except Exception:
+            pass
+
+        # Load annotations for each state
+        for state in states:
+            if state.id is None or state.id not in id_to_run_id:
+                state.annotations = []
+                for rule in state.rules:
+                    rule.annotations = []
+                continue
+
+            run_id_str = id_to_run_id[state.id]
+
+            # Load annotations (supports both legacy JSONL and new per-file format)
+            annotations = self._load_annotations(
+                fs, contract_fingerprint, run_id_str
+            )
+
+            self._attach_annotations_to_state(state, annotations)
+
+        return states
 
     def __repr__(self) -> str:
         return f"S3Store(uri={self.uri})"

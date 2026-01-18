@@ -305,6 +305,77 @@ def load_config_file(path: Path) -> KontraConfig:
         raise ConfigValidationError([str(e)], str(path))
 
 
+# --- Config overlay helpers ---
+
+# Core validation fields (same name in all config layers)
+_CORE_OVERLAY_FIELDS = [
+    "preplan",
+    "pushdown",
+    "projection",
+    "output_format",
+    "stats",
+    "state_backend",
+    "csv_mode",
+]
+
+# CLI override to effective config field mappings (for scout fields)
+_CLI_FIELD_MAPPINGS = {
+    "preset": "scout_preset",
+    "save_profile": "scout_save_profile",
+    "list_values_threshold": "scout_list_values_threshold",
+    "top_n": "scout_top_n",
+    "include_patterns": "scout_include_patterns",
+}
+
+
+def _apply_optional_overrides(
+    effective: "EffectiveConfig",
+    source: Any,
+    fields: List[str],
+) -> None:
+    """
+    Apply non-None values from source object to effective config.
+
+    Args:
+        effective: Target EffectiveConfig to update
+        source: Source object with same-named attributes
+        fields: List of field names to copy
+    """
+    for field in fields:
+        value = getattr(source, field, None)
+        if value is not None:
+            setattr(effective, field, value)
+
+
+def _apply_cli_overrides(
+    effective: "EffectiveConfig",
+    cli_overrides: Dict[str, Any],
+    core_fields: List[str],
+    field_mappings: Dict[str, str],
+) -> None:
+    """
+    Apply CLI override values to effective config.
+
+    Args:
+        effective: Target EffectiveConfig to update
+        cli_overrides: Dict of CLI argument values
+        core_fields: Fields with same name in CLI and effective config
+        field_mappings: CLI name -> effective config name mappings
+    """
+    # Apply core fields (same name)
+    for field in core_fields:
+        if field in cli_overrides and cli_overrides[field] is not None:
+            setattr(effective, field, cli_overrides[field])
+
+    # Apply mapped fields (different names)
+    for cli_name, effective_name in field_mappings.items():
+        if cli_name in cli_overrides and cli_overrides[cli_name] is not None:
+            setattr(effective, effective_name, cli_overrides[cli_name])
+
+
+# --- End config overlay helpers ---
+
+
 def resolve_effective_config(
     env_name: Optional[str] = None,
     cli_overrides: Optional[Dict[str, Any]] = None,
@@ -373,21 +444,7 @@ def resolve_effective_config(
 
         if file_config and env_name in file_config.environments:
             env_config = file_config.environments[env_name]
-
-            if env_config.preplan is not None:
-                effective.preplan = env_config.preplan
-            if env_config.pushdown is not None:
-                effective.pushdown = env_config.pushdown
-            if env_config.projection is not None:
-                effective.projection = env_config.projection
-            if env_config.output_format is not None:
-                effective.output_format = env_config.output_format
-            if env_config.stats is not None:
-                effective.stats = env_config.stats
-            if env_config.state_backend is not None:
-                effective.state_backend = env_config.state_backend
-            if env_config.csv_mode is not None:
-                effective.csv_mode = env_config.csv_mode
+            _apply_optional_overrides(effective, env_config, _CORE_OVERLAY_FIELDS)
 
         elif file_config:
             # Environment specified but not found
@@ -395,33 +452,8 @@ def resolve_effective_config(
             raise UnknownEnvironmentError(env_name, available)
         # If no config file, silently ignore --env
 
-    # Layer 3: Apply CLI overrides
-    if "preplan" in cli_overrides and cli_overrides["preplan"] is not None:
-        effective.preplan = cli_overrides["preplan"]
-    if "pushdown" in cli_overrides and cli_overrides["pushdown"] is not None:
-        effective.pushdown = cli_overrides["pushdown"]
-    if "projection" in cli_overrides and cli_overrides["projection"] is not None:
-        effective.projection = cli_overrides["projection"]
-    if "output_format" in cli_overrides and cli_overrides["output_format"] is not None:
-        effective.output_format = cli_overrides["output_format"]
-    if "stats" in cli_overrides and cli_overrides["stats"] is not None:
-        effective.stats = cli_overrides["stats"]
-    if "state_backend" in cli_overrides and cli_overrides["state_backend"] is not None:
-        effective.state_backend = cli_overrides["state_backend"]
-    if "csv_mode" in cli_overrides and cli_overrides["csv_mode"] is not None:
-        effective.csv_mode = cli_overrides["csv_mode"]
-
-    # Scout overrides
-    if "preset" in cli_overrides and cli_overrides["preset"] is not None:
-        effective.scout_preset = cli_overrides["preset"]
-    if "save_profile" in cli_overrides and cli_overrides["save_profile"] is not None:
-        effective.scout_save_profile = cli_overrides["save_profile"]
-    if "list_values_threshold" in cli_overrides and cli_overrides["list_values_threshold"] is not None:
-        effective.scout_list_values_threshold = cli_overrides["list_values_threshold"]
-    if "top_n" in cli_overrides and cli_overrides["top_n"] is not None:
-        effective.scout_top_n = cli_overrides["top_n"]
-    if "include_patterns" in cli_overrides and cli_overrides["include_patterns"] is not None:
-        effective.scout_include_patterns = cli_overrides["include_patterns"]
+    # Layer 3: Apply CLI overrides (core fields + scout fields with mappings)
+    _apply_cli_overrides(effective, cli_overrides, _CORE_OVERLAY_FIELDS, _CLI_FIELD_MAPPINGS)
 
     return effective
 

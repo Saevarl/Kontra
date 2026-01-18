@@ -234,3 +234,96 @@ class DuckDBBackend:
 
         except Exception:
             return None
+
+    def supports_metadata_only(self) -> bool:
+        """
+        Check if this backend supports metadata-only profiling.
+
+        Returns True only for Parquet files when PyArrow is available.
+        CSV files don't have metadata statistics.
+        """
+        return (
+            self.handle.format == "parquet"
+            and _HAS_PYARROW
+            and self.sample_size is None
+        )
+
+    def profile_metadata_only(
+        self, schema: List[Tuple[str, str]], row_count: int
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Profile columns using only Parquet metadata (no data scan).
+
+        Returns dict mapping column_name -> {null_count, distinct_count, ...}
+
+        Parquet row group statistics provide:
+        - null_count: Exact count of nulls (sum across row groups)
+        - num_values: Non-null values per row group
+        - min/max: Column min/max (for potential use)
+
+        Note: Parquet does NOT store distinct_count. We estimate from
+        num_values (assuming all non-null values are distinct as upper bound).
+
+        This is used for the 'lite' preset to achieve fast profiling
+        without scanning the actual data.
+        """
+        meta = self._get_parquet_metadata()
+        if not meta:
+            raise RuntimeError("Cannot get Parquet metadata")
+
+        # Build column stats by aggregating across row groups
+        col_stats: Dict[str, Dict[str, Any]] = {}
+
+        # Initialize stats for each column
+        for col_name, _ in schema:
+            col_stats[col_name] = {
+                "null_count": 0,
+                "num_values": 0,
+                "has_statistics": False,
+            }
+
+        # Aggregate stats from all row groups
+        for rg_idx in range(meta.num_row_groups):
+            rg = meta.row_group(rg_idx)
+
+            for col_idx in range(rg.num_columns):
+                col_chunk = rg.column(col_idx)
+                # Get column name from path (handles nested columns)
+                col_path = col_chunk.path_in_schema
+                col_name = col_path.split(".")[-1] if "." in col_path else col_path
+
+                if col_name not in col_stats:
+                    continue
+
+                stats = col_chunk.statistics
+                if stats is not None:
+                    col_stats[col_name]["has_statistics"] = True
+                    if stats.null_count is not None:
+                        col_stats[col_name]["null_count"] += stats.null_count
+                    if stats.num_values is not None:
+                        col_stats[col_name]["num_values"] += stats.num_values
+
+        # Build result dict
+        result: Dict[str, Dict[str, Any]] = {}
+
+        for col_name, raw_type in schema:
+            stats = col_stats.get(col_name, {})
+
+            null_count = stats.get("null_count", 0)
+            num_values = stats.get("num_values", 0)
+            has_stats = stats.get("has_statistics", False)
+
+            # Estimate distinct_count:
+            # - If no stats: use non-null count as upper bound
+            # - Parquet doesn't track distinct count
+            non_null = row_count - null_count if has_stats else row_count
+            distinct_count = non_null  # Upper bound estimate
+
+            result[col_name] = {
+                "null_count": null_count if has_stats else 0,
+                "distinct_count": distinct_count,
+                "has_statistics": has_stats,
+                "is_estimate": True,  # Flag that distinct_count is estimated
+            }
+
+        return result

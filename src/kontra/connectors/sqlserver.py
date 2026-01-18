@@ -12,10 +12,31 @@ Priority: URI values > SQLSERVER_URL > MSSQL_XXX env vars > defaults
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse, unquote
+
+from .db_utils import (
+    DbConnectionConfig,
+    resolve_connection_params as _resolve_params,
+)
+
+
+# SQL Server-specific configuration for parameter resolution
+_MSSQL_CONFIG = DbConnectionConfig(
+    default_host="localhost",
+    default_port=1433,
+    default_user="sa",
+    default_schema="dbo",
+    env_host="MSSQL_HOST",
+    env_port="MSSQL_PORT",
+    env_user="MSSQL_USER",
+    env_password="MSSQL_PASSWORD",
+    env_database="MSSQL_DATABASE",
+    env_url="SQLSERVER_URL",
+    db_name="SQL Server",
+    uri_example="mssql://user:pass@host:1433/database/schema.table",
+    env_example="MSSQL_DATABASE",
+)
 
 
 @dataclass
@@ -60,96 +81,16 @@ def resolve_connection_params(uri: str) -> SqlServerConnectionParams:
     Raises:
         ValueError: If required parameters (database, table) cannot be resolved.
     """
-    parsed = urlparse(uri)
-
-    # Start with defaults
-    host = "localhost"
-    port = 1433
-    user = "sa"
-    password: Optional[str] = None
-    database: Optional[str] = None
-    schema = "dbo"
-    table: Optional[str] = None
-
-    # Layer 1: MSSQL_XXX environment variables
-    if os.getenv("MSSQL_HOST"):
-        host = os.getenv("MSSQL_HOST", host)
-    if os.getenv("MSSQL_PORT"):
-        try:
-            port = int(os.getenv("MSSQL_PORT", str(port)))
-        except ValueError:
-            pass
-    if os.getenv("MSSQL_USER"):
-        user = os.getenv("MSSQL_USER", user)
-    if os.getenv("MSSQL_PASSWORD"):
-        password = os.getenv("MSSQL_PASSWORD")
-    if os.getenv("MSSQL_DATABASE"):
-        database = os.getenv("MSSQL_DATABASE")
-
-    # Layer 2: SQLSERVER_URL (similar to DATABASE_URL pattern)
-    sqlserver_url = os.getenv("SQLSERVER_URL")
-    if sqlserver_url:
-        db_parsed = urlparse(sqlserver_url)
-        if db_parsed.hostname:
-            host = db_parsed.hostname
-        if db_parsed.port:
-            port = db_parsed.port
-        if db_parsed.username:
-            user = unquote(db_parsed.username)
-        if db_parsed.password:
-            password = unquote(db_parsed.password)
-        if db_parsed.path and db_parsed.path != "/":
-            database = db_parsed.path.strip("/").split("/")[0]
-
-    # Layer 3: Explicit URI values (highest priority)
-    if parsed.hostname:
-        host = parsed.hostname
-    if parsed.port:
-        port = parsed.port
-    if parsed.username:
-        user = unquote(parsed.username)
-    if parsed.password:
-        password = unquote(parsed.password)
-
-    # Extract database and schema.table from path
-    # Format: /database/schema.table or /database/table (assumes dbo schema)
-    path_parts = [p for p in parsed.path.strip("/").split("/") if p]
-
-    if len(path_parts) >= 1:
-        database = path_parts[0]
-
-    if len(path_parts) >= 2:
-        schema_table = path_parts[1]
-        if "." in schema_table:
-            schema, table = schema_table.split(".", 1)
-        else:
-            schema = "dbo"
-            table = schema_table
-
-    # Validate required fields
-    if not database:
-        raise ValueError(
-            "SQL Server database name is required.\n\n"
-            "Set MSSQL_DATABASE environment variable or use full URI:\n"
-            "  mssql://user:pass@host:1433/database/schema.table"
-        )
-
-    if not table:
-        raise ValueError(
-            "SQL Server table name is required.\n\n"
-            "Specify schema.table in URI:\n"
-            "  mssql://user:pass@host:1433/database/schema.table\n"
-            "  mssql:///dbo.users (with MSSQL_DATABASE set)"
-        )
+    resolved = _resolve_params(uri, _MSSQL_CONFIG)
 
     return SqlServerConnectionParams(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        database=database,
-        schema=schema,
-        table=table,
+        host=resolved.host,
+        port=resolved.port,
+        user=resolved.user,
+        password=resolved.password,
+        database=resolved.database,  # type: ignore (validated in _resolve_params)
+        schema=resolved.schema,
+        table=resolved.table,  # type: ignore (validated in _resolve_params)
     )
 
 
@@ -206,81 +147,80 @@ def fetch_sqlserver_stats(params: SqlServerConnectionParams) -> Dict[str, Dict[s
     import pymssql
 
     with get_connection(params) as conn:
-        cursor = conn.cursor()
+        with conn.cursor() as cursor:
+            # Table-level stats from sys.dm_db_partition_stats
+            cursor.execute(
+                """
+                SELECT SUM(row_count) AS row_estimate,
+                       SUM(used_page_count) AS page_count
+                FROM sys.dm_db_partition_stats ps
+                JOIN sys.objects o ON ps.object_id = o.object_id
+                JOIN sys.schemas s ON o.schema_id = s.schema_id
+                WHERE s.name = %s AND o.name = %s AND ps.index_id IN (0, 1)
+                """,
+                (params.schema, params.table),
+            )
+            row = cursor.fetchone()
+            table_stats = {
+                "row_estimate": row[0] if row and row[0] else 0,
+                "page_count": row[1] if row and row[1] else 0,
+            }
 
-        # Table-level stats from sys.dm_db_partition_stats
-        cursor.execute(
-            """
-            SELECT SUM(row_count) AS row_estimate,
-                   SUM(used_page_count) AS page_count
-            FROM sys.dm_db_partition_stats ps
-            JOIN sys.objects o ON ps.object_id = o.object_id
-            JOIN sys.schemas s ON o.schema_id = s.schema_id
-            WHERE s.name = %s AND o.name = %s AND ps.index_id IN (0, 1)
-            """,
-            (params.schema, params.table),
-        )
-        row = cursor.fetchone()
-        table_stats = {
-            "row_estimate": row[0] if row and row[0] else 0,
-            "page_count": row[1] if row and row[1] else 0,
-        }
+            # Column-level stats from sys.dm_db_stats_properties + DBCC SHOW_STATISTICS
+            # We use density_vector from stats to estimate distinct values
+            cursor.execute(
+                """
+                SELECT
+                    c.name AS column_name,
+                    s.name AS stat_name,
+                    sp.rows,
+                    sp.modification_counter
+                FROM sys.stats s
+                JOIN sys.stats_columns sc ON s.stats_id = sc.stats_id AND s.object_id = sc.object_id
+                JOIN sys.columns c ON sc.column_id = c.column_id AND sc.object_id = c.object_id
+                CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+                WHERE s.object_id = OBJECT_ID(%s)
+                """,
+                (f"{params.schema}.{params.table}",),
+            )
 
-        # Column-level stats from sys.dm_db_stats_properties + DBCC SHOW_STATISTICS
-        # We use density_vector from stats to estimate distinct values
-        cursor.execute(
-            """
-            SELECT
-                c.name AS column_name,
-                s.name AS stat_name,
-                sp.rows,
-                sp.modification_counter
-            FROM sys.stats s
-            JOIN sys.stats_columns sc ON s.stats_id = sc.stats_id AND s.object_id = sc.object_id
-            JOIN sys.columns c ON sc.column_id = c.column_id AND sc.object_id = c.object_id
-            CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
-            WHERE s.object_id = OBJECT_ID(%s)
-            """,
-            (f"{params.schema}.{params.table}",),
-        )
+            result: Dict[str, Dict[str, Any]] = {"__table__": table_stats}
 
-        result: Dict[str, Dict[str, Any]] = {"__table__": table_stats}
+            for row in cursor.fetchall():
+                col_name, stat_name, rows, mod_counter = row
+                if col_name not in result:
+                    result[col_name] = {
+                        "rows": rows,
+                        "modification_counter": mod_counter,
+                        "stat_name": stat_name,
+                    }
 
-        for row in cursor.fetchall():
-            col_name, stat_name, rows, mod_counter = row
-            if col_name not in result:
-                result[col_name] = {
-                    "rows": rows,
-                    "modification_counter": mod_counter,
-                    "stat_name": stat_name,
-                }
+            # For each column with stats, get density (1/distinct) from DBCC SHOW_STATISTICS
+            # This requires more complex parsing, so we'll do a simpler approach:
+            # Query actual distinct counts for key columns (more reliable for preplan)
+            for col_name in list(result.keys()):
+                if col_name == "__table__":
+                    continue
+                try:
+                    # Get null fraction
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            CAST(SUM(CASE WHEN [{col_name}] IS NULL THEN 1 ELSE 0 END) AS FLOAT)
+                            / NULLIF(COUNT(*), 0) AS null_frac,
+                            COUNT(DISTINCT [{col_name}]) AS n_distinct
+                        FROM [{params.schema}].[{params.table}]
+                        """,
+                    )
+                    stats_row = cursor.fetchone()
+                    if stats_row:
+                        result[col_name]["null_frac"] = stats_row[0] or 0.0
+                        result[col_name]["n_distinct"] = stats_row[1] or 0
+                        # Mark as unique if distinct = row count
+                        if result[col_name]["n_distinct"] == table_stats["row_estimate"]:
+                            result[col_name]["n_distinct"] = -1  # Convention: -1 = all unique
+                except Exception:
+                    # Stats query failed, leave partial data
+                    pass
 
-        # For each column with stats, get density (1/distinct) from DBCC SHOW_STATISTICS
-        # This requires more complex parsing, so we'll do a simpler approach:
-        # Query actual distinct counts for key columns (more reliable for preplan)
-        for col_name in list(result.keys()):
-            if col_name == "__table__":
-                continue
-            try:
-                # Get null fraction
-                cursor.execute(
-                    f"""
-                    SELECT
-                        CAST(SUM(CASE WHEN [{col_name}] IS NULL THEN 1 ELSE 0 END) AS FLOAT)
-                        / NULLIF(COUNT(*), 0) AS null_frac,
-                        COUNT(DISTINCT [{col_name}]) AS n_distinct
-                    FROM [{params.schema}].[{params.table}]
-                    """,
-                )
-                stats_row = cursor.fetchone()
-                if stats_row:
-                    result[col_name]["null_frac"] = stats_row[0] or 0.0
-                    result[col_name]["n_distinct"] = stats_row[1] or 0
-                    # Mark as unique if distinct = row count
-                    if result[col_name]["n_distinct"] == table_stats["row_estimate"]:
-                        result[col_name]["n_distinct"] = -1  # Convention: -1 = all unique
-            except Exception:
-                # Stats query failed, leave partial data
-                pass
-
-        return result
+            return result

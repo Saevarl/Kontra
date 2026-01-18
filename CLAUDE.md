@@ -8,11 +8,23 @@ Kontra is a developer-first data quality **measurement engine**. It measures dat
 
 Supports Parquet, CSV, PostgreSQL, SQL Server, local files, and S3. Uses a hybrid execution model: metadata preplan → SQL pushdown → Polars.
 
+## Before Writing Code
+
+**IMPORTANT: Read the relevant reference documents before modifying code.**
+
+| Document | When to Read | What It Covers |
+|----------|--------------|----------------|
+| `docs/working/codebase_health.md` | **Before any code changes** | Coding guidelines per module, unresolved technical debt |
+| `kontra-manifest.md` | Before design/feature decisions | Core beliefs, design constraints, what Kontra is NOT |
+| `docs/working/execution_design_notes.md` | Before execution/optimization changes | Tier semantics, trade-offs, known issues |
+
+The codebase health document contains module-specific guidelines (e.g., how to add new SQL executors, how state backends handle annotations). Following these prevents introducing patterns that will need to be refactored later.
+
 ## Kontra Manifest
 
-**Before making design or feature decisions, refer to `kontra-manifest.md` in the project root.**
+**For design and feature decisions, refer to `kontra-manifest.md` in the project root.**
 
-The manifest defines Kontra's core beliefs, design constraints, and boundaries. Key principles:
+Key principles:
 - Kontra is a **primitive**, not a product
 - Measurement comes before explanation (counts are facts, samples are explanations)
 - Execution is tiered: metadata → pushdown → in-memory
@@ -20,6 +32,18 @@ The manifest defines Kontra's core beliefs, design constraints, and boundaries. 
 - Boring is a feature (no workflows, no UI, no orchestration)
 
 If a proposed feature conflicts with the manifest, the feature needs a very strong justification or should be rejected.
+
+## Execution Design Notes
+
+**For execution trade-offs and nuances, refer to `docs/working/execution_design_notes.md`.**
+
+This document captures:
+- Core philosophy: "Validate validates" (fast pass/fail, not information richness)
+- Tier semantics: What each tier returns (preplan=binary, SQL=varies, Polars=exact)
+- EXISTS optimization: Why only for `not_null` (sample value is always NULL)
+- Sample failures tension: Early stop = limited samples
+- Tier equivalence invariant: All tiers agree on pass/fail, counts may differ
+- Known issues: unique semantic mismatch, NaN vs NULL pitfalls
 
 ## Key Commands
 
@@ -220,6 +244,16 @@ See `BUGCHECKLIST.md` for known bugs discovered through adversarial testing. Whe
 1. Check the item in BUGCHECKLIST.md
 2. Add a test that reproduces the bug
 3. Move the item to the "Completed" section with the test file reference
+
+## Codebase Health
+
+**See `docs/working/codebase_health.md` for coding guidelines and technical debt.**
+
+This document contains:
+- **Guidelines section** - General principles and module-specific coding standards (read before writing code)
+- **Unresolved issues** - Prioritized list of technical debt to address
+
+When fixing issues or discovering new patterns, update this document.
 
 ## Data Sources
 

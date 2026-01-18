@@ -17,6 +17,118 @@ from typing import Any, Dict, Iterator, List, Optional, Union
 import yaml
 
 
+# --- Unique rule sampling helpers (shared by multiple methods) ---
+
+
+def _is_unique_rule(rule: Any) -> bool:
+    """Check if a rule is a unique rule."""
+    return getattr(rule, "name", None) == "unique"
+
+
+def _filter_samples_polars(
+    source: Any,  # pl.DataFrame or pl.LazyFrame
+    rule: Any,
+    predicate: Any,
+    n: int,
+) -> Any:  # pl.DataFrame
+    """
+    Filter samples with special handling for unique rule.
+
+    Works with both DataFrame and LazyFrame sources. Adds _row_index,
+    and for unique rules adds _duplicate_count sorted by worst offenders.
+
+    Args:
+        source: Polars DataFrame or LazyFrame
+        rule: Rule object (used to detect unique rule)
+        predicate: Polars expression for filtering
+        n: Maximum rows to return
+
+    Returns:
+        Polars DataFrame with filtered samples
+    """
+    import polars as pl
+
+    # Convert DataFrame to LazyFrame if needed
+    if isinstance(source, pl.DataFrame):
+        lf = source.lazy()
+    else:
+        lf = source
+
+    # Add row index
+    lf = lf.with_row_index("_row_index")
+
+    # Special case: unique rule - add duplicate count, sort by worst offenders
+    if _is_unique_rule(rule):
+        column = rule.params.get("column")
+        return (
+            lf.with_columns(
+                pl.col(column).count().over(column).alias("_duplicate_count")
+            )
+            .filter(predicate)
+            .sort("_duplicate_count", descending=True)
+            .head(n)
+            .collect()
+        )
+    else:
+        return lf.filter(predicate).head(n).collect()
+
+
+def _build_unique_sample_query_sql(
+    table: str,
+    column: str,
+    n: int,
+    dialect: str,
+) -> str:
+    """
+    Build SQL query for sampling unique rule violations.
+
+    Returns query that finds duplicate values, orders by worst offenders,
+    and includes _duplicate_count and _row_index.
+
+    Args:
+        table: Fully qualified table name
+        column: Column being checked for uniqueness
+        n: Maximum rows to return
+        dialect: SQL dialect ("postgres", "mssql")
+
+    Returns:
+        SQL query string
+    """
+    col = f'"{column}"'
+
+    if dialect == "mssql":
+        return f"""
+            SELECT t.*, dup._duplicate_count,
+                   ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS _row_index
+            FROM {table} t
+            JOIN (
+                SELECT {col}, COUNT(*) as _duplicate_count
+                FROM {table}
+                GROUP BY {col}
+                HAVING COUNT(*) > 1
+            ) dup ON t.{col} = dup.{col}
+            ORDER BY dup._duplicate_count DESC
+            OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY
+        """
+    else:
+        return f"""
+            SELECT t.*, dup._duplicate_count,
+                   ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS _row_index
+            FROM {table} t
+            JOIN (
+                SELECT {col}, COUNT(*) as _duplicate_count
+                FROM {table}
+                GROUP BY {col}
+                HAVING COUNT(*) > 1
+            ) dup ON t.{col} = dup.{col}
+            ORDER BY dup._duplicate_count DESC
+            LIMIT {n}
+        """
+
+
+# --- End unique rule helpers ---
+
+
 class FailureSamples:
     """
     Collection of sample rows that failed a validation rule.
@@ -143,6 +255,7 @@ class RuleResult:
         source: Measurement source ("metadata", "sql", "polars")
         column: Column name if applicable
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
+        annotations: List of annotations on this rule (opt-in, loaded via get_run_with_annotations)
 
     Sampling properties:
         samples: List of sample failing rows, or None if unavailable
@@ -167,6 +280,9 @@ class RuleResult:
     samples_source: Optional[str] = None
     samples_reason: Optional[str] = None
     samples_truncated: bool = False
+
+    # Annotations (opt-in, loaded via get_run_with_annotations)
+    annotations: Optional[List[Dict[str, Any]]] = None
 
     def __repr__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
@@ -236,6 +352,10 @@ class RuleResult:
         if self.samples_truncated:
             d["samples_truncated"] = self.samples_truncated
 
+        # Annotations (opt-in)
+        if self.annotations is not None:
+            d["annotations"] = self.annotations
+
         return d
 
     def to_llm(self) -> str:
@@ -277,6 +397,19 @@ class RuleResult:
         elif self.samples_reason:
             parts.append(f"\n  Samples: {self.samples_reason}")
 
+        # Add annotations if available
+        if self.annotations:
+            parts.append(f"\n  Annotations ({len(self.annotations)}):")
+            for ann in self.annotations[:3]:
+                ann_type = ann.get("annotation_type", "note")
+                actor = ann.get("actor_id", "unknown")
+                summary = ann.get("summary", "")[:40]
+                if len(ann.get("summary", "")) > 40:
+                    summary += "..."
+                parts.append(f'    [{ann_type}] by {actor}: "{summary}"')
+            if len(self.annotations) > 3:
+                parts.append(f"    ... +{len(self.annotations) - 3} more")
+
         return " ".join(parts[:2]) + "".join(parts[2:])
 
 
@@ -297,6 +430,7 @@ class ValidationResult:
         blocking_failures: List of failed blocking rules
         warnings: List of failed warning rules
         stats: Optional statistics dict
+        annotations: List of run-level annotations (opt-in, loaded via get_run_with_annotations)
 
     Methods:
         sample_failures(rule_id, n=5): Get sample of failing rows for a rule
@@ -315,6 +449,7 @@ class ValidationResult:
     warning_count: int
     rules: List[RuleResult]
     stats: Optional[Dict[str, Any]] = None
+    annotations: Optional[List[Dict[str, Any]]] = None  # Run-level annotations (opt-in)
     _raw: Optional[Dict[str, Any]] = field(default=None, repr=False)
     # For sample_failures() - lazy evaluation
     _data_source: Optional[Any] = field(default=None, repr=False)
@@ -644,30 +779,14 @@ class ValidationResult:
             result_df = df.head(n)
             return self._apply_column_projection(result_df, columns)
 
-        # For Polars path, filter with predicate
-        # Special case: unique rule - add duplicate count
-        if getattr(rule_obj, "name", None) == "unique":
-            column = rule_obj.params.get("column")
-            result_df = (
-                df.with_row_index("_row_index")
-                .with_columns(
-                    pl.col(column).count().over(column).alias("_duplicate_count")
-                )
-                .filter(predicate)
-                .sort("_duplicate_count", descending=True)
-                .head(n)
-            )
-            # For unique rule, always include _duplicate_count
-            if columns is not None:
-                columns = list(columns) + ["_duplicate_count"]
-            return self._apply_column_projection(result_df, columns)
-        else:
-            result_df = (
-                df.with_row_index("_row_index")
-                .filter(predicate)
-                .head(n)
-            )
-            return self._apply_column_projection(result_df, columns)
+        # For Polars path, filter with predicate (unique rule handled by helper)
+        result_df = _filter_samples_polars(df, rule_obj, predicate, n)
+
+        # For unique rule, always include _duplicate_count in projection
+        if _is_unique_rule(rule_obj) and columns is not None:
+            columns = list(columns) + ["_duplicate_count"]
+
+        return self._apply_column_projection(result_df, columns)
 
     def _apply_column_projection(
         self,
@@ -707,7 +826,7 @@ class ValidationResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        d = {
             "passed": self.passed,
             "dataset": self.dataset,
             "total_rows": self.total_rows,
@@ -718,6 +837,9 @@ class ValidationResult:
             "rules": [r.to_dict() for r in self.rules],
             "stats": self.stats,
         }
+        if self.annotations is not None:
+            d["annotations"] = self.annotations
+        return d
 
     def to_json(self, indent: Optional[int] = None) -> str:
         """Convert to JSON string."""
@@ -765,6 +887,19 @@ class ValidationResult:
 
         # Passed summary
         lines.append(f"PASSED: {self.passed_count} rules")
+
+        # Run-level annotations
+        if self.annotations:
+            lines.append(f"ANNOTATIONS ({len(self.annotations)}):")
+            for ann in self.annotations[:3]:
+                ann_type = ann.get("annotation_type", "note")
+                actor = ann.get("actor_id", "unknown")
+                summary = ann.get("summary", "")[:50]
+                if len(ann.get("summary", "")) > 50:
+                    summary += "..."
+                lines.append(f'  [{ann_type}] by {actor}: "{summary}"')
+            if len(self.annotations) > 3:
+                lines.append(f"  ... +{len(self.annotations) - 3} more")
 
         return "\n".join(lines)
 
@@ -894,30 +1029,9 @@ class ValidationResult:
         # For non-database sources (or if SQL filter wasn't available),
         # we need to filter with Polars
         if "_row_index" not in df.columns:
-            # Filter to failing rows, add index, limit
+            # Filter to failing rows, add index, limit (unique rule handled by helper)
             try:
-                import polars as pl
-
-                # Special case: unique rule - add duplicate count, sort by worst offenders
-                if getattr(rule_obj, "name", None) == "unique":
-                    column = rule_obj.params.get("column")
-                    failing = (
-                        df.with_row_index("_row_index")
-                        .with_columns(
-                            pl.col(column).count().over(column).alias("_duplicate_count")
-                        )
-                        .filter(predicate)
-                        .sort("_duplicate_count", descending=True)
-                        .head(n)
-                        .to_dicts()
-                    )
-                else:
-                    failing = (
-                        df.with_row_index("_row_index")
-                        .filter(predicate)
-                        .head(n)
-                        .to_dicts()
-                    )
+                failing = _filter_samples_polars(df, rule_obj, predicate, n).to_dicts()
             except Exception as e:
                 raise RuntimeError(f"Failed to query failing rows: {e}") from e
         else:
@@ -1033,38 +1147,10 @@ class ValidationResult:
         sql_filter = None
 
         # Special case: unique rule needs subquery with table name
-        if rule is not None and getattr(rule, "name", None) == "unique":
+        if _is_unique_rule(rule):
             column = rule.params.get("column")
             if column:
-                col = f'"{column}"'
-                if dialect == "mssql":
-                    query = f"""
-                        SELECT t.*, dup._duplicate_count,
-                               ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS _row_index
-                        FROM {table} t
-                        JOIN (
-                            SELECT {col}, COUNT(*) as _duplicate_count
-                            FROM {table}
-                            GROUP BY {col}
-                            HAVING COUNT(*) > 1
-                        ) dup ON t.{col} = dup.{col}
-                        ORDER BY dup._duplicate_count DESC
-                        OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY
-                    """
-                else:
-                    query = f"""
-                        SELECT t.*, dup._duplicate_count,
-                               ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS _row_index
-                        FROM {table} t
-                        JOIN (
-                            SELECT {col}, COUNT(*) as _duplicate_count
-                            FROM {table}
-                            GROUP BY {col}
-                            HAVING COUNT(*) > 1
-                        ) dup ON t.{col} = dup.{col}
-                        ORDER BY dup._duplicate_count DESC
-                        LIMIT {n}
-                    """
+                query = _build_unique_sample_query_sql(table, column, n, dialect)
                 return pl.read_database(query, conn)
 
         if rule is not None and hasattr(rule, "to_sql_filter"):
@@ -1116,30 +1202,9 @@ class ValidationResult:
                 predicate = pred_obj.expr
 
         if predicate is not None:
-            # Special case: unique rule - add duplicate count, sort by worst offenders
-            if getattr(rule, "name", None) == "unique":
-                column = rule.params.get("column")
-                return (
-                    pl.scan_parquet(path)
-                    .with_row_index("_row_index")
-                    .with_columns(
-                        pl.col(column).count().over(column).alias("_duplicate_count")
-                    )
-                    .filter(predicate)
-                    .sort("_duplicate_count", descending=True)
-                    .head(n)
-                    .collect()
-                )
-            else:
-                # Use lazy scanning with predicate pushdown
-                # The filter pushes down to Parquet row groups
-                return (
-                    pl.scan_parquet(path)
-                    .with_row_index("_row_index")
-                    .filter(predicate)
-                    .head(n)
-                    .collect()
-                )
+            # Use lazy scanning with predicate pushdown (unique rule handled by helper)
+            lf = pl.scan_parquet(path)
+            return _filter_samples_polars(lf, rule, predicate, n)
         else:
             # No predicate available, load all
             return pl.read_parquet(path)

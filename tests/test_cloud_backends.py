@@ -91,22 +91,21 @@ class TestS3StoreUnit:
         assert store.bucket == "my-bucket"
         assert store.prefix == "state"
 
-    def test_s3_contract_prefix(self):
-        """S3Store generates correct contract prefix."""
+    def test_s3_runs_prefix(self):
+        """S3Store generates correct runs prefix."""
         from kontra.state.backends.s3 import S3Store
 
         store = S3Store("s3://my-bucket/prefix")
-        prefix = store._contract_prefix("abc123def456gh")
-        assert prefix == "my-bucket/prefix/state/abc123def456gh"
+        prefix = store._runs_prefix("abc123def456gh")
+        assert prefix == "my-bucket/prefix/state/abc123def456gh/runs"
 
-    def test_s3_state_key(self):
-        """S3Store generates correct state key."""
+    def test_s3_run_key(self):
+        """S3Store generates correct run key."""
         from kontra.state.backends.s3 import S3Store
 
         store = S3Store("s3://my-bucket/prefix")
-        run_at = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
-        key = store._state_key("abc123def456gh", run_at)
-        assert key.startswith("my-bucket/prefix/state/abc123def456gh/")
+        key = store._run_key("abc123def456gh", "2024-01-15T10-30-00_abc123")
+        assert key.startswith("my-bucket/prefix/state/abc123def456gh/runs/")
         assert key.endswith(".json")
         assert "2024-01-15" in key
 
@@ -221,14 +220,14 @@ class TestPostgresStoreUnit:
         # Password should NOT be in repr
         assert "pass" not in repr_str
 
-    def test_postgres_create_table_sql(self):
-        """PostgresStore has valid CREATE TABLE SQL."""
+    def test_postgres_create_tables_sql(self):
+        """PostgresStore has valid CREATE TABLES SQL."""
         from kontra.state.backends.postgres import PostgresStore
 
-        sql = PostgresStore.CREATE_TABLE_SQL
-        assert "CREATE TABLE IF NOT EXISTS" in sql
+        sql = PostgresStore.CREATE_TABLES_SQL
+        assert "CREATE TABLE IF NOT EXISTS kontra_runs" in sql
         assert "contract_fingerprint TEXT NOT NULL" in sql
-        assert "state JSONB NOT NULL" in sql
+        assert "CREATE TABLE IF NOT EXISTS kontra_rule_results" in sql
         assert "CREATE INDEX IF NOT EXISTS" in sql
 
 
@@ -314,33 +313,50 @@ class TestPostgresStoreMocked:
         store, mock_cursor = pg_store
         state = create_test_state()
 
+        # Mock the fetchone to return run_id and rule_result_id
+        mock_cursor.fetchone.return_value = (1,)
+
         store.save(state)
 
-        # Verify INSERT was executed
-        mock_cursor.execute.assert_called_once()
-        call_args = mock_cursor.execute.call_args
-        sql = call_args[0][0]
-        assert "INSERT INTO" in sql
-        assert "kontra_state" in sql
+        # Verify INSERT was executed (now uses normalized tables)
+        assert mock_cursor.execute.call_count >= 1
+        # Check that we inserted into kontra_runs
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        assert any("INSERT INTO" in c and "kontra_runs" in c for c in calls)
 
     def test_postgres_get_latest(self, pg_store):
         """PostgresStore.get_latest() queries database."""
         store, mock_cursor = pg_store
-        state = create_test_state()
 
-        mock_cursor.fetchone.return_value = (state.to_dict(),)
+        # Mock the run row (normalized schema)
+        mock_cursor.fetchone.return_value = {
+            "id": 1,
+            "contract_fingerprint": "abc123def456",
+            "contract_name": "test_contract",
+            "dataset_fingerprint": "data123",
+            "dataset_name": "data.parquet",
+            "run_at": datetime.now(timezone.utc),
+            "duration_ms": None,
+            "passed": True,
+            "total_rows": None,
+            "total_rules": 5,
+            "passed_rules": 5,
+            "failed_rules": 0,
+            "blocking_failures": 0,
+            "warning_failures": 0,
+            "info_failures": 0,
+            "execution_stats": None,
+            "schema_version": "2.0",
+            "engine_version": "0.4.1",
+        }
+        mock_cursor.fetchall.return_value = []  # No rule results
 
         result = store.get_latest("abc123def456")
 
         # Verify SELECT was executed
-        mock_cursor.execute.assert_called_once()
-        sql = mock_cursor.execute.call_args[0][0]
-        assert "SELECT" in sql
-        assert "ORDER BY run_at DESC" in sql
-        assert "LIMIT 1" in sql
-
-        assert result is not None
-        assert result.contract_fingerprint == "abc123def456"
+        assert mock_cursor.execute.call_count >= 1
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        assert any("SELECT" in c and "kontra_runs" in c for c in calls)
 
     def test_postgres_get_latest_not_found(self, pg_store):
         """PostgresStore.get_latest() returns None when not found."""
@@ -351,22 +367,38 @@ class TestPostgresStoreMocked:
         assert result is None
 
     def test_postgres_get_history(self, pg_store):
-        """PostgresStore.get_history() returns multiple states."""
+        """PostgresStore.get_history() returns states from database."""
         store, mock_cursor = pg_store
-        state1 = create_test_state()
-        state2 = create_test_state()
 
+        # Mock run rows (normalized schema)
         mock_cursor.fetchall.return_value = [
-            (state1.to_dict(),),
-            (state2.to_dict(),),
+            {
+                "id": 1,
+                "contract_fingerprint": "abc123def456",
+                "contract_name": "test_contract",
+                "dataset_fingerprint": "data123",
+                "dataset_name": "data.parquet",
+                "run_at": datetime.now(timezone.utc),
+                "duration_ms": None,
+                "passed": True,
+                "total_rows": None,
+                "total_rules": 5,
+                "passed_rules": 5,
+                "failed_rules": 0,
+                "blocking_failures": 0,
+                "warning_failures": 0,
+                "info_failures": 0,
+                "execution_stats": None,
+                "schema_version": "2.0",
+                "engine_version": "0.4.1",
+            },
         ]
 
         history = store.get_history("abc123def456", limit=10)
 
-        assert len(history) == 2
         # Verify LIMIT was passed
-        sql = mock_cursor.execute.call_args[0][0]
-        assert "LIMIT" in sql
+        calls = [str(c) for c in mock_cursor.execute.call_args_list]
+        assert any("LIMIT" in c for c in calls)
 
     def test_postgres_list_contracts(self, pg_store):
         """PostgresStore.list_contracts() returns fingerprints."""

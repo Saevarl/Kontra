@@ -1,37 +1,37 @@
 # src/kontra/state/backends/local.py
 """
-Local filesystem state storage.
+Local filesystem state storage with normalized format (v0.5).
 
-Stores validation states in .kontra/state/ directory structure:
-
-.kontra/
-└── state/
+Directory structure:
+    .kontra/state/
     └── <contract_fingerprint>/
-        ├── 2024-01-13T10-30-00.json
-        ├── 2024-01-12T10-30-00.json
-        └── ...
+        └── runs/
+            ├── <run_id>.json       # run metadata + rule results
+            └── <run_id>.ann.jsonl  # annotations (append-only)
 """
 
 from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+import random
+import string
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .base import StateBackend
-from kontra.state.types import ValidationState
+from kontra.state.types import Annotation, ValidationState
 
 
 class LocalStore(StateBackend):
     """
-    Filesystem-based state storage.
+    Filesystem-based state storage with normalized format.
 
     Default storage location is .kontra/state/ in the current working
     directory. Can be customized via the base_path parameter.
 
-    State files are JSON with timestamp-based names for easy sorting.
+    Run IDs are timestamp-based: YYYY-MM-DDTHH-MM-SS_<random>
     """
 
     def __init__(self, base_path: Optional[str] = None):
@@ -51,49 +51,81 @@ class LocalStore(StateBackend):
         """Get the directory for a contract's states."""
         return self.base_path / contract_fingerprint
 
-    def _state_filename(self, run_at: datetime) -> str:
-        """Generate filename from timestamp."""
-        # Use ISO format but replace : with - for filesystem compatibility
-        ts = run_at.isoformat().replace(":", "-").replace("+", "_")
-        return f"{ts}.json"
+    def _runs_dir(self, contract_fingerprint: str) -> Path:
+        """Get the runs directory for a contract."""
+        return self._contract_dir(contract_fingerprint) / "runs"
 
-    def _parse_filename_timestamp(self, filename: str) -> Optional[datetime]:
-        """Parse timestamp from filename."""
+    def _generate_run_id(self, run_at: datetime) -> str:
+        """Generate a unique run ID from timestamp."""
+        # Format: YYYY-MM-DDTHH-MM-SS_<random>
+        # The timestamp prefix makes them sortable
+        ts = run_at.strftime("%Y-%m-%dT%H-%M-%S")
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        return f"{ts}_{suffix}"
+
+    def _parse_run_id_timestamp(self, run_id: str) -> Optional[datetime]:
+        """Parse timestamp from run ID."""
         try:
-            # Remove .json extension
-            ts_str = filename.replace(".json", "")
-            # Restore : from - and + from _
-            ts_str = ts_str.replace("-", ":", 2)  # Only first two for time
-            # Handle the date part separately
-            parts = ts_str.split("T")
-            if len(parts) != 2:
-                return None
-            date_part = parts[0]
-            time_part = parts[1].replace("-", ":")
-            time_part = time_part.replace("_", "+")
-            ts_str = f"{date_part}T{time_part}"
-            return datetime.fromisoformat(ts_str)
+            # Split on underscore to get timestamp part
+            ts_part = run_id.split("_")[0]
+            return datetime.strptime(ts_part, "%Y-%m-%dT%H-%M-%S").replace(tzinfo=timezone.utc)
         except Exception:
             return None
 
+    def _run_file(self, contract_fingerprint: str, run_id: str) -> Path:
+        """Get the path for a run's state file."""
+        return self._runs_dir(contract_fingerprint) / f"{run_id}.json"
+
+    def _annotations_file(self, contract_fingerprint: str, run_id: str) -> Path:
+        """Get the path for a run's annotations file."""
+        return self._runs_dir(contract_fingerprint) / f"{run_id}.ann.jsonl"
+
     def save(self, state: ValidationState) -> None:
         """Save a validation state to the filesystem."""
-        contract_dir = self._contract_dir(state.contract_fingerprint)
-        contract_dir.mkdir(parents=True, exist_ok=True)
+        runs_dir = self._runs_dir(state.contract_fingerprint)
+        runs_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = self._state_filename(state.run_at)
-        filepath = contract_dir / filename
+        # Generate run ID if not set
+        run_id = self._generate_run_id(state.run_at)
+
+        # Store run_id in the state dict
+        state_dict = state.to_dict()
+        state_dict["_run_id"] = run_id
+
+        filepath = self._run_file(state.contract_fingerprint, run_id)
 
         # Write atomically using temp file
         temp_path = filepath.with_suffix(".tmp")
         try:
-            temp_path.write_text(state.to_json(), encoding="utf-8")
+            temp_path.write_text(
+                json.dumps(state_dict, indent=2, default=str),
+                encoding="utf-8",
+            )
             temp_path.rename(filepath)
         except Exception:
-            # Clean up temp file on failure
             if temp_path.exists():
                 temp_path.unlink()
             raise
+
+    def _load_state(self, filepath: Path) -> Optional[ValidationState]:
+        """Load a state from a file path."""
+        try:
+            content = filepath.read_text(encoding="utf-8")
+            data = json.loads(content)
+
+            # Extract run_id for later use
+            run_id = data.pop("_run_id", None)
+
+            state = ValidationState.from_dict(data)
+
+            # Store run_id as a synthetic ID (hash for now)
+            if run_id:
+                # Use string hash as integer ID for compatibility
+                state.id = hash(run_id) & 0x7FFFFFFF  # Positive integer
+
+            return state
+        except Exception:
+            return None
 
     def get_latest(self, contract_fingerprint: str) -> Optional[ValidationState]:
         """Get the most recent state for a contract."""
@@ -106,27 +138,23 @@ class LocalStore(StateBackend):
         limit: int = 10,
     ) -> List[ValidationState]:
         """Get recent history for a contract, newest first."""
-        contract_dir = self._contract_dir(contract_fingerprint)
+        runs_dir = self._runs_dir(contract_fingerprint)
 
-        if not contract_dir.exists():
+        if not runs_dir.exists():
             return []
 
-        # List all JSON files
+        # List all JSON files (excluding .ann.jsonl)
         state_files = sorted(
-            contract_dir.glob("*.json"),
+            [f for f in runs_dir.glob("*.json") if not f.name.endswith(".ann.jsonl")],
             key=lambda p: p.name,
-            reverse=True,  # Newest first
+            reverse=True,  # Newest first (timestamp prefix sorts correctly)
         )
 
         states = []
         for filepath in state_files[:limit]:
-            try:
-                content = filepath.read_text(encoding="utf-8")
-                state = ValidationState.from_json(content)
+            state = self._load_state(filepath)
+            if state:
                 states.append(state)
-            except Exception:
-                # Skip corrupted files
-                continue
 
         return states
 
@@ -136,14 +164,14 @@ class LocalStore(StateBackend):
         keep_count: int = 100,
     ) -> int:
         """Delete old states, keeping the most recent ones."""
-        contract_dir = self._contract_dir(contract_fingerprint)
+        runs_dir = self._runs_dir(contract_fingerprint)
 
-        if not contract_dir.exists():
+        if not runs_dir.exists():
             return 0
 
         # List all JSON files, sorted newest first
         state_files = sorted(
-            contract_dir.glob("*.json"),
+            [f for f in runs_dir.glob("*.json") if not f.name.endswith(".ann.jsonl")],
             key=lambda p: p.name,
             reverse=True,
         )
@@ -152,8 +180,15 @@ class LocalStore(StateBackend):
         deleted = 0
         for filepath in state_files[keep_count:]:
             try:
+                # Delete state file
                 filepath.unlink()
                 deleted += 1
+
+                # Also delete corresponding annotations file if exists
+                run_id = filepath.stem
+                ann_file = self._annotations_file(contract_fingerprint, run_id)
+                if ann_file.exists():
+                    ann_file.unlink()
             except Exception:
                 continue
 
@@ -185,14 +220,17 @@ class LocalStore(StateBackend):
         deleted = 0
 
         if contract_fingerprint:
-            contract_dir = self._contract_dir(contract_fingerprint)
-            if contract_dir.exists():
-                for filepath in contract_dir.glob("*.json"):
+            runs_dir = self._runs_dir(contract_fingerprint)
+            if runs_dir.exists():
+                for filepath in runs_dir.glob("*.json"):
                     filepath.unlink()
                     deleted += 1
-                # Remove empty directory
+                for filepath in runs_dir.glob("*.jsonl"):
+                    filepath.unlink()
+                # Remove empty directories
                 try:
-                    contract_dir.rmdir()
+                    runs_dir.rmdir()
+                    self._contract_dir(contract_fingerprint).rmdir()
                 except OSError:
                     pass
         else:
@@ -200,15 +238,197 @@ class LocalStore(StateBackend):
             if self.base_path.exists():
                 for contract_dir in self.base_path.iterdir():
                     if contract_dir.is_dir():
-                        for filepath in contract_dir.glob("*.json"):
-                            filepath.unlink()
-                            deleted += 1
+                        runs_dir = contract_dir / "runs"
+                        if runs_dir.exists():
+                            for filepath in runs_dir.glob("*.json"):
+                                filepath.unlink()
+                                deleted += 1
+                            for filepath in runs_dir.glob("*.jsonl"):
+                                filepath.unlink()
+                            try:
+                                runs_dir.rmdir()
+                            except OSError:
+                                pass
                         try:
                             contract_dir.rmdir()
                         except OSError:
                             pass
 
         return deleted
+
+    # -------------------------------------------------------------------------
+    # Annotation Methods
+    # -------------------------------------------------------------------------
+
+    def save_annotation(self, annotation: Annotation) -> int:
+        """
+        Save an annotation (append-only).
+
+        For file-based backends, we need the run_id string, not the integer ID.
+        Annotations are stored in JSONL format alongside the run file.
+        """
+        # We need to find the run file to get the run_id string
+        # This is a limitation of file-based backends - we need the fingerprint
+
+        # For now, raise NotImplementedError - annotations require the contract_fingerprint
+        # which isn't stored in the annotation. Callers should use save_annotation_for_run.
+        raise NotImplementedError(
+            "LocalStore.save_annotation requires contract fingerprint. "
+            "Use save_annotation_for_run instead."
+        )
+
+    def save_annotation_for_run(
+        self,
+        contract_fingerprint: str,
+        run_id_str: str,
+        annotation: Annotation,
+    ) -> int:
+        """
+        Save an annotation for a specific run.
+
+        Args:
+            contract_fingerprint: The contract fingerprint
+            run_id_str: The string run ID (e.g., "2024-01-15T09-30-00_abc123")
+            annotation: The annotation to save
+
+        Returns:
+            A synthetic annotation ID (line number)
+        """
+        ann_file = self._annotations_file(contract_fingerprint, run_id_str)
+        ann_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Generate a synthetic ID based on existing line count
+        line_count = 0
+        if ann_file.exists():
+            with open(ann_file, encoding="utf-8") as f:
+                line_count = sum(1 for _ in f)
+        annotation.id = line_count + 1
+
+        # Append to JSONL file
+        with open(ann_file, "a", encoding="utf-8") as f:
+            f.write(annotation.to_json() + "\n")
+
+        return annotation.id
+
+    def get_annotations(
+        self,
+        run_id: int,
+        rule_result_id: Optional[int] = None,
+    ) -> List[Annotation]:
+        """
+        Get annotations for a run.
+
+        Note: For file-based backends, run_id is a hash of the run_id string.
+        This method may not work directly. Use get_run_with_annotations instead.
+        """
+        # File-based backends need the fingerprint to locate annotations
+        return []
+
+    def get_run_with_annotations(
+        self,
+        contract_fingerprint: str,
+        run_id: Optional[int] = None,
+    ) -> Optional[ValidationState]:
+        """Get a validation state with its annotations loaded."""
+        # Get the state
+        if run_id is None:
+            state = self.get_latest(contract_fingerprint)
+        else:
+            # Search for state with matching ID hash
+            states = self.get_history(contract_fingerprint, limit=100)
+            state = None
+            for s in states:
+                if s.id == run_id:
+                    state = s
+                    break
+
+        if not state:
+            return None
+
+        # Load annotations
+        runs_dir = self._runs_dir(contract_fingerprint)
+        if not runs_dir.exists():
+            state.annotations = []
+            for rule in state.rules:
+                rule.annotations = []
+            return state
+
+        # Find the corresponding run file to get run_id string
+        run_id_str = None
+        for filepath in runs_dir.glob("*.json"):
+            if filepath.name.endswith(".ann.jsonl"):
+                continue
+            loaded = self._load_state(filepath)
+            if loaded and loaded.id == state.id:
+                run_id_str = filepath.stem
+                break
+
+        if not run_id_str:
+            state.annotations = []
+            for rule in state.rules:
+                rule.annotations = []
+            return state
+
+        # Load annotations from JSONL
+        ann_file = self._annotations_file(contract_fingerprint, run_id_str)
+        annotations = []
+        if ann_file.exists():
+            with open(ann_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        annotations.append(Annotation.from_json(line))
+
+        self._attach_annotations_to_state(state, annotations)
+        return state
+
+    def get_history_with_annotations(
+        self,
+        contract_fingerprint: str,
+        limit: int = 10,
+    ) -> List[ValidationState]:
+        """Get recent history with annotations loaded."""
+        states = self.get_history(contract_fingerprint, limit=limit)
+
+        runs_dir = self._runs_dir(contract_fingerprint)
+        if not runs_dir.exists():
+            for state in states:
+                state.annotations = []
+                for rule in state.rules:
+                    rule.annotations = []
+            return states
+
+        # Build ID to run_id_str mapping
+        id_to_run_id: Dict[int, str] = {}
+        for filepath in runs_dir.glob("*.json"):
+            if filepath.name.endswith(".ann.jsonl"):
+                continue
+            loaded = self._load_state(filepath)
+            if loaded and loaded.id:
+                id_to_run_id[loaded.id] = filepath.stem
+
+        # Load annotations for each state
+        for state in states:
+            if state.id is None or state.id not in id_to_run_id:
+                state.annotations = []
+                for rule in state.rules:
+                    rule.annotations = []
+                continue
+
+            run_id_str = id_to_run_id[state.id]
+            ann_file = self._annotations_file(contract_fingerprint, run_id_str)
+
+            annotations = []
+            if ann_file.exists():
+                with open(ann_file, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            annotations.append(Annotation.from_json(line))
+
+            self._attach_annotations_to_state(state, annotations)
+
+        return states
 
     def __repr__(self) -> str:
         return f"LocalStore(base_path={self.base_path})"
