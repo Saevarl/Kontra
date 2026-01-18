@@ -19,6 +19,7 @@ Supports Parquet, CSV, PostgreSQL, SQL Server, local files, and S3. Uses a hybri
 | `docs/working/execution_design_notes.md` | Before execution/optimization changes | Tier semantics, trade-offs, known issues |
 | `docs/working/kontra-agent-transformation-manifest.md` | Before agent/transformation features | Probe abstraction, language discipline, invariants |
 | `docs/working/agent-transformation-mvp.md` | When implementing transformation probes | Scoped MVP: compare + profile_relationship |
+| `docs/working/agent-transformation-implementation.md` | During implementation | Architecture, algorithms, progress tracking |
 
 The codebase health document contains module-specific guidelines (e.g., how to add new SQL executors, how state backends handle annotations). Following these prevents introducing patterns that will need to be refactored later.
 
