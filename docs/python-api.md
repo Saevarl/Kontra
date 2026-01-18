@@ -423,49 +423,6 @@ print(f"Contract OK: {check.rules_count} rules need columns {check.columns_neede
 
 Note: `save=False` skips state persistence but still executes validation. Use `dry_run=True` to skip execution entirely.
 
-### Severity Weights & Quality Score
-
-For LLM-friendly numeric signals, configure severity weights in `.kontra/config.yml`:
-
-```yaml
-severity_weights:
-  blocking: 1.0
-  warning: 0.5
-  info: 0.1
-```
-
-When configured, each rule result includes its weight:
-
-```python
-result = kontra.validate(df, rules=[...])
-
-for rule in result.rules:
-    print(f"{rule.rule_id}: weight={rule.severity_weight}")
-    # COL:id:not_null: weight=1.0
-    # COL:name:unique: weight=0.5
-```
-
-The `quality_score` aggregates violations into a single 0.0-1.0 value:
-
-```python
-print(result.quality_score)  # 0.94
-
-# Included in to_llm() output:
-# VALIDATION: contract FAILED (1000 rows) [score=0.94]
-```
-
-**Formula:**
-```
-quality_score = 1.0 - (weighted_violations / max_possible)
-weighted_violations = Σ(rule.failed_count × rule.severity_weight)
-max_possible = total_rows × Σ(severity_weights)
-```
-
-**Important:**
-- Returns `None` if weights not configured (no implicit defaults)
-- Does NOT affect `result.passed` (blocking rules still gate that)
-- Kontra never interprets the score—consumers/agents decide what it means
-
 ### Compare Runs Over Time
 
 ```python

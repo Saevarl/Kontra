@@ -162,26 +162,33 @@ def validate_data(data_source: str, contract: str) -> dict:
 
     result = kontra.validate(data_source, contract=contract)
 
+    response = {
+        "passed": result.passed,
+        "total_rows": result.total_rows,
+        "summary": result.to_llm(),
+    }
+
+    # Include quality score if configured
+    if result.quality_score is not None:
+        response["quality_score"] = result.quality_score
+
     if result.blocking_failures:
-        # Critical issues - include context for routing
         failure = result.blocking_failures[0]
-        return {
-            "status": "blocked",
-            "rule": failure.rule_id,
+        response["status"] = "blocked"
+        response["worst_rule"] = {
+            "id": failure.rule_id,
             "message": failure.message,
             "failed_count": failure.failed_count,
+            "weight": failure.severity_weight,
             "owner": failure.context.get("owner") if failure.context else None,
         }
+    elif result.warnings:
+        response["status"] = "warnings"
+        response["warning_count"] = len(result.warnings)
+    else:
+        response["status"] = "passed"
 
-    if result.warnings:
-        # Non-critical issues
-        return {
-            "status": "warnings",
-            "count": len(result.warnings),
-            "summary": result.to_llm(),
-        }
-
-    return {"status": "passed", "summary": result.to_llm()}
+    return response
 ```
 
 Contracts can include `severity` (blocking/warning/info) and `context` (consumer-defined metadata) per rule:
