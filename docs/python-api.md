@@ -246,9 +246,9 @@ users = load_users()  # Raises ValidationError if validation fails
 
 | Mode | Behavior |
 |------|----------|
-| `"raise"` | Raise `ValidationError` on blocking failures (default) |
-| `"warn"` | Log warning, return data anyway |
-| `"return_result"` | Return `(data, ValidationResult)` tuple |
+| `"raise"` | Raise `ValidationError` on blocking failures—pipeline stops (default) |
+| `"warn"` | Emit warning to stderr, return data—pipeline continues |
+| `"return_result"` | Return `(data, ValidationResult)` tuple—caller decides |
 
 ```python
 # Warn but don't fail
