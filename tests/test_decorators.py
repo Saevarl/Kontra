@@ -311,6 +311,112 @@ class TestValidateDecoratorValidation:
                 return pl.DataFrame({"id": [1]})
 
 
+class TestValidateDecoratorCallback:
+    """Tests for on_fail with custom callback."""
+
+    def test_callback_receives_result_and_data(self):
+        """Callback receives ValidationResult and data."""
+        received = {}
+
+        def capture_callback(result, data):
+            received["result"] = result
+            received["data"] = data
+            return data
+
+        @kontra.validate_decorator(
+            rules=[rules.not_null("id")],
+            on_fail=capture_callback,
+            save=False,
+        )
+        def load_data() -> pl.DataFrame:
+            return pl.DataFrame({"id": [1, None, 3]})
+
+        output = load_data()
+
+        # Callback was called with correct args
+        assert "result" in received
+        assert "data" in received
+        assert not received["result"].passed
+        assert received["result"].failed_count == 1
+        assert isinstance(received["data"], pl.DataFrame)
+        # Returns what callback returns
+        assert output is received["data"]
+
+    def test_callback_can_raise(self):
+        """Callback can raise custom exception."""
+        class CustomError(Exception):
+            pass
+
+        def raise_custom(result, data):
+            if not result.passed:
+                raise CustomError(f"Custom error: {result.failed_count} violations")
+            return data
+
+        @kontra.validate_decorator(
+            rules=[rules.not_null("id")],
+            on_fail=raise_custom,
+            save=False,
+        )
+        def load_data() -> pl.DataFrame:
+            return pl.DataFrame({"id": [1, None, 3]})
+
+        with pytest.raises(CustomError, match="Custom error: 1 violations"):
+            load_data()
+
+    def test_callback_can_transform_data(self):
+        """Callback can transform and return different data."""
+        def filter_valid(result, data):
+            # Filter out rows with nulls
+            return data.drop_nulls()
+
+        @kontra.validate_decorator(
+            rules=[rules.not_null("id")],
+            on_fail=filter_valid,
+            save=False,
+        )
+        def load_data() -> pl.DataFrame:
+            return pl.DataFrame({"id": [1, None, 3]})
+
+        result = load_data()
+
+        # Data was filtered
+        assert result.shape == (2, 1)
+        assert result["id"].to_list() == [1, 3]
+
+    def test_callback_on_pass(self):
+        """Callback is still called when validation passes."""
+        call_count = [0]
+
+        def count_calls(result, data):
+            call_count[0] += 1
+            return data
+
+        @kontra.validate_decorator(
+            rules=[rules.not_null("id")],
+            on_fail=count_calls,
+            save=False,
+        )
+        def load_data() -> pl.DataFrame:
+            return pl.DataFrame({"id": [1, 2, 3]})  # No nulls
+
+        load_data()
+        assert call_count[0] == 1
+
+    def test_lambda_callback(self):
+        """Lambda function works as callback."""
+        @kontra.validate_decorator(
+            rules=[rules.not_null("id")],
+            on_fail=lambda result, data: (data, result),  # Always return tuple
+            save=False,
+        )
+        def load_data() -> pl.DataFrame:
+            return pl.DataFrame({"id": [1, 2, 3]})
+
+        data, result = load_data()
+        assert isinstance(data, pl.DataFrame)
+        assert result.passed
+
+
 class TestValidationErrorType:
     """Tests for ValidationError exception type."""
 

@@ -242,26 +242,40 @@ def load_users():
 users = load_users()  # Raises ValidationError if validation fails
 ```
 
-**`on_fail` modes:**
+**`on_fail` options:**
 
-| Mode | Behavior |
-|------|----------|
+| Option | Behavior |
+|--------|----------|
 | `"raise"` | Raise `ValidationError` on blocking failures—pipeline stops (default) |
 | `"warn"` | Emit warning to stderr, return data—pipeline continues |
 | `"return_result"` | Return `(data, ValidationResult)` tuple—caller decides |
+| `callable` | Custom callback `(result, data) -> data`—you decide |
 
 ```python
-# Warn but don't fail
-@kontra.validate_decorator(rules=[...], on_fail="warn")
+# Custom callback: Kontra measures, you decide
+def notify_and_continue(result, data):
+    if not result.passed:
+        slack.post(f"Validation failed: {result.failed_count} violations")
+    return data
+
+@kontra.validate_decorator(rules=[...], on_fail=notify_and_continue)
 def fetch_data():
+    ...
+
+# Lambda for quick transformations
+@kontra.validate_decorator(
+    rules=[...],
+    on_fail=lambda result, data: data.drop_nulls() if not result.passed else data
+)
+def get_orders():
     ...
 
 # Get validation result alongside data
 @kontra.validate_decorator(rules=[...], on_fail="return_result")
-def get_orders():
+def load_users():
     ...
 
-data, result = get_orders()
+data, result = load_users()
 if not result.passed:
     print(f"Validation issues: {result.failed_count}")
 ```
