@@ -72,9 +72,9 @@ for col in profile.columns:
 ```
 
 Presets control profiling depth:
-- `"scout"` - Quick recon (metadata only)
-- `"scan"` - Systematic pass (full stats) [default]
-- `"interrogate"` - Deep investigation (everything + percentiles)
+- `"scout"` - Quick recon (metadata only, no table scan)
+- `"scan"` - Full stats via metadata + strategic queries (uses pg_stats on PostgreSQL) [default]
+- `"interrogate"` - Deep investigation (full table scan + percentiles)
 
 ### Draft Rules from Profile
 
