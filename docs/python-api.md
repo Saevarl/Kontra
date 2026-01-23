@@ -531,10 +531,20 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 | `kontra.list_rules()` | List all available rule types |
 | `@kontra.validate_decorator(...)` | Decorator for pipeline validation |
 
+### Transformation Probes
+
+| Function | Description |
+|----------|-------------|
+| `kontra.compare(before, after, key)` | Measure transformation effects between datasets |
+| `kontra.profile_relationship(left, right, on)` | Measure JOIN structure between datasets |
+
+See [Transformation Probes](probes.md) for full documentation.
+
 ### History Functions
 
 | Function | Description |
 |----------|-------------|
+| `kontra.get_history(contract, since=None, limit=None, failed_only=False)` | Get validation history with filtering |
 | `kontra.list_runs(contract)` | List past validation runs |
 | `kontra.get_run(contract, run_id=None)` | Get specific run (default: latest) |
 | `kontra.has_runs(contract)` | Check if history exists for contract |
@@ -558,6 +568,8 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |
 | `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved` |
 | `Suggestions` | `filter(min_confidence)`, `to_dict()`, `to_yaml()`, `save(path)` |
+| `CompareResult` | `row_delta`, `duplicated_after`, `changed_rows`, `columns_modified`, `samples_*` |
+| `RelationshipProfile` | `left_key_multiplicity_max`, `right_key_multiplicity_max`, `*_keys_with_match`, `samples_*` |
 
 All result types support `to_dict()`, `to_json()`, and `to_llm()` for serialization.
 

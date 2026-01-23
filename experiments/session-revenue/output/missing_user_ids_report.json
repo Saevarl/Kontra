@@ -1,0 +1,1616 @@
+{
+  "num_missing_user_ids_in_summary": 22,
+  "missing_user_ids": [
+    502,
+    504,
+    507,
+    510,
+    511,
+    512,
+    514,
+    519,
+    520,
+    524,
+    525,
+    527,
+    529,
+    533,
+    537,
+    539,
+    540,
+    543,
+    545,
+    546,
+    547,
+    550
+  ],
+  "per_user": {
+    "502": {
+      "sessions_count_in_summary": 2,
+      "raw_clicks_count": 25,
+      "raw_is_bot_counts": {
+        "False": 11,
+        "True": 14
+      },
+      "filtered_clicks_count": 11,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 1303,
+          "session_id": 99,
+          "product_id": 196,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706636919,
+          "is_bot": false
+        },
+        {
+          "click_id": 1302,
+          "session_id": 99,
+          "product_id": 64,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706637236,
+          "is_bot": false
+        },
+        {
+          "click_id": 1299,
+          "session_id": 99,
+          "product_id": 127,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706636785,
+          "is_bot": false
+        },
+        {
+          "click_id": 7928,
+          "session_id": 625,
+          "product_id": 99,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704269627,
+          "is_bot": false
+        },
+        {
+          "click_id": 1298,
+          "session_id": 99,
+          "product_id": 49,
+          "event_type": "purchase",
+          "timestamp_seconds": 1706636916,
+          "is_bot": false
+        },
+        {
+          "click_id": 1294,
+          "session_id": 99,
+          "product_id": 195,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706636460,
+          "is_bot": false
+        },
+        {
+          "click_id": 7918,
+          "session_id": 625,
+          "product_id": 123,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704268579,
+          "is_bot": false
+        },
+        {
+          "click_id": 7924,
+          "session_id": 625,
+          "product_id": 142,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704268756,
+          "is_bot": false
+        },
+        {
+          "click_id": 7926,
+          "session_id": 625,
+          "product_id": 136,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704269190,
+          "is_bot": false
+        },
+        {
+          "click_id": 7922,
+          "session_id": 625,
+          "product_id": 136,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704268795,
+          "is_bot": false
+        }
+      ]
+    },
+    "504": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 9,
+      "raw_is_bot_counts": {
+        "False": 5,
+        "True": 4
+      },
+      "filtered_clicks_count": 5,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 4809,
+          "session_id": 376,
+          "product_id": 174,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706572010,
+          "is_bot": false
+        },
+        {
+          "click_id": 4804,
+          "session_id": 376,
+          "product_id": 100,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706571780,
+          "is_bot": false
+        },
+        {
+          "click_id": 4806,
+          "session_id": 376,
+          "product_id": 148,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706572002,
+          "is_bot": false
+        },
+        {
+          "click_id": 4810,
+          "session_id": 376,
+          "product_id": 154,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706572266,
+          "is_bot": false
+        },
+        {
+          "click_id": 4812,
+          "session_id": 376,
+          "product_id": 38,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706572236,
+          "is_bot": false
+        }
+      ]
+    },
+    "507": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 8,
+      "raw_is_bot_counts": {
+        "False": 5,
+        "True": 3
+      },
+      "filtered_clicks_count": 5,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 1077,
+          "session_id": 80,
+          "product_id": 166,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705463079,
+          "is_bot": false
+        },
+        {
+          "click_id": 1078,
+          "session_id": 80,
+          "product_id": 65,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705463356,
+          "is_bot": false
+        },
+        {
+          "click_id": 1075,
+          "session_id": 80,
+          "product_id": 169,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705463017,
+          "is_bot": false
+        },
+        {
+          "click_id": 1079,
+          "session_id": 80,
+          "product_id": 71,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705463470,
+          "is_bot": false
+        },
+        {
+          "click_id": 9168,
+          "session_id": 80,
+          "product_id": 71,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705463470,
+          "is_bot": false
+        }
+      ]
+    },
+    "510": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 21,
+      "raw_is_bot_counts": {
+        "True": 13,
+        "False": 8
+      },
+      "filtered_clicks_count": 8,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 8057,
+          "session_id": 637,
+          "product_id": 118,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704767328,
+          "is_bot": false
+        },
+        {
+          "click_id": 8058,
+          "session_id": 637,
+          "product_id": 2,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704767696,
+          "is_bot": false
+        },
+        {
+          "click_id": 8063,
+          "session_id": 637,
+          "product_id": 67,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704768343,
+          "is_bot": false
+        },
+        {
+          "click_id": 8066,
+          "session_id": 637,
+          "product_id": 72,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704767416,
+          "is_bot": false
+        },
+        {
+          "click_id": 8053,
+          "session_id": 637,
+          "product_id": 40,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704767274,
+          "is_bot": false
+        },
+        {
+          "click_id": 8064,
+          "session_id": 637,
+          "product_id": 93,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704767608,
+          "is_bot": false
+        },
+        {
+          "click_id": 8055,
+          "session_id": 637,
+          "product_id": 189,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704767500,
+          "is_bot": false
+        },
+        {
+          "click_id": 8065,
+          "session_id": 637,
+          "product_id": 137,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704768120,
+          "is_bot": false
+        }
+      ]
+    },
+    "511": {
+      "sessions_count_in_summary": 2,
+      "raw_clicks_count": 37,
+      "raw_is_bot_counts": {
+        "False": 18,
+        "True": 19
+      },
+      "filtered_clicks_count": 18,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 2091,
+          "session_id": 163,
+          "product_id": 91,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704256320,
+          "is_bot": false
+        },
+        {
+          "click_id": 6183,
+          "session_id": 486,
+          "product_id": 105,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704247898,
+          "is_bot": false
+        },
+        {
+          "click_id": 2092,
+          "session_id": 163,
+          "product_id": 31,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704256435,
+          "is_bot": false
+        },
+        {
+          "click_id": 2105,
+          "session_id": 163,
+          "product_id": 156,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704256866,
+          "is_bot": false
+        },
+        {
+          "click_id": 2100,
+          "session_id": 163,
+          "product_id": 135,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704257382,
+          "is_bot": false
+        },
+        {
+          "click_id": 2098,
+          "session_id": 163,
+          "product_id": 113,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704257034,
+          "is_bot": false
+        },
+        {
+          "click_id": 2095,
+          "session_id": 163,
+          "product_id": 112,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704256604,
+          "is_bot": false
+        },
+        {
+          "click_id": 2094,
+          "session_id": 163,
+          "product_id": 91,
+          "event_type": "purchase",
+          "timestamp_seconds": 1704256506,
+          "is_bot": false
+        },
+        {
+          "click_id": 9351,
+          "session_id": 486,
+          "product_id": 143,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704248452,
+          "is_bot": false
+        },
+        {
+          "click_id": 2106,
+          "session_id": 163,
+          "product_id": 53,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704257445,
+          "is_bot": false
+        }
+      ]
+    },
+    "512": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 11,
+      "raw_is_bot_counts": {
+        "True": 3,
+        "False": 8
+      },
+      "filtered_clicks_count": 8,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 5100,
+          "session_id": 400,
+          "product_id": 174,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704727707,
+          "is_bot": false
+        },
+        {
+          "click_id": 5103,
+          "session_id": 400,
+          "product_id": 70,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704727650,
+          "is_bot": false
+        },
+        {
+          "click_id": 9160,
+          "session_id": 400,
+          "product_id": 157,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704727566,
+          "is_bot": false
+        },
+        {
+          "click_id": 5101,
+          "session_id": 400,
+          "product_id": 79,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704727812,
+          "is_bot": false
+        },
+        {
+          "click_id": 5099,
+          "session_id": 400,
+          "product_id": 183,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704727598,
+          "is_bot": false
+        },
+        {
+          "click_id": 5105,
+          "session_id": 400,
+          "product_id": 27,
+          "event_type": "purchase",
+          "timestamp_seconds": 1704728272,
+          "is_bot": false
+        },
+        {
+          "click_id": 5098,
+          "session_id": 400,
+          "product_id": 60,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704727461,
+          "is_bot": false
+        },
+        {
+          "click_id": 5106,
+          "session_id": 400,
+          "product_id": 157,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704727566,
+          "is_bot": false
+        }
+      ]
+    },
+    "514": {
+      "sessions_count_in_summary": 2,
+      "raw_clicks_count": 31,
+      "raw_is_bot_counts": {
+        "True": 21,
+        "False": 10
+      },
+      "filtered_clicks_count": 10,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 7265,
+          "session_id": 568,
+          "product_id": 195,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705694347,
+          "is_bot": false
+        },
+        {
+          "click_id": 7268,
+          "session_id": 568,
+          "product_id": 16,
+          "event_type": "purchase",
+          "timestamp_seconds": 1705694690,
+          "is_bot": false
+        },
+        {
+          "click_id": 7375,
+          "session_id": 579,
+          "product_id": 89,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705651314,
+          "is_bot": false
+        },
+        {
+          "click_id": 7264,
+          "session_id": 568,
+          "product_id": 27,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705694340,
+          "is_bot": false
+        },
+        {
+          "click_id": 7258,
+          "session_id": 568,
+          "product_id": 74,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705693920,
+          "is_bot": false
+        },
+        {
+          "click_id": 7267,
+          "session_id": 568,
+          "product_id": 144,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705694163,
+          "is_bot": false
+        },
+        {
+          "click_id": 7377,
+          "session_id": 579,
+          "product_id": 200,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705651332,
+          "is_bot": false
+        },
+        {
+          "click_id": 7260,
+          "session_id": 568,
+          "product_id": 146,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705694102,
+          "is_bot": false
+        },
+        {
+          "click_id": 7266,
+          "session_id": 568,
+          "product_id": 152,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705694720,
+          "is_bot": false
+        },
+        {
+          "click_id": 7368,
+          "session_id": 579,
+          "product_id": 144,
+          "event_type": "purchase",
+          "timestamp_seconds": 1705650614,
+          "is_bot": false
+        }
+      ]
+    },
+    "519": {
+      "sessions_count_in_summary": 2,
+      "raw_clicks_count": 39,
+      "raw_is_bot_counts": {
+        "False": 22,
+        "True": 17
+      },
+      "filtered_clicks_count": 22,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 1978,
+          "session_id": 153,
+          "product_id": 23,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706379876,
+          "is_bot": false
+        },
+        {
+          "click_id": 1981,
+          "session_id": 153,
+          "product_id": 2,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706380425,
+          "is_bot": false
+        },
+        {
+          "click_id": 5636,
+          "session_id": 444,
+          "product_id": 102,
+          "event_type": "purchase",
+          "timestamp_seconds": 1705956228,
+          "is_bot": false
+        },
+        {
+          "click_id": 5639,
+          "session_id": 444,
+          "product_id": 183,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705956615,
+          "is_bot": false
+        },
+        {
+          "click_id": 5638,
+          "session_id": 444,
+          "product_id": 160,
+          "event_type": "purchase",
+          "timestamp_seconds": 1705956296,
+          "is_bot": false
+        },
+        {
+          "click_id": 1971,
+          "session_id": 153,
+          "product_id": 26,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706379060,
+          "is_bot": false
+        },
+        {
+          "click_id": 5647,
+          "session_id": 444,
+          "product_id": 56,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705956619,
+          "is_bot": false
+        },
+        {
+          "click_id": 5648,
+          "session_id": 444,
+          "product_id": 127,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705957026,
+          "is_bot": false
+        },
+        {
+          "click_id": 1970,
+          "session_id": 153,
+          "product_id": 192,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706379204,
+          "is_bot": false
+        },
+        {
+          "click_id": 1984,
+          "session_id": 153,
+          "product_id": 85,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706379270,
+          "is_bot": false
+        }
+      ]
+    },
+    "520": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 6,
+      "raw_is_bot_counts": {
+        "True": 1,
+        "False": 5
+      },
+      "filtered_clicks_count": 5,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 6152,
+          "session_id": 483,
+          "product_id": 7,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704364486,
+          "is_bot": false
+        },
+        {
+          "click_id": 6150,
+          "session_id": 483,
+          "product_id": 140,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704364380,
+          "is_bot": false
+        },
+        {
+          "click_id": 6155,
+          "session_id": 483,
+          "product_id": 192,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704364675,
+          "is_bot": false
+        },
+        {
+          "click_id": 6151,
+          "session_id": 483,
+          "product_id": 188,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704364430,
+          "is_bot": false
+        },
+        {
+          "click_id": 6154,
+          "session_id": 483,
+          "product_id": 91,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704364468,
+          "is_bot": false
+        }
+      ]
+    },
+    "524": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 15,
+      "raw_is_bot_counts": {
+        "False": 8,
+        "True": 7
+      },
+      "filtered_clicks_count": 8,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 2316,
+          "session_id": 179,
+          "product_id": 164,
+          "event_type": "purchase",
+          "timestamp_seconds": 1705665870,
+          "is_bot": false
+        },
+        {
+          "click_id": 2318,
+          "session_id": 179,
+          "product_id": 103,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705665324,
+          "is_bot": false
+        },
+        {
+          "click_id": 2311,
+          "session_id": 179,
+          "product_id": 165,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705665295,
+          "is_bot": false
+        },
+        {
+          "click_id": 9297,
+          "session_id": 179,
+          "product_id": 164,
+          "event_type": "purchase",
+          "timestamp_seconds": 1705665870,
+          "is_bot": false
+        },
+        {
+          "click_id": 2310,
+          "session_id": 179,
+          "product_id": 133,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705665056,
+          "is_bot": false
+        },
+        {
+          "click_id": 2319,
+          "session_id": 179,
+          "product_id": 137,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705665714,
+          "is_bot": false
+        },
+        {
+          "click_id": 2312,
+          "session_id": 179,
+          "product_id": 97,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705665132,
+          "is_bot": false
+        },
+        {
+          "click_id": 2309,
+          "session_id": 179,
+          "product_id": 150,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705664868,
+          "is_bot": false
+        }
+      ]
+    },
+    "525": {
+      "sessions_count_in_summary": 3,
+      "raw_clicks_count": 54,
+      "raw_is_bot_counts": {
+        "False": 25,
+        "True": 29
+      },
+      "filtered_clicks_count": 25,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 7142,
+          "session_id": 558,
+          "product_id": 144,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704760200,
+          "is_bot": false
+        },
+        {
+          "click_id": 7143,
+          "session_id": 558,
+          "product_id": 151,
+          "event_type": "purchase",
+          "timestamp_seconds": 1704760500,
+          "is_bot": false
+        },
+        {
+          "click_id": 5238,
+          "session_id": 411,
+          "product_id": 50,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704188221,
+          "is_bot": false
+        },
+        {
+          "click_id": 7145,
+          "session_id": 558,
+          "product_id": 180,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704760620,
+          "is_bot": false
+        },
+        {
+          "click_id": 2900,
+          "session_id": 223,
+          "product_id": 192,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706274740,
+          "is_bot": false
+        },
+        {
+          "click_id": 9214,
+          "session_id": 223,
+          "product_id": 28,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706274840,
+          "is_bot": false
+        },
+        {
+          "click_id": 5240,
+          "session_id": 411,
+          "product_id": 148,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704188581,
+          "is_bot": false
+        },
+        {
+          "click_id": 5230,
+          "session_id": 411,
+          "product_id": 163,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704188409,
+          "is_bot": false
+        },
+        {
+          "click_id": 5233,
+          "session_id": 411,
+          "product_id": 57,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704188532,
+          "is_bot": false
+        },
+        {
+          "click_id": 7141,
+          "session_id": 558,
+          "product_id": 42,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704760284,
+          "is_bot": false
+        }
+      ]
+    },
+    "527": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 16,
+      "raw_is_bot_counts": {
+        "False": 9,
+        "True": 7
+      },
+      "filtered_clicks_count": 9,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 8957,
+          "session_id": 700,
+          "product_id": 193,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706594675,
+          "is_bot": false
+        },
+        {
+          "click_id": 8956,
+          "session_id": 700,
+          "product_id": 94,
+          "event_type": "purchase",
+          "timestamp_seconds": 1706594136,
+          "is_bot": false
+        },
+        {
+          "click_id": 8959,
+          "session_id": 700,
+          "product_id": 175,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706595120,
+          "is_bot": false
+        },
+        {
+          "click_id": 8944,
+          "session_id": 700,
+          "product_id": 118,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706593440,
+          "is_bot": false
+        },
+        {
+          "click_id": 8947,
+          "session_id": 700,
+          "product_id": 94,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706593500,
+          "is_bot": false
+        },
+        {
+          "click_id": 8945,
+          "session_id": 700,
+          "product_id": 142,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706593543,
+          "is_bot": false
+        },
+        {
+          "click_id": 8946,
+          "session_id": 700,
+          "product_id": 54,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706593574,
+          "is_bot": false
+        },
+        {
+          "click_id": 8951,
+          "session_id": 700,
+          "product_id": 34,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706594168,
+          "is_bot": false
+        },
+        {
+          "click_id": 8948,
+          "session_id": 700,
+          "product_id": 157,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706593604,
+          "is_bot": false
+        }
+      ]
+    },
+    "529": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 38,
+      "raw_is_bot_counts": {
+        "True": 34,
+        "False": 4
+      },
+      "filtered_clicks_count": 4,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 3318,
+          "session_id": 256,
+          "product_id": 27,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705482540,
+          "is_bot": false
+        },
+        {
+          "click_id": 3320,
+          "session_id": 256,
+          "product_id": 1,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705482706,
+          "is_bot": false
+        },
+        {
+          "click_id": 3322,
+          "session_id": 256,
+          "product_id": 11,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705482648,
+          "is_bot": false
+        },
+        {
+          "click_id": 3326,
+          "session_id": 256,
+          "product_id": 64,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705483388,
+          "is_bot": false
+        }
+      ]
+    },
+    "533": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 11,
+      "raw_is_bot_counts": {
+        "True": 8,
+        "False": 3
+      },
+      "filtered_clicks_count": 3,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 377,
+          "session_id": 30,
+          "product_id": 179,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705317162,
+          "is_bot": false
+        },
+        {
+          "click_id": 373,
+          "session_id": 30,
+          "product_id": 5,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705316778,
+          "is_bot": false
+        },
+        {
+          "click_id": 374,
+          "session_id": 30,
+          "product_id": 46,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705316646,
+          "is_bot": false
+        }
+      ]
+    },
+    "537": {
+      "sessions_count_in_summary": 2,
+      "raw_clicks_count": 23,
+      "raw_is_bot_counts": {
+        "False": 11,
+        "True": 12
+      },
+      "filtered_clicks_count": 11,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 3239,
+          "session_id": 249,
+          "product_id": 117,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704633840,
+          "is_bot": false
+        },
+        {
+          "click_id": 3245,
+          "session_id": 249,
+          "product_id": 98,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704633948,
+          "is_bot": false
+        },
+        {
+          "click_id": 7234,
+          "session_id": 565,
+          "product_id": 189,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705757160,
+          "is_bot": false
+        },
+        {
+          "click_id": 7228,
+          "session_id": 565,
+          "product_id": 42,
+          "event_type": "purchase",
+          "timestamp_seconds": 1705757100,
+          "is_bot": false
+        },
+        {
+          "click_id": 7235,
+          "session_id": 565,
+          "product_id": 88,
+          "event_type": "page_view",
+          "timestamp_seconds": 1705757548,
+          "is_bot": false
+        },
+        {
+          "click_id": 3247,
+          "session_id": 249,
+          "product_id": 89,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704634624,
+          "is_bot": false
+        },
+        {
+          "click_id": 3246,
+          "session_id": 249,
+          "product_id": 1,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704634099,
+          "is_bot": false
+        },
+        {
+          "click_id": 3241,
+          "session_id": 249,
+          "product_id": 73,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704634002,
+          "is_bot": false
+        },
+        {
+          "click_id": 7230,
+          "session_id": 565,
+          "product_id": 118,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705757268,
+          "is_bot": false
+        },
+        {
+          "click_id": 7233,
+          "session_id": 565,
+          "product_id": 101,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1705757275,
+          "is_bot": false
+        }
+      ]
+    },
+    "539": {
+      "sessions_count_in_summary": 3,
+      "raw_clicks_count": 39,
+      "raw_is_bot_counts": {
+        "True": 21,
+        "False": 18
+      },
+      "filtered_clicks_count": 18,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 4489,
+          "session_id": 350,
+          "product_id": 36,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706172915,
+          "is_bot": false
+        },
+        {
+          "click_id": 1060,
+          "session_id": 78,
+          "product_id": 39,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706089788,
+          "is_bot": false
+        },
+        {
+          "click_id": 4479,
+          "session_id": 350,
+          "product_id": 153,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706172538,
+          "is_bot": false
+        },
+        {
+          "click_id": 1065,
+          "session_id": 78,
+          "product_id": 89,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706089947,
+          "is_bot": false
+        },
+        {
+          "click_id": 2260,
+          "session_id": 176,
+          "product_id": 147,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706129604,
+          "is_bot": false
+        },
+        {
+          "click_id": 2259,
+          "session_id": 176,
+          "product_id": 21,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706129590,
+          "is_bot": false
+        },
+        {
+          "click_id": 2265,
+          "session_id": 176,
+          "product_id": 34,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706130012,
+          "is_bot": false
+        },
+        {
+          "click_id": 2267,
+          "session_id": 176,
+          "product_id": 17,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706130490,
+          "is_bot": false
+        },
+        {
+          "click_id": 1056,
+          "session_id": 78,
+          "product_id": 149,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706089560,
+          "is_bot": false
+        },
+        {
+          "click_id": 4485,
+          "session_id": 350,
+          "product_id": 147,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706172504,
+          "is_bot": false
+        }
+      ]
+    },
+    "540": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 16,
+      "raw_is_bot_counts": {
+        "True": 9,
+        "False": 7
+      },
+      "filtered_clicks_count": 7,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 3179,
+          "session_id": 243,
+          "product_id": 94,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704775940,
+          "is_bot": false
+        },
+        {
+          "click_id": 3183,
+          "session_id": 243,
+          "product_id": 185,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704776238,
+          "is_bot": false
+        },
+        {
+          "click_id": 3174,
+          "session_id": 243,
+          "product_id": 85,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704776005,
+          "is_bot": false
+        },
+        {
+          "click_id": 3175,
+          "session_id": 243,
+          "product_id": 84,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704775944,
+          "is_bot": false
+        },
+        {
+          "click_id": 3171,
+          "session_id": 243,
+          "product_id": 144,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704775646,
+          "is_bot": false
+        },
+        {
+          "click_id": 3170,
+          "session_id": 243,
+          "product_id": 136,
+          "event_type": "purchase",
+          "timestamp_seconds": 1704775465,
+          "is_bot": false
+        },
+        {
+          "click_id": 3181,
+          "session_id": 243,
+          "product_id": 31,
+          "event_type": "purchase",
+          "timestamp_seconds": 1704776796,
+          "is_bot": false
+        }
+      ]
+    },
+    "543": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 12,
+      "raw_is_bot_counts": {
+        "True": 7,
+        "False": 5
+      },
+      "filtered_clicks_count": 5,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 5372,
+          "session_id": 423,
+          "product_id": 64,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704546009,
+          "is_bot": false
+        },
+        {
+          "click_id": 5364,
+          "session_id": 423,
+          "product_id": 103,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704545741,
+          "is_bot": false
+        },
+        {
+          "click_id": 5373,
+          "session_id": 423,
+          "product_id": 36,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704546170,
+          "is_bot": false
+        },
+        {
+          "click_id": 5366,
+          "session_id": 423,
+          "product_id": 146,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704545886,
+          "is_bot": false
+        },
+        {
+          "click_id": 5365,
+          "session_id": 423,
+          "product_id": 156,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704545758,
+          "is_bot": false
+        }
+      ]
+    },
+    "545": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 29,
+      "raw_is_bot_counts": {
+        "False": 9,
+        "True": 20
+      },
+      "filtered_clicks_count": 9,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 5955,
+          "session_id": 467,
+          "product_id": 52,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704565584,
+          "is_bot": false
+        },
+        {
+          "click_id": 5960,
+          "session_id": 467,
+          "product_id": 79,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704565110,
+          "is_bot": false
+        },
+        {
+          "click_id": 5949,
+          "session_id": 467,
+          "product_id": 91,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704564820,
+          "is_bot": false
+        },
+        {
+          "click_id": 5953,
+          "session_id": 467,
+          "product_id": 30,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704565008,
+          "is_bot": false
+        },
+        {
+          "click_id": 5948,
+          "session_id": 467,
+          "product_id": 142,
+          "event_type": "purchase",
+          "timestamp_seconds": 1704564776,
+          "is_bot": false
+        },
+        {
+          "click_id": 5958,
+          "session_id": 467,
+          "product_id": 39,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704565061,
+          "is_bot": false
+        },
+        {
+          "click_id": 5952,
+          "session_id": 467,
+          "product_id": 78,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704564825,
+          "is_bot": false
+        },
+        {
+          "click_id": 5956,
+          "session_id": 467,
+          "product_id": 46,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704565296,
+          "is_bot": false
+        },
+        {
+          "click_id": 5954,
+          "session_id": 467,
+          "product_id": 60,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704565238,
+          "is_bot": false
+        }
+      ]
+    },
+    "546": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 11,
+      "raw_is_bot_counts": {
+        "False": 7,
+        "True": 4
+      },
+      "filtered_clicks_count": 7,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 7387,
+          "session_id": 581,
+          "product_id": 109,
+          "event_type": "purchase",
+          "timestamp_seconds": 1706593943,
+          "is_bot": false
+        },
+        {
+          "click_id": 7392,
+          "session_id": 581,
+          "product_id": 18,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706594028,
+          "is_bot": false
+        },
+        {
+          "click_id": 7386,
+          "session_id": 581,
+          "product_id": 130,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706593860,
+          "is_bot": false
+        },
+        {
+          "click_id": 7395,
+          "session_id": 581,
+          "product_id": 173,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706594661,
+          "is_bot": false
+        },
+        {
+          "click_id": 7389,
+          "session_id": 581,
+          "product_id": 18,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706593989,
+          "is_bot": false
+        },
+        {
+          "click_id": 7396,
+          "session_id": 581,
+          "product_id": 197,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706594880,
+          "is_bot": false
+        },
+        {
+          "click_id": 7393,
+          "session_id": 581,
+          "product_id": 31,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706594364,
+          "is_bot": false
+        }
+      ]
+    },
+    "547": {
+      "sessions_count_in_summary": 2,
+      "raw_clicks_count": 33,
+      "raw_is_bot_counts": {
+        "True": 24,
+        "False": 9
+      },
+      "filtered_clicks_count": 9,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 8181,
+          "session_id": 646,
+          "product_id": 200,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704257602,
+          "is_bot": false
+        },
+        {
+          "click_id": 8195,
+          "session_id": 646,
+          "product_id": 189,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704258540,
+          "is_bot": false
+        },
+        {
+          "click_id": 8188,
+          "session_id": 646,
+          "product_id": 88,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704258160,
+          "is_bot": false
+        },
+        {
+          "click_id": 8190,
+          "session_id": 646,
+          "product_id": 51,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704258140,
+          "is_bot": false
+        },
+        {
+          "click_id": 8897,
+          "session_id": 697,
+          "product_id": 58,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706131532,
+          "is_bot": false
+        },
+        {
+          "click_id": 8185,
+          "session_id": 646,
+          "product_id": 69,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704257650,
+          "is_bot": false
+        },
+        {
+          "click_id": 8180,
+          "session_id": 646,
+          "product_id": 163,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704257520,
+          "is_bot": false
+        },
+        {
+          "click_id": 8196,
+          "session_id": 646,
+          "product_id": 66,
+          "event_type": "page_view",
+          "timestamp_seconds": 1704259376,
+          "is_bot": false
+        },
+        {
+          "click_id": 8186,
+          "session_id": 646,
+          "product_id": 77,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1704258078,
+          "is_bot": false
+        }
+      ]
+    },
+    "550": {
+      "sessions_count_in_summary": 1,
+      "raw_clicks_count": 12,
+      "raw_is_bot_counts": {
+        "False": 6,
+        "True": 6
+      },
+      "filtered_clicks_count": 6,
+      "filtered_clicks_sample": [
+        {
+          "click_id": 9122,
+          "session_id": 275,
+          "product_id": 117,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706157240,
+          "is_bot": false
+        },
+        {
+          "click_id": 3543,
+          "session_id": 275,
+          "product_id": 189,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706157120,
+          "is_bot": false
+        },
+        {
+          "click_id": 3552,
+          "session_id": 275,
+          "product_id": 39,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706158128,
+          "is_bot": false
+        },
+        {
+          "click_id": 3549,
+          "session_id": 275,
+          "product_id": 156,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706157300,
+          "is_bot": false
+        },
+        {
+          "click_id": 3545,
+          "session_id": 275,
+          "product_id": 117,
+          "event_type": "page_view",
+          "timestamp_seconds": 1706157240,
+          "is_bot": false
+        },
+        {
+          "click_id": 3551,
+          "session_id": 275,
+          "product_id": 139,
+          "event_type": "add_to_cart",
+          "timestamp_seconds": 1706157264,
+          "is_bot": false
+        }
+      ]
+    }
+  },
+  "users_present_in_users_table": []
+}

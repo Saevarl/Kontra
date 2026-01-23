@@ -327,14 +327,13 @@ Condition format: `column_name operator value`
 
 ### custom_sql_check
 
-Escape hatch for custom SQL. Returns violation count.
+Escape hatch for custom SQL. Write a query that selects "violation rows" and Kontra counts them.
 
 ```yaml
 - name: custom_sql_check
   params:
     sql: |
-      SELECT COUNT(*)
-      FROM {table}
+      SELECT * FROM {table}
       WHERE balance < 0 AND account_type = 'savings'
 ```
 
@@ -342,9 +341,24 @@ Escape hatch for custom SQL. Returns violation count.
 |-----------|------|----------|
 | `sql` | string | Yes |
 
-Use `{table}` placeholder. Query must return single integer.
+Use `{table}` placeholder. Kontra transforms your query to `COUNT(*)` for efficiency.
 
-**Limitation:** This rule executes via DuckDB on local files (Parquet, CSV). It does **not** push SQL to remote databases (PostgreSQL, SQL Server). For database sources, use the other built-in rules or query the database directly.
+**SQL pushdown:** When the data source is PostgreSQL or SQL Server, the SQL is validated using sqlglot to ensure it's safe (SELECT-only, no dangerous functions). If safe, it executes directly on the database.
+
+**Cross-table queries:** You can reference other tables in your SQL:
+
+```yaml
+- name: custom_sql_check
+  params:
+    sql: |
+      SELECT * FROM {table}
+      WHERE category_id NOT IN (SELECT id FROM valid_categories)
+```
+
+**Safety:** Only SELECT statements are allowed. Queries are validated to reject:
+- INSERT, UPDATE, DELETE, DROP, CREATE, ALTER
+- Dangerous functions like `pg_sleep`, `xp_cmdshell`, `dblink`
+- Multiple statements (SQL injection prevention)
 
 ---
 
@@ -404,7 +418,7 @@ All rules accept an optional `severity` parameter:
 | `compare` | | ✓ | |
 | `conditional_not_null` | | ✓ | |
 | `conditional_range` | | ✓ | |
-| `custom_sql_check` | | DuckDB | |
+| `custom_sql_check` | | ✓ | |
 
 Preplan returns binary (0 or ≥1), not exact counts. Use `--preplan off` for exact counts.
 

@@ -194,6 +194,7 @@ class ScoutProfiler:
         include_patterns: bool = False,
         percentiles: Optional[List[int]] = None,
         columns: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the profiler.
@@ -207,9 +208,13 @@ class ScoutProfiler:
             include_patterns: Whether to detect patterns (email, uuid, etc.)
             percentiles: List of percentiles to compute (overrides preset)
             columns: Specific columns to profile (default: all)
+            storage_options: Cloud storage credentials (S3, Azure, GCS).
+                For S3/MinIO: aws_access_key_id, aws_secret_access_key, aws_region, endpoint_url
+                For Azure: account_name, account_key, sas_token, etc.
+                These override environment variables when provided.
         """
         self.source_uri = source_uri
-        self.handle = DatasetHandle.from_uri(source_uri)
+        self.handle = DatasetHandle.from_uri(source_uri, storage_options=storage_options)
         self.sample_size = sample_size
         self.include_patterns = include_patterns
         self.columns_filter = columns

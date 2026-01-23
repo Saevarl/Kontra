@@ -26,6 +26,25 @@ kontra diff -o json      # CI/CD integration
 kontra diff -o llm       # Token-optimized
 ```
 
+### View Validation History
+
+```bash
+# Show all runs for a contract
+kontra history contract.yml
+
+# Show only recent runs (last 7 days)
+kontra history contract.yml --since 7d
+
+# Show only failed runs
+kontra history contract.yml --failed-only
+
+# Output as JSON for processing
+kontra history contract.yml -o json
+
+# Limit number of runs shown
+kontra history contract.yml --limit 20
+```
+
 Output:
 ```
 Diff: users_contract

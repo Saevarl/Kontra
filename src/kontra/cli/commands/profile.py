@@ -78,6 +78,11 @@ def register(app: typer.Typer) -> None:
             help="Environment profile from .kontra/config.yml.",
             envvar="KONTRA_ENV",
         ),
+        storage_options: Optional[str] = typer.Option(
+            None,
+            "--storage-options",
+            help='Cloud storage credentials as JSON, e.g. \'{"aws_access_key_id": "...", "aws_region": "us-east-1"}\'',
+        ),
         verbose: bool = typer.Option(
             False, "--verbose", "-v", help="Enable verbose output."
         ),
@@ -112,91 +117,10 @@ def register(app: typer.Typer) -> None:
             draft=draft,
             save_profile=save_profile,
             env=env,
+            storage_options=storage_options,
             verbose=verbose,
         )
 
-    # Deprecated alias: `kontra scout` -> `kontra profile`
-    @app.command("scout", hidden=True)
-    def scout(
-        source: str = typer.Argument(
-            ..., help="Path or URI to the dataset"
-        ),
-        output_format: Optional[Literal["rich", "json", "markdown", "llm"]] = typer.Option(
-            None, "--output-format", "-o", help="Output format."
-        ),
-        preset: Optional[str] = typer.Option(
-            None, "--preset", "-p", help="Profiling depth."
-        ),
-        list_values_threshold: Optional[int] = typer.Option(
-            None, "--list-values-threshold", "-l", help="List values threshold."
-        ),
-        top_n: Optional[int] = typer.Option(
-            None, "--top-n", "-t", help="Top N values."
-        ),
-        sample: Optional[int] = typer.Option(
-            None, "--sample", "-s", help="Sample N rows."
-        ),
-        include_patterns: Optional[bool] = typer.Option(
-            None, "--include-patterns", help="Detect patterns."
-        ),
-        columns: Optional[str] = typer.Option(
-            None, "--columns", "-c", help="Columns to profile."
-        ),
-        suggest_rules: bool = typer.Option(
-            False, "--suggest-rules", help="Generate suggested rules."
-        ),
-        save_profile: Optional[bool] = typer.Option(
-            None, "--save-profile", help="Save profile."
-        ),
-        env: Optional[str] = typer.Option(
-            None, "--env", "-e", help="Environment.", envvar="KONTRA_ENV"
-        ),
-        verbose: bool = typer.Option(
-            False, "--verbose", "-v", help="Verbose output."
-        ),
-    ) -> None:
-        """
-        DEPRECATED: Use 'kontra profile' instead.
-
-        Profile a dataset without a contract.
-        """
-        import warnings
-        warnings.warn(
-            "'kontra scout' is deprecated, use 'kontra profile' instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        typer.secho(
-            "Warning: 'kontra scout' is deprecated, use 'kontra profile' instead",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
-
-        # Map old preset names to new
-        mapped_preset = preset
-        if preset in ("lite", "standard", "deep", "llm"):
-            preset_map = {"lite": "scout", "standard": "scan", "deep": "interrogate", "llm": "scan"}
-            mapped_preset = preset_map.get(preset, preset)
-            typer.secho(
-                f"Warning: preset '{preset}' is deprecated, use '{mapped_preset}' instead",
-                fg=typer.colors.YELLOW,
-                err=True,
-            )
-
-        _run_profile(
-            source=source,
-            output_format=output_format,
-            preset=mapped_preset,
-            list_values_threshold=list_values_threshold,
-            top_n=top_n,
-            sample=sample,
-            include_patterns=include_patterns,
-            columns=columns,
-            draft=suggest_rules,
-            save_profile=save_profile,
-            env=env,
-            verbose=verbose,
-        )
 
 
 def _run_profile(
@@ -211,6 +135,7 @@ def _run_profile(
     draft: bool,
     save_profile: Optional[bool],
     env: Optional[str],
+    storage_options: Optional[str],
     verbose: bool,
 ) -> None:
     """Shared implementation for profile and scout commands."""
@@ -269,6 +194,19 @@ def _run_profile(
 
         from kontra.scout.profiler import ScoutProfiler
 
+        # Parse storage_options JSON if provided
+        parsed_storage_options = None
+        if storage_options:
+            import json
+            try:
+                parsed_storage_options = json.loads(storage_options)
+            except json.JSONDecodeError as e:
+                typer.secho(
+                    f"Invalid --storage-options JSON: {e}",
+                    fg=typer.colors.RED,
+                )
+                raise typer.Exit(code=EXIT_CONFIG_ERROR)
+
         profiler = ScoutProfiler(
             resolved_source,
             preset=effective_preset,
@@ -277,6 +215,7 @@ def _run_profile(
             sample_size=sample,
             include_patterns=effective_include_patterns,
             columns=cols_filter,
+            storage_options=parsed_storage_options,
         )
 
         profile_result = profiler.profile()

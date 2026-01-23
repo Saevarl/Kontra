@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-01-18T22:25:07.298990",
+  "control": {
+    "condition": "control",
+    "success": true,
+    "iterations": 10,
+    "total_code_executions": 11,
+    "validation_attempts": 4,
+    "used_compare": false,
+    "used_profile_relationship": false,
+    "final_validation_passed": true,
+    "prompt_tokens": 28187,
+    "completion_tokens": 1430,
+    "total_tokens": 29617
+  },
+  "treatment": {
+    "condition": "treatment",
+    "success": true,
+    "iterations": 6,
+    "total_code_executions": 7,
+    "validation_attempts": 3,
+    "used_compare": false,
+    "used_profile_relationship": false,
+    "final_validation_passed": true,
+    "prompt_tokens": 8775,
+    "completion_tokens": 1397,
+    "total_tokens": 10172
+  }
+}

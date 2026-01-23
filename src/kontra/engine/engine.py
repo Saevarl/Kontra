@@ -207,6 +207,8 @@ class ValidationEngine:
         save_state: bool = True,
         # Inline rules (Python API)
         inline_rules: Optional[List[Dict[str, Any]]] = None,
+        # Cloud storage credentials (S3, Azure, GCS)
+        storage_options: Optional[Dict[str, Any]] = None,
     ):
         # Validate inputs
         if contract_path is None and inline_rules is None:
@@ -262,6 +264,7 @@ class ValidationEngine:
         self.df: Optional[pl.DataFrame] = None
         self._handle: Optional[DatasetHandle] = handle  # BYOC: pre-built handle
         self._rules: Optional[List] = None  # Built rules, for sample_failures()
+        self._storage_options = storage_options  # Cloud storage credentials
 
         register_default_materializers()
         register_default_executors()
@@ -311,7 +314,7 @@ class ValidationEngine:
             source_uri = _resolve_datasource_uri(source_ref) if source_ref else ""
             dataset_fp = None
             try:
-                handle = DatasetHandle.from_uri(source_uri)
+                handle = DatasetHandle.from_uri(source_uri, storage_options=self._storage_options)
                 dataset_fp = fingerprint_dataset(handle)
             except Exception as e:
                 log_exception(_logger, "Could not fingerprint dataset", e)
@@ -601,7 +604,7 @@ class ValidationEngine:
         else:
             source_ref = self.data_path or self.contract.datasource
             source_uri = _resolve_datasource_uri(source_ref)
-            handle = DatasetHandle.from_uri(source_uri)
+            handle = DatasetHandle.from_uri(source_uri, storage_options=self._storage_options)
 
         # ------------------------------------------------------------------ #
         # 3) Preplan (metadata-only; independent of pushdown/projection)

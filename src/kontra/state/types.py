@@ -669,6 +669,95 @@ class ValidationState:
 
 
 @dataclass
+class RunSummary:
+    """
+    Lightweight summary of a validation run for history listing.
+
+    Used by get_history() to return a list of runs without loading
+    full rule details. Optimized for quick scanning and display.
+    """
+
+    run_id: str  # Unique identifier for the run
+    timestamp: datetime  # When the run occurred
+    passed: bool  # Overall pass/fail status
+    failed_count: int  # Total failures across all rules
+    total_rows: Optional[int]  # Row count if available
+    contract_name: str  # Name of the contract
+    contract_fingerprint: str  # Fingerprint for filtering
+
+    # Optional metadata
+    total_rules: int = 0
+    blocking_failures: int = 0
+    warning_failures: int = 0
+    duration_ms: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        d: Dict[str, Any] = {
+            "run_id": self.run_id,
+            "timestamp": self.timestamp.isoformat(),
+            "passed": self.passed,
+            "failed_count": self.failed_count,
+            "contract_name": self.contract_name,
+            "contract_fingerprint": self.contract_fingerprint,
+            "total_rules": self.total_rules,
+            "blocking_failures": self.blocking_failures,
+            "warning_failures": self.warning_failures,
+        }
+        if self.total_rows is not None:
+            d["total_rows"] = self.total_rows
+        if self.duration_ms is not None:
+            d["duration_ms"] = self.duration_ms
+        return d
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "RunSummary":
+        """Create from dictionary."""
+        timestamp = d["timestamp"]
+        if isinstance(timestamp, str):
+            timestamp = timestamp.replace("Z", "+00:00")
+            timestamp = datetime.fromisoformat(timestamp)
+
+        return cls(
+            run_id=d["run_id"],
+            timestamp=timestamp,
+            passed=d["passed"],
+            failed_count=d["failed_count"],
+            total_rows=d.get("total_rows"),
+            contract_name=d["contract_name"],
+            contract_fingerprint=d["contract_fingerprint"],
+            total_rules=d.get("total_rules", 0),
+            blocking_failures=d.get("blocking_failures", 0),
+            warning_failures=d.get("warning_failures", 0),
+            duration_ms=d.get("duration_ms"),
+        )
+
+    @classmethod
+    def from_validation_state(cls, state: "ValidationState", run_id: str) -> "RunSummary":
+        """Create from a full ValidationState."""
+        return cls(
+            run_id=run_id,
+            timestamp=state.run_at,
+            passed=state.summary.passed,
+            failed_count=state.summary.failed_rules,
+            total_rows=state.summary.row_count,
+            contract_name=state.contract_name,
+            contract_fingerprint=state.contract_fingerprint,
+            total_rules=state.summary.total_rules,
+            blocking_failures=state.summary.blocking_failures,
+            warning_failures=state.summary.warning_failures,
+            duration_ms=state.duration_ms,
+        )
+
+    def to_llm(self) -> str:
+        """Token-optimized format for LLM context."""
+        ts = self.timestamp.strftime("%Y-%m-%d %H:%M")
+        status = "PASS" if self.passed else "FAIL"
+        rows = f"{self.total_rows:,}" if self.total_rows else "?"
+        return f"{ts} | {status} | {self.failed_count} failures | {rows} rows"
+
+
+@dataclass
 class StateDiff:
     """
     Diff between two validation states.

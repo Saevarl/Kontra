@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.engine.sql_utils import (
@@ -35,8 +35,12 @@ from kontra.engine.sql_utils import (
     results_from_row,
     Dialect,
 )
+from kontra.engine.sql_validator import validate_sql, replace_table_placeholder, to_count_query
+from kontra.logging import get_logger
 
 from .base import SqlExecutor
+
+_logger = get_logger(__name__)
 
 
 class DatabaseSqlExecutor(SqlExecutor, ABC):
@@ -95,6 +99,17 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
         """Escape an identifier for this dialect."""
         return esc_ident(name, self.DIALECT)
 
+    def _get_schema_and_table(self, handle: DatasetHandle) -> Tuple[str, str]:
+        """
+        Get schema and table name separately (for custom SQL placeholder replacement).
+
+        Returns:
+            Tuple of (schema, table_name)
+        """
+        # Default implementation - subclasses should override
+        # This extracts from the table reference or connection params
+        raise NotImplementedError("Subclass must implement _get_schema_and_table")
+
     def _assemble_single_row(self, selects: List[str], table: str) -> str:
         """Build a single-row aggregate query from multiple SELECT expressions."""
         if not selects:
@@ -124,22 +139,25 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
 
     def compile(self, sql_specs: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Compile rule specs into two-phase execution plan.
+        Compile rule specs into three-phase execution plan.
 
         Phase 1: EXISTS checks for not_null rules (fast, early-terminate)
-        Phase 2: Aggregate query for remaining rules
+        Phase 2: Aggregate query for most rules (batched into single query)
+        Phase 3: Custom SQL queries (each executed individually)
 
         Returns:
             {
                 "exists_specs": [...],      # Phase 1: not_null rules
                 "aggregate_selects": [...], # Phase 2: aggregate expressions
                 "aggregate_specs": [...],   # Phase 2: specs for aggregates
+                "custom_sql_specs": [...],  # Phase 3: custom SQL queries
                 "supported_specs": [...],   # All supported specs
             }
         """
         exists_specs: List[Dict[str, Any]] = []
         aggregate_selects: List[str] = []
         aggregate_specs: List[Dict[str, Any]] = []
+        custom_sql_specs: List[Dict[str, Any]] = []
         supported_specs: List[Dict[str, Any]] = []
 
         for spec in sql_specs or []:
@@ -151,6 +169,24 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
 
             # Skip unsupported rules
             if kind not in self.SUPPORTED_RULES:
+                continue
+
+            if kind == "custom_sql_check":
+                # Validate SQL is safe using sqlglot before accepting
+                user_sql = spec.get("sql")
+                if user_sql:
+                    # Replace {table} with dummy name for validation
+                    # (sqlglot can't parse {table} as valid SQL)
+                    test_sql = user_sql.replace("{table}", "_validation_table_")
+                    validation = validate_sql(test_sql, dialect=self.DIALECT)
+                    if validation.is_safe:
+                        custom_sql_specs.append(spec)
+                        supported_specs.append(spec)
+                    else:
+                        _logger.warning(
+                            f"custom_sql_check '{rule_id}' rejected for remote execution: "
+                            f"{validation.reason}"
+                        )
                 continue
 
             if kind == "not_null":
@@ -257,6 +293,7 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
             "exists_specs": exists_specs,
             "aggregate_selects": aggregate_selects,
             "aggregate_specs": aggregate_specs,
+            "custom_sql_specs": custom_sql_specs,
             "supported_specs": supported_specs,
         }
 
@@ -267,18 +304,20 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Execute the compiled plan in two phases.
+        Execute the compiled plan in three phases.
 
         Phase 1: EXISTS checks for not_null (fast, can early-terminate)
-        Phase 2: Aggregate query for remaining rules
+        Phase 2: Aggregate query for most rules (batched)
+        Phase 3: Custom SQL queries (each executed individually)
 
         Returns:
             {"results": [...], "staging": None}
         """
         exists_specs = compiled_plan.get("exists_specs", [])
         aggregate_selects = compiled_plan.get("aggregate_selects", [])
+        custom_sql_specs = compiled_plan.get("custom_sql_specs", [])
 
-        if not exists_specs and not aggregate_selects:
+        if not exists_specs and not aggregate_selects and not custom_sql_specs:
             return {"results": [], "staging": None}
 
         table = self._get_table_reference(handle)
@@ -289,6 +328,8 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
         for spec in exists_specs:
             rule_kinds[spec["rule_id"]] = spec.get("kind")
         for spec in compiled_plan.get("aggregate_specs", []):
+            rule_kinds[spec["rule_id"]] = spec.get("kind")
+        for spec in custom_sql_specs:
             rule_kinds[spec["rule_id"]] = spec.get("kind")
 
         with self._get_connection_ctx(handle) as conn:
@@ -324,10 +365,91 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                     if row and columns:
                         agg_results = results_from_row(columns, row, is_exists=False, rule_kinds=rule_kinds)
                         results.extend(agg_results)
+
+                # Phase 3: Custom SQL queries (executed individually)
+                if custom_sql_specs:
+                    custom_results = self._execute_custom_sql_queries(
+                        cursor, handle, custom_sql_specs
+                    )
+                    results.extend(custom_results)
             finally:
                 self._close_cursor(cursor)
 
         return {"results": results, "staging": None}
+
+    def _execute_custom_sql_queries(
+        self,
+        cursor,
+        handle: DatasetHandle,
+        custom_sql_specs: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute custom SQL queries (Phase 3).
+
+        Each custom_sql_check query is transformed to return a COUNT(*) and executed.
+        The user writes a query that selects "violation rows", and we count them.
+
+        Transformation strategy:
+        - Simple SELECT: Rewrite to COUNT(*) directly
+        - DISTINCT/GROUP BY/LIMIT: Wrap in SELECT COUNT(*) FROM (...) AS _v
+        """
+        results: List[Dict[str, Any]] = []
+
+        # Get schema and table for placeholder replacement
+        try:
+            schema, table_name = self._get_schema_and_table(handle)
+        except NotImplementedError:
+            # Fallback: extract from full table reference
+            _logger.warning("_get_schema_and_table not implemented, custom SQL skipped")
+            return results
+
+        for spec in custom_sql_specs:
+            rule_id = spec["rule_id"]
+            user_sql = spec.get("sql", "")
+
+            try:
+                # Step 1: Replace {table} placeholder with properly formatted table reference
+                formatted_sql = replace_table_placeholder(
+                    sql=user_sql,
+                    schema=schema,
+                    table=table_name,
+                    dialect=self.DIALECT,
+                )
+
+                # Step 2: Transform to COUNT(*) query
+                success, count_sql = to_count_query(formatted_sql, dialect=self.DIALECT)
+                if not success:
+                    raise ValueError(f"Failed to transform SQL: {count_sql}")
+
+                # Step 3: Execute and read the count
+                cursor.execute(count_sql)
+                row = cursor.fetchone()
+
+                if row is None or len(row) < 1:
+                    raise ValueError("Query returned no result")
+
+                failed_count = int(row[0]) if row[0] is not None else 0
+
+                passed = failed_count == 0
+                results.append({
+                    "rule_id": rule_id,
+                    "passed": passed,
+                    "failed_count": failed_count,
+                    "message": "Passed" if passed else f"Custom SQL check failed for {failed_count} rows",
+                    "execution_source": self.DIALECT,
+                })
+
+            except Exception as e:
+                _logger.warning(f"Custom SQL execution failed for '{rule_id}': {e}")
+                results.append({
+                    "rule_id": rule_id,
+                    "passed": False,
+                    "failed_count": 1,  # Unknown, but at least 1 issue
+                    "message": f"Custom SQL execution failed: {e}",
+                    "execution_source": self.DIALECT,
+                })
+
+        return results
 
     def _get_cursor(self, conn):
         """

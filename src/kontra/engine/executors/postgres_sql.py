@@ -21,7 +21,7 @@ Supports rules:
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.postgres import PostgresConnectionParams, get_connection
@@ -44,7 +44,7 @@ class PostgresSqlExecutor(DatabaseSqlExecutor):
     SUPPORTED_RULES = {
         "not_null", "unique", "min_rows", "max_rows", "allowed_values",
         "freshness", "range", "regex", "compare", "conditional_not_null",
-        "conditional_range"
+        "conditional_range", "custom_sql_check"
     }
 
     @property
@@ -89,6 +89,22 @@ class PostgresSqlExecutor(DatabaseSqlExecutor):
         elif handle.db_params:
             params: PostgresConnectionParams = handle.db_params
             return f"{self._esc(params.schema)}.{self._esc(params.table)}"
+        else:
+            raise ValueError("Handle has neither table_ref nor db_params")
+
+    def _get_schema_and_table(self, handle: DatasetHandle) -> Tuple[str, str]:
+        """
+        Get schema and table name separately for custom SQL placeholder replacement.
+
+        Returns: Tuple of (schema, table_name)
+        """
+        if handle.scheme == "byoc" and handle.table_ref:
+            _db, schema, table = parse_table_reference(handle.table_ref)
+            schema = schema or get_default_schema(POSTGRESQL)
+            return schema, table
+        elif handle.db_params:
+            params: PostgresConnectionParams = handle.db_params
+            return params.schema, params.table
         else:
             raise ValueError("Handle has neither table_ref nor db_params")
 

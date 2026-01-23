@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-01-18T23:04:32.490747",
+  "experiment": "event-pipeline",
+  "control": {
+    "condition": "control",
+    "success": true,
+    "iterations": 13,
+    "total_code_executions": 11,
+    "validation_attempts": 3,
+    "used_compare": false,
+    "used_profile_relationship": false,
+    "compare_calls": 0,
+    "final_validation_passed": true,
+    "prompt_tokens": 29179,
+    "completion_tokens": 1992,
+    "total_tokens": 31171
+  },
+  "treatment": {
+    "condition": "treatment",
+    "success": true,
+    "iterations": 8,
+    "total_code_executions": 6,
+    "validation_attempts": 3,
+    "used_compare": true,
+    "used_profile_relationship": true,
+    "compare_calls": 3,
+    "final_validation_passed": true,
+    "prompt_tokens": 18493,
+    "completion_tokens": 769,
+    "total_tokens": 19262
+  }
+}

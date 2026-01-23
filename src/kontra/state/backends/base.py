@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kontra.state.types import Annotation, ValidationState
+    from kontra.state.types import Annotation, RunSummary, ValidationState
 
 
 class StateBackend(ABC):
@@ -156,6 +156,47 @@ class StateBackend(ABC):
             List of contract fingerprint strings
         """
         return []
+
+    def get_run_summaries(
+        self,
+        contract_fingerprint: str,
+        limit: int = 20,
+        since: Optional[datetime] = None,
+        failed_only: bool = False,
+    ) -> List["RunSummary"]:
+        """
+        Get lightweight run summaries for history listing.
+
+        More efficient than get_history() as it doesn't load rule details.
+
+        Args:
+            contract_fingerprint: The contract's fingerprint hash
+            limit: Maximum number of summaries to return
+            since: Only return runs after this timestamp
+            failed_only: Only return failed runs
+
+        Returns:
+            List of RunSummary objects, newest first
+        """
+        # Default implementation converts from full states
+        from kontra.state.types import RunSummary
+
+        states = self.get_history(contract_fingerprint, limit=limit * 2)
+        summaries = []
+
+        for i, state in enumerate(states):
+            if since and state.run_at < since:
+                continue
+            if failed_only and state.summary.passed:
+                continue
+
+            run_id = str(state.id) if state.id else f"run_{i}"
+            summaries.append(RunSummary.from_validation_state(state, run_id))
+
+            if len(summaries) >= limit:
+                break
+
+        return summaries
 
     # -------------------------------------------------------------------------
     # Annotation Methods (v0.5)

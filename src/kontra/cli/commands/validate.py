@@ -246,6 +246,11 @@ def register(app: typer.Typer) -> None:
             "--no-state",
             help="Disable state saving for this run.",
         ),
+        storage_options: Optional[str] = typer.Option(
+            None,
+            "--storage-options",
+            help='Cloud storage credentials as JSON, e.g. \'{"aws_access_key_id": "...", "aws_region": "us-east-1"}\'',
+        ),
         verbose: bool = typer.Option(
             False, "--verbose", "-v", help="Enable verbose errors."
         ),
@@ -345,6 +350,19 @@ def register(app: typer.Typer) -> None:
 
             from kontra.engine.engine import ValidationEngine
 
+            # Parse storage_options JSON if provided
+            parsed_storage_options = None
+            if storage_options:
+                import json
+                try:
+                    parsed_storage_options = json.loads(storage_options)
+                except json.JSONDecodeError as e:
+                    typer.secho(
+                        f"Invalid --storage-options JSON: {e}",
+                        fg=typer.colors.RED,
+                    )
+                    raise typer.Exit(code=EXIT_CONFIG_ERROR)
+
             eng = ValidationEngine(
                 contract_path=contract,
                 data_path=resolved_data,
@@ -361,6 +379,8 @@ def register(app: typer.Typer) -> None:
                 # State management
                 state_store=state_store,
                 save_state=not no_state,
+                # Cloud storage
+                storage_options=parsed_storage_options,
             )
             result = eng.run()
 

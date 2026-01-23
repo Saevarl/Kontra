@@ -99,7 +99,10 @@ class DatasetHandle:
         )
 
     @staticmethod
-    def from_uri(uri: str) -> "DatasetHandle":
+    def from_uri(
+        uri: str,
+        storage_options: Optional[Dict[str, Any]] = None,
+    ) -> "DatasetHandle":
         """
         Create a DatasetHandle from a user-provided URI or path.
 
@@ -109,11 +112,22 @@ class DatasetHandle:
           - "file:///data/users.csv"      (scheme = "file")
           - "https://example.com/x.parquet"
 
+        Args:
+            uri: Path or URI to the dataset
+            storage_options: Optional dict of cloud storage credentials.
+                For S3/MinIO:
+                  - aws_access_key_id, aws_secret_access_key
+                  - aws_region (required for Polars)
+                  - endpoint_url (for MinIO/S3-compatible)
+                For Azure:
+                  - account_name, account_key, sas_token, etc.
+                These override environment variables when provided.
+
         Notes:
           - We keep `path` equal to the original `uri` so engines that accept
             URIs directly (DuckDB: read_parquet) can use it verbatim.
-          - `fs_opts` is populated from environment variables where appropriate.
-            It’s OK if it’s empty (e.g., local files).
+          - `fs_opts` is populated from environment variables, then merged with
+            storage_options (storage_options take precedence).
         """
         parsed = urlparse(uri)
         scheme = (parsed.scheme or "").lower()
@@ -136,10 +150,16 @@ class DatasetHandle:
 
         if scheme == "s3":
             _inject_s3_env(fs_opts)
+            # Merge user-provided storage_options (takes precedence over env vars)
+            if storage_options:
+                _merge_s3_storage_options(fs_opts, storage_options)
 
         # Azure Data Lake Storage / Azure Blob Storage
         if scheme in ("abfs", "abfss", "az"):
             _inject_azure_env(fs_opts)
+            # Merge user-provided storage_options (takes precedence over env vars)
+            if storage_options:
+                _merge_azure_storage_options(fs_opts, storage_options)
 
         # HTTP(S): typically public or signed URLs. No defaults needed here.
         # Local `""`/`file` schemes: no fs_opts.
@@ -256,3 +276,85 @@ def _inject_azure_env(opts: Dict[str, str]) -> None:
     endpoint = os.getenv("AZURE_STORAGE_ENDPOINT")
     if endpoint:
         opts["azure_endpoint"] = endpoint
+
+
+def _merge_s3_storage_options(opts: Dict[str, str], storage_options: Dict[str, Any]) -> None:
+    """
+    Merge user-provided storage_options into fs_opts for S3.
+
+    Maps Polars-style keys to our internal normalized keys.
+    User values take precedence over env-var derived values.
+
+    Polars storage_options keys:
+      - aws_access_key_id -> s3_access_key_id
+      - aws_secret_access_key -> s3_secret_access_key
+      - aws_session_token -> s3_session_token
+      - aws_region -> s3_region
+      - endpoint_url -> s3_endpoint
+    """
+    # Mapping from Polars/user keys to our internal keys
+    key_map = {
+        "aws_access_key_id": "s3_access_key_id",
+        "aws_secret_access_key": "s3_secret_access_key",
+        "aws_session_token": "s3_session_token",
+        "aws_region": "s3_region",
+        "region": "s3_region",  # Alternative key
+        "endpoint_url": "s3_endpoint",
+    }
+
+    for user_key, internal_key in key_map.items():
+        if user_key in storage_options and storage_options[user_key] is not None:
+            opts[internal_key] = str(storage_options[user_key])
+
+    # Also accept our internal keys directly (pass-through)
+    internal_keys = [
+        "s3_access_key_id",
+        "s3_secret_access_key",
+        "s3_session_token",
+        "s3_region",
+        "s3_endpoint",
+        "s3_url_style",
+        "s3_use_ssl",
+    ]
+    for key in internal_keys:
+        if key in storage_options and storage_options[key] is not None:
+            opts[key] = str(storage_options[key])
+
+
+def _merge_azure_storage_options(opts: Dict[str, str], storage_options: Dict[str, Any]) -> None:
+    """
+    Merge user-provided storage_options into fs_opts for Azure.
+
+    Maps common Azure keys to our internal normalized keys.
+    User values take precedence over env-var derived values.
+    """
+    # Mapping from user keys to our internal keys
+    key_map = {
+        "account_name": "azure_account_name",
+        "account_key": "azure_account_key",
+        "sas_token": "azure_sas_token",
+        "connection_string": "azure_connection_string",
+        "tenant_id": "azure_tenant_id",
+        "client_id": "azure_client_id",
+        "client_secret": "azure_client_secret",
+        "endpoint": "azure_endpoint",
+    }
+
+    for user_key, internal_key in key_map.items():
+        if user_key in storage_options and storage_options[user_key] is not None:
+            opts[internal_key] = str(storage_options[user_key])
+
+    # Also accept our internal keys directly (pass-through)
+    internal_keys = [
+        "azure_account_name",
+        "azure_account_key",
+        "azure_sas_token",
+        "azure_connection_string",
+        "azure_tenant_id",
+        "azure_client_id",
+        "azure_client_secret",
+        "azure_endpoint",
+    ]
+    for key in internal_keys:
+        if key in storage_options and storage_options[key] is not None:
+            opts[key] = str(storage_options[key])

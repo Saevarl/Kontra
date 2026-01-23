@@ -1,0 +1,13 @@
+{
+  "condition": "control",
+  "success": true,
+  "iterations": 10,
+  "total_code_executions": 13,
+  "validation_attempts": 3,
+  "used_compare": false,
+  "used_profile_relationship": false,
+  "final_validation_passed": true,
+  "prompt_tokens": 23880,
+  "completion_tokens": 1588,
+  "total_tokens": 25468
+}

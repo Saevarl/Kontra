@@ -71,6 +71,12 @@ from kontra.api.results import (
     SuggestedRule,
 )
 
+# Probe types
+from kontra.api.compare import CompareResult, RelationshipProfile
+
+# Transformation probes
+from kontra.probes import compare, profile_relationship
+
 # Rules helpers
 from kontra.api.rules import rules
 
@@ -112,6 +118,7 @@ def validate(
     sample: int = 5,
     sample_budget: int = 50,
     sample_columns: Optional[Union[List[str], str]] = None,
+    storage_options: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> Union[ValidationResult, DryRunResult]:
     """
@@ -146,6 +153,14 @@ def validate(
             - None (default): All columns
             - ["col1", "col2"]: Only specified columns
             - "relevant": Rule's columns + _row_index only
+        storage_options: Cloud storage credentials (S3, Azure, GCS).
+            For S3/MinIO:
+                - aws_access_key_id, aws_secret_access_key
+                - aws_region (required for Polars)
+                - endpoint_url (for MinIO/S3-compatible)
+            For Azure:
+                - account_name, account_key, sas_token, etc.
+            These override environment variables when provided.
         **kwargs: Additional arguments passed to ValidationEngine
 
     Returns:
@@ -333,6 +348,7 @@ def validate(
         "csv_mode": csv_mode,
         "stats_mode": stats,
         "inline_rules": rules,
+        "storage_options": storage_options,
         **kwargs,
     }
 
@@ -421,6 +437,7 @@ def profile(
     columns: Optional[List[str]] = None,
     sample: Optional[int] = None,
     save: bool = True,
+    storage_options: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> DatasetProfile:
     """
@@ -435,6 +452,10 @@ def profile(
         columns: Only profile these columns
         sample: Sample N rows (default: all)
         save: Save profile to history
+        storage_options: Cloud storage credentials (S3, Azure, GCS).
+            For S3/MinIO: aws_access_key_id, aws_secret_access_key, aws_region, endpoint_url
+            For Azure: account_name, account_key, sas_token, etc.
+            These override environment variables when provided.
         **kwargs: Additional arguments passed to ScoutProfiler
 
     Returns:
@@ -490,6 +511,7 @@ def profile(
             preset=preset,
             columns=columns,
             sample_size=sample,
+            storage_options=storage_options,
             **kwargs,
         )
         return profiler.profile()
@@ -526,6 +548,89 @@ def draft(
         result = kontra.validate(df, rules=suggestions.to_dict())
     """
     return Suggestions.from_profile(profile, min_confidence=min_confidence)
+
+
+def get_history(
+    contract: str,
+    *,
+    limit: int = 20,
+    since: Optional[str] = None,
+    failed_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Get validation history for a contract.
+
+    Args:
+        contract: Path to contract YAML file
+        limit: Maximum number of runs to return (default: 20)
+        since: Only return runs after this date/time. Formats:
+            - "24h", "7d" - relative time
+            - "2026-01-15" - specific date
+        failed_only: Only return failed runs
+
+    Returns:
+        List of run summaries, newest first. Each summary contains:
+        - run_id: Unique identifier
+        - timestamp: When the run occurred (ISO format)
+        - passed: Overall pass/fail
+        - failed_count: Total failures
+        - total_rows: Row count (if available)
+        - contract_name: Name of the contract
+
+    Example:
+        history = kontra.get_history("contract.yml")
+        for run in history:
+            print(f"{run['timestamp']}: {'PASS' if run['passed'] else 'FAIL'}")
+
+        # Last 7 days only
+        recent = kontra.get_history("contract.yml", since="7d")
+
+        # Only failed runs
+        failures = kontra.get_history("contract.yml", failed_only=True)
+    """
+    from datetime import datetime, timedelta, timezone
+    from kontra.config.loader import ContractLoader
+    from kontra.state.fingerprint import fingerprint_contract
+    from kontra.state.backends import get_default_store
+
+    # Load contract to get fingerprint
+    contract_obj = ContractLoader.from_path(contract)
+    fp = fingerprint_contract(contract_obj)
+
+    # Parse since parameter
+    since_dt = None
+    if since:
+        now = datetime.now(timezone.utc)
+        since_lower = since.lower().strip()
+
+        if since_lower.endswith("h"):
+            hours = int(since_lower[:-1])
+            since_dt = now - timedelta(hours=hours)
+        elif since_lower.endswith("d"):
+            days = int(since_lower[:-1])
+            since_dt = now - timedelta(days=days)
+        else:
+            # Try parsing as date
+            try:
+                since_dt = datetime.fromisoformat(since)
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                raise ValueError(f"Invalid since format: {since}. Use '24h', '7d', or 'YYYY-MM-DD'")
+
+    # Get history from store
+    store = get_default_store()
+    if store is None:
+        return []
+
+    summaries = store.get_run_summaries(
+        contract_fingerprint=fp,
+        limit=limit,
+        since=since_dt,
+        failed_only=failed_only,
+    )
+
+    return [s.to_dict() for s in summaries]
 
 
 # =============================================================================
@@ -1508,6 +1613,9 @@ __all__ = [
     "explain",
     "diff",
     "profile_diff",
+    # Transformation probes
+    "compare",
+    "profile_relationship",
     # Deprecated aliases (kept for backward compatibility)
     "scout",           # Use profile() instead
     "suggest_rules",   # Use draft() instead
@@ -1540,6 +1648,9 @@ __all__ = [
     "DatasetProfile",
     "ColumnProfile",
     "ProfileDiff",
+    # Probe result types
+    "CompareResult",
+    "RelationshipProfile",
     # Rules helpers
     "rules",
     # Decorators
