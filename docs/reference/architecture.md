@@ -280,7 +280,7 @@ Kontra makes explicit what it does and does not guarantee:
 - **Exact counts from preplan**: Metadata returns "≥1 violation", not exact counts
 - **Metadata availability**: Parquet row-group stats depend on the writer; pg_stats depends on ANALYZE
 - **Identical SQL behavior**: DuckDB, PostgreSQL, and SQL Server may differ on edge cases (collation, regex)
-- **Scout suggestion quality**: Auto-generated rules are heuristic, may overfit to sample data
+- **Rule suggestion quality**: Auto-generated rules from `profile()` are heuristic, may overfit to sample data
 
 ### Data Source Dependencies
 
