@@ -140,6 +140,41 @@ class TestRulesHelpers:
         assert rule["params"]["column"] == "updated_at"
         assert rule["params"]["max_age"] == "24h"
 
+    def test_column_validation_rejects_none(self):
+        """Rule helpers reject None column names (BUG-002)."""
+        with pytest.raises(ValueError, match="requires a column name"):
+            rules.unique(None)
+        with pytest.raises(ValueError, match="requires a column name"):
+            rules.not_null(None)
+        with pytest.raises(ValueError, match="requires a column name"):
+            rules.range(None, min=0)
+
+    def test_column_validation_rejects_empty_string(self):
+        """Rule helpers reject empty column names."""
+        with pytest.raises(ValueError, match="cannot be empty"):
+            rules.unique("")
+        with pytest.raises(ValueError, match="cannot be empty"):
+            rules.not_null("  ")
+
+    def test_column_validation_rejects_non_string(self):
+        """Rule helpers reject non-string column names."""
+        with pytest.raises(ValueError, match="must be a string"):
+            rules.unique(123)
+        with pytest.raises(ValueError, match="must be a string"):
+            rules.allowed_values(["column"], values=[1, 2])
+
+    def test_freshness_validates_max_age(self):
+        """rules.freshness() validates max_age format (BUG-003)."""
+        with pytest.raises(ValueError, match="invalid max_age"):
+            rules.freshness("updated_at", max_age="invalid")
+        with pytest.raises(ValueError, match="requires max_age"):
+            rules.freshness("updated_at", max_age=None)
+
+        # Valid formats should work
+        for fmt in ["24h", "1d", "30m", "7d", "1w", "1h30m"]:
+            rule = rules.freshness("updated_at", max_age=fmt)
+            assert rule["params"]["max_age"] == fmt
+
 
 # =============================================================================
 # Validate Function Tests
@@ -503,6 +538,27 @@ class TestScoutFunction:
             profile = kontra.scout(sample_df, preset=preset)
             assert profile.row_count == 5
 
+    def test_scout_empty_dataframe(self):
+        """Scout handles empty DataFrame (no columns) gracefully."""
+        # BUG-001: Empty DataFrame used to fail with DuckDB error
+        empty_df = pl.DataFrame()
+
+        profile = kontra.scout(empty_df, preset="lite")
+
+        assert profile.row_count == 0
+        assert profile.column_count == 0
+        assert profile.columns == []
+
+    def test_scout_empty_rows_dataframe(self):
+        """Scout handles DataFrame with columns but no rows."""
+        empty_rows_df = pl.DataFrame({"id": [], "name": []}).cast({"id": pl.Int64, "name": pl.Utf8})
+
+        profile = kontra.scout(empty_rows_df, preset="lite")
+
+        assert profile.row_count == 0
+        assert profile.column_count == 2
+        assert len(profile.columns) == 2
+
     def test_profile_to_llm(self, sample_df):
         """DatasetProfile.to_llm() returns token-optimized string."""
         profile = kontra.scout(sample_df, preset="standard")
@@ -686,6 +742,26 @@ class TestHistoryFunctions:
         """get_run returns None when no history."""
         result = kontra.get_run("nonexistent_contract")
         assert result is None
+
+    def test_get_history_rejects_data_file(self, tmp_path):
+        """get_history raises clear error for data files (BUG-014)."""
+        # Create a parquet file
+        df = pl.DataFrame({"x": [1, 2, 3]})
+        parquet_path = tmp_path / "data.parquet"
+        df.write_parquet(parquet_path)
+
+        # Should raise ValueError with helpful message, not UnicodeDecodeError
+        with pytest.raises(ValueError, match="requires a contract YAML file"):
+            kontra.get_history(str(parquet_path))
+
+    def test_diff_rejects_data_file(self, tmp_path):
+        """diff raises clear error for data files."""
+        df = pl.DataFrame({"x": [1, 2, 3]})
+        csv_path = tmp_path / "data.csv"
+        df.write_csv(csv_path)
+
+        with pytest.raises(ValueError, match="requires a contract YAML file"):
+            kontra.diff(str(csv_path))
 
     def test_list_profiles_not_implemented(self):
         """list_profiles returns empty (not yet implemented)."""

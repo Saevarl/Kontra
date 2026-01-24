@@ -450,9 +450,15 @@ def resolve_effective_config(
         try:
             file_config = load_config_file(config_path)
             effective.config_file_path = config_path
-        except Exception:
+        except Exception as e:
             # Fail-safe: continue with defaults if config is broken
-            # Error will be shown if KONTRA_VERBOSE is set
+            # Always warn when config fails to load (BUG-011)
+            import warnings
+            warnings.warn(
+                f"Config file '{config_path}' failed to load: {e}. Using defaults.",
+                UserWarning,
+                stacklevel=2,
+            )
             if os.getenv("KONTRA_VERBOSE"):
                 import traceback
                 traceback.print_exc()
@@ -489,7 +495,15 @@ def resolve_effective_config(
             # Environment specified but not found
             available = list(file_config.environments.keys())
             raise UnknownEnvironmentError(env_name, available)
-        # If no config file, silently ignore --env
+        else:
+            # No config file, warn about ignored --env (BUG-012)
+            import warnings
+            warnings.warn(
+                f"Environment '{env_name}' specified but no config file found. "
+                "Create .kontra/config.yml with environments section.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     # Layer 3: Apply CLI overrides (core fields + scout fields with mappings)
     _apply_cli_overrides(effective, cli_overrides, _CORE_OVERLAY_FIELDS, _CLI_FIELD_MAPPINGS)

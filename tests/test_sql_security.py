@@ -114,3 +114,37 @@ class TestExistingSecurityChecks:
         result = validate_sql(sql, dialect="postgres")
         assert not result.is_safe, f"Should block: {sql}"
         assert blocked_reason.lower() in result.reason.lower(), f"Expected '{blocked_reason}' in '{result.reason}'"
+
+
+class TestFileAccessBlocking:
+    """Test blocking of file access functions (SEC-001)."""
+
+    @pytest.mark.parametrize("sql,description", [
+        # DuckDB file reading functions
+        ("SELECT * FROM read_csv('/etc/passwd')", "read_csv"),
+        ("SELECT * FROM read_parquet('/tmp/secrets.parquet')", "read_parquet"),
+        ("SELECT * FROM read_json('/tmp/config.json')", "read_json"),
+        ("SELECT * FROM read_csv_auto('/etc/passwd')", "read_csv_auto"),
+        ("SELECT * FROM read_json_auto('/tmp/config.json')", "read_json_auto"),
+    ])
+    def test_blocks_file_read_functions(self, sql, description):
+        """Verify file reading functions are blocked."""
+        result = validate_sql(sql, dialect="duckdb")
+        assert not result.is_safe, f"Should block {description}"
+        assert "forbidden function" in result.reason.lower()
+
+
+class TestExternalAccessBlocking:
+    """Test blocking of external database access (SEC-002)."""
+
+    @pytest.mark.parametrize("sql,description", [
+        # ATTACH command
+        ("ATTACH '/path/to/db' AS prod", "ATTACH database"),
+        # COPY command
+        ("COPY users TO '/tmp/data.csv'", "COPY TO"),
+        ("COPY users FROM '/tmp/data.csv'", "COPY FROM"),
+    ])
+    def test_blocks_external_access(self, sql, description):
+        """Verify external access commands are blocked."""
+        result = validate_sql(sql, dialect="duckdb")
+        assert not result.is_safe, f"Should block {description}"

@@ -38,7 +38,7 @@ class CustomSQLCheck(BaseRule):
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         """Execute SQL check via DuckDB (fallback path)."""
-        from kontra.engine.sql_validator import to_count_query
+        from kontra.engine.sql_validator import to_count_query, validate_sql
 
         # Accept both 'sql' (documented) and 'query' (legacy) parameter names
         query = self.params.get("sql") or self.params.get("query")
@@ -54,6 +54,11 @@ class CustomSQLCheck(BaseRule):
         query = query.replace("{table}", "data")
 
         try:
+            # Validate SQL is safe before execution (blocks read_csv, read_parquet, etc.)
+            validation = validate_sql(query, dialect="duckdb")
+            if not validation.is_safe:
+                raise ValueError(f"SQL validation failed: {validation.reason}")
+
             # Transform to COUNT(*) query for efficiency
             success, count_query = to_count_query(query, dialect="duckdb")
             if not success:

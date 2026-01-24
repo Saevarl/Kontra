@@ -151,6 +151,7 @@ class RuleExecutionPlan:
                     if len(available_cols) == 1:
                         msg += ". Data may be nested - Kontra requires flat tabular data"
 
+                    from kontra.state.types import FailureMode
                     missing_col_results.append({
                         "rule_id": p.rule_id,
                         "passed": False,
@@ -158,6 +159,7 @@ class RuleExecutionPlan:
                         "message": msg,
                         "execution_source": "polars",
                         "severity": rule_severity_map.get(p.rule_id, "blocking"),
+                        "failure_mode": str(FailureMode.CONFIG_ERROR),
                         "details": {
                             "missing_columns": missing_list,
                             "available_columns": sorted(available_cols)[:20],

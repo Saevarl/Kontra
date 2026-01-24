@@ -27,7 +27,13 @@ class AllowedValuesRule(BaseRule):
             return col_check
 
         allowed_set = set(values)
-        mask = (~df[column].is_in(list(values))).fill_null(True)
+        # Check if NULL is explicitly allowed
+        null_allowed = None in allowed_set
+
+        # is_in returns NULL for NULL values, fill_null decides if NULL is violation
+        # If NULL is in allowed values, NULL should NOT be a violation (fill_null(False))
+        # If NULL is not allowed, NULL IS a violation (fill_null(True))
+        mask = (~df[column].is_in(list(values))).fill_null(not null_allowed)
         res = super()._failures(df, mask, f"{column} contains disallowed values")
         res["rule_id"] = self.rule_id
 
@@ -84,7 +90,10 @@ class AllowedValuesRule(BaseRule):
     def compile_predicate(self) -> Optional[Predicate]:
         column = self.params["column"]
         values: Sequence[Any] = self.params["values"]
-        expr = (~pl.col(column).is_in(values)).fill_null(True)
+        # Check if NULL is explicitly allowed
+        null_allowed = None in set(values)
+        # If NULL is allowed, don't treat NULL as violation
+        expr = (~pl.col(column).is_in(values)).fill_null(not null_allowed)
         return Predicate(
             rule_id=self.rule_id,
             expr=expr,
@@ -98,7 +107,10 @@ class AllowedValuesRule(BaseRule):
 
         col = f'"{column}"'
 
-        # Build IN list with proper quoting
+        # Check if NULL is explicitly allowed
+        null_allowed = None in set(values)
+
+        # Build IN list with proper quoting (exclude None)
         quoted_values = []
         for v in values:
             if v is None:
@@ -114,7 +126,16 @@ class AllowedValuesRule(BaseRule):
 
         if quoted_values:
             in_list = ", ".join(quoted_values)
-            return f"{col} NOT IN ({in_list}) OR {col} IS NULL"
+            if null_allowed:
+                # NULL is allowed, only non-null disallowed values are violations
+                return f"{col} NOT IN ({in_list}) AND {col} IS NOT NULL"
+            else:
+                # NULL is not allowed, both disallowed values AND NULL are violations
+                return f"{col} NOT IN ({in_list}) OR {col} IS NULL"
         else:
-            # Only NULL in allowed values, everything else fails
-            return f"{col} IS NOT NULL"
+            # Only NULL in allowed values (no other values) - everything non-null fails
+            if null_allowed:
+                return f"{col} IS NOT NULL"
+            else:
+                # Empty allowed list, no NULL - everything fails (always true filter)
+                return "1=1"

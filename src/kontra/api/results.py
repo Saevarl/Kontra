@@ -276,6 +276,7 @@ class RuleResult:
     column: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
     context: Optional[Dict[str, Any]] = None
+    failure_mode: Optional[str] = None  # Semantic failure type (e.g., "config_error", "null_values")
 
     # Sampling fields (eager sampling)
     samples: Optional[List[Dict[str, Any]]] = None
@@ -347,6 +348,7 @@ class RuleResult:
             column=column,
             details=d.get("details"),
             context=d.get("context"),
+            failure_mode=d.get("failure_mode"),
             # Sampling fields
             samples=d.get("samples"),
             samples_source=d.get("samples_source"),
@@ -376,6 +378,8 @@ class RuleResult:
             d["details"] = self.details
         if self.context:
             d["context"] = self.context
+        if self.failure_mode:
+            d["failure_mode"] = self.failure_mode
 
         # Sampling fields - always include for clarity
         d["samples"] = self.samples  # None = unavailable, [] = none found

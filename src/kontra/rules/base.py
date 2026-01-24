@@ -127,11 +127,14 @@ class BaseRule(ABC):
         if len(available) == 1 and len(missing) > 0:
             nested_hint = ". Data may be nested - Kontra requires flat tabular data"
 
+        from kontra.state.types import FailureMode
+
         return {
             "rule_id": getattr(self, "rule_id", self.name),
             "passed": False,
             "failed_count": df.height,  # All rows fail if column missing
             "message": f"{msg}{nested_hint}",
+            "failure_mode": str(FailureMode.CONFIG_ERROR),  # Mark as config issue, not data issue
             "details": {
                 "missing_columns": missing_list,
                 "available_columns": available_list[:20],  # Limit for readability

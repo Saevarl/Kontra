@@ -202,6 +202,9 @@ class FailureMode(str, Enum):
     CONDITIONAL_NULL = "conditional_null"  # Conditional not-null failed
     CONDITIONAL_RANGE_VIOLATION = "conditional_range_violation"  # Conditional range failed
 
+    # Configuration/contract errors
+    CONFIG_ERROR = "config_error"  # Contract/config issue (e.g., column not found)
+
     def __str__(self) -> str:
         return self.value
 

@@ -31,6 +31,19 @@ class TestMissingColumnValidationFailure:
         assert "missing_col" in result.rules[0].message
         assert "not found" in result.rules[0].message.lower()
 
+    def test_missing_column_has_config_error_failure_mode(self):
+        """Missing column should have failure_mode='config_error' (BUG-004)."""
+        df = pl.DataFrame({"a": [1, 2, 3]})
+        result = kontra.validate(df, rules=[rules.not_null("missing_col")])
+
+        assert not result.passed
+        rule_result = result.rules[0]
+        assert rule_result.failure_mode == "config_error"
+        assert rule_result.details is not None
+        assert "missing_columns" in rule_result.details
+        assert "missing_col" in rule_result.details["missing_columns"]
+        assert "available_columns" in rule_result.details
+
     def test_unique_missing_column(self):
         """unique on missing column should fail, not throw."""
         df = pl.DataFrame({"a": [1, 2, 3]})

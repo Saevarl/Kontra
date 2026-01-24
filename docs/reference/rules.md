@@ -236,7 +236,7 @@ Formats: `Xs` (seconds), `Xm` (minutes), `Xh` (hours), `Xd` (days), `XhYm` (e.g.
 
 ### compare
 
-Compare two columns. NULL in either = violation.
+Compare two columns using a comparison operator.
 
 ```yaml
 - name: compare
@@ -253,6 +253,8 @@ Compare two columns. NULL in either = violation.
 | `op` | string | Yes |
 
 Operators: `>`, `>=`, `<`, `<=`, `==`, `!=`
+
+**NULL handling**: Rows where *either* column is NULL are counted as failures. This is intentional—you cannot meaningfully compare NULL values. If you need to allow NULLs, combine with a conditional rule or filter NULLs upstream.
 
 ---
 

@@ -21,6 +21,17 @@ Usage:
 from typing import Any, Dict, List, Optional, Union
 
 
+def _validate_column(column: Any, rule_name: str) -> str:
+    """Validate that column is a non-empty string."""
+    if column is None:
+        raise ValueError(f"{rule_name}() requires a column name, got None")
+    if not isinstance(column, str):
+        raise ValueError(f"{rule_name}() column must be a string, got {type(column).__name__}")
+    if not column.strip():
+        raise ValueError(f"{rule_name}() column name cannot be empty")
+    return column
+
+
 def _build_rule(
     name: str,
     params: Dict[str, Any],
@@ -65,6 +76,7 @@ def not_null(
     Returns:
         Rule dict for use with kontra.validate()
     """
+    _validate_column(column, "not_null")
     params: Dict[str, Any] = {"column": column}
     if include_nan:
         params["include_nan"] = True
@@ -90,6 +102,7 @@ def unique(
     Returns:
         Rule dict for use with kontra.validate()
     """
+    _validate_column(column, "unique")
     return _build_rule("unique", {"column": column}, severity, id, context)
 
 
@@ -113,6 +126,7 @@ def dtype(
     Returns:
         Rule dict for use with kontra.validate()
     """
+    _validate_column(column, "dtype")
     return _build_rule("dtype", {"column": column, "type": type}, severity, id, context)
 
 
@@ -141,6 +155,8 @@ def range(
     Raises:
         ValueError: If neither min nor max is provided, or if min > max
     """
+    _validate_column(column, "range")
+
     # Validate at least one bound is provided
     if min is None and max is None:
         raise ValueError("range rule: at least one of 'min' or 'max' must be provided")
@@ -178,6 +194,7 @@ def allowed_values(
     Returns:
         Rule dict for use with kontra.validate()
     """
+    _validate_column(column, "allowed_values")
     return _build_rule("allowed_values", {"column": column, "values": values}, severity, id, context)
 
 
@@ -201,6 +218,7 @@ def regex(
     Returns:
         Rule dict for use with kontra.validate()
     """
+    _validate_column(column, "regex")
     return _build_rule("regex", {"column": column, "pattern": pattern}, severity, id, context)
 
 
@@ -223,8 +241,10 @@ def min_rows(
         Rule dict for use with kontra.validate()
 
     Raises:
-        ValueError: If threshold is negative
+        ValueError: If threshold is negative or not an integer
     """
+    if not isinstance(threshold, int) or isinstance(threshold, bool):
+        raise ValueError(f"min_rows() threshold must be an integer, got {type(threshold).__name__}")
     if threshold < 0:
         raise ValueError(f"min_rows threshold must be non-negative, got {threshold}")
 
@@ -241,14 +261,21 @@ def max_rows(
     Dataset must have at most this many rows.
 
     Args:
-        threshold: Maximum row count
+        threshold: Maximum row count (must be a non-negative integer)
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Returns:
         Rule dict for use with kontra.validate()
+
+    Raises:
+        ValueError: If threshold is negative or not an integer
     """
+    if not isinstance(threshold, int) or isinstance(threshold, bool):
+        raise ValueError(f"max_rows() threshold must be an integer, got {type(threshold).__name__}")
+    if threshold < 0:
+        raise ValueError(f"max_rows threshold must be non-negative, got {threshold}")
     return _build_rule("max_rows", {"threshold": threshold}, severity, id, context)
 
 
@@ -271,7 +298,25 @@ def freshness(
 
     Returns:
         Rule dict for use with kontra.validate()
+
+    Raises:
+        ValueError: If max_age is invalid or not provided
     """
+    _validate_column(column, "freshness")
+
+    # Validate max_age format
+    if max_age is None:
+        raise ValueError("freshness() requires max_age parameter")
+    if not isinstance(max_age, str):
+        raise ValueError(f"freshness() max_age must be a string, got {type(max_age).__name__}")
+
+    # Validate max_age is parseable
+    from kontra.rules.builtin.freshness import parse_duration
+    try:
+        parse_duration(max_age)
+    except ValueError as e:
+        raise ValueError(f"freshness() invalid max_age: {e}") from None
+
     return _build_rule("freshness", {"column": column, "max_age": max_age}, severity, id, context)
 
 
@@ -328,6 +373,8 @@ def compare(
         # Ensure end_date >= start_date
         rules.compare("end_date", "start_date", ">=")
     """
+    _validate_column(left, "compare (left)")
+    _validate_column(right, "compare (right)")
     return _build_rule("compare", {"left": left, "right": right, "op": op}, severity, id, context)
 
 
@@ -361,6 +408,7 @@ def conditional_not_null(
         # shipping_date must not be null when status is 'shipped'
         rules.conditional_not_null("shipping_date", "status == 'shipped'")
     """
+    _validate_column(column, "conditional_not_null")
     return _build_rule("conditional_not_null", {"column": column, "when": when}, severity, id, context)
 
 
@@ -404,6 +452,7 @@ def conditional_range(
         # discount_percent must be between 10 and 50 for premium customers
         rules.conditional_range("discount_percent", "customer_type == 'premium'", min=10, max=50)
     """
+    _validate_column(column, "conditional_range")
     params = {"column": column, "when": when}
     if min is not None:
         params["min"] = min

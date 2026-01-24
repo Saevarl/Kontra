@@ -62,6 +62,26 @@ def _is_pandas_dataframe(obj: Any) -> bool:
     return type(obj).__module__.startswith("pandas") and type(obj).__name__ == "DataFrame"
 
 
+# Data file extensions that should not be passed to state functions
+_DATA_FILE_EXTENSIONS = {".parquet", ".csv", ".json", ".ndjson", ".jsonl", ".arrow", ".feather"}
+
+
+def _validate_contract_path(path: str, function_name: str) -> None:
+    """
+    Validate that a path looks like a contract file, not a data file.
+
+    Raises ValueError with a helpful message if the file appears to be a data file.
+    """
+    lower = path.lower()
+    for ext in _DATA_FILE_EXTENSIONS:
+        if lower.endswith(ext):
+            raise ValueError(
+                f"{function_name}() requires a contract YAML file path, not a data file. "
+                f"Received: '{path}' (appears to be a {ext[1:].upper()} file). "
+                f"Example: kontra.{function_name}('contract.yml')"
+            )
+
+
 # API types
 from kontra.api.results import (
     ValidationResult,
@@ -523,6 +543,20 @@ def profile(
             data = pl.DataFrame([data])
 
     if isinstance(data, pl.DataFrame):
+        # Handle empty DataFrame (no columns) - DuckDB can't read parquet with no columns
+        if data.width == 0:
+            from datetime import datetime, timezone
+            from kontra.version import VERSION
+            return DatasetProfile(
+                source_uri="<inline DataFrame>",
+                source_format="dataframe",
+                profiled_at=datetime.now(timezone.utc).isoformat(),
+                engine_version=VERSION,
+                row_count=data.height,
+                column_count=0,
+                columns=[],
+            )
+
         # For DataFrame input, write to temp file
         import tempfile
         import os
@@ -638,6 +672,9 @@ def get_history(
     from kontra.config.loader import ContractLoader
     from kontra.state.fingerprint import fingerprint_contract
     from kontra.state.backends import get_default_store
+
+    # Validate that contract is a YAML file, not a data file (BUG-014)
+    _validate_contract_path(contract, "get_history")
 
     # Load contract to get fingerprint
     contract_obj = ContractLoader.from_path(contract)
@@ -827,6 +864,10 @@ def diff(
     if store is None:
         return None
 
+    # Validate that contract is a YAML file, not a data file (BUG-014)
+    if os.path.isfile(contract):
+        _validate_contract_path(contract, "diff")
+
     # Resolve contract to fingerprint
     try:
         # If it's a file path, load contract and compute semantic fingerprint
@@ -923,13 +964,14 @@ def scout_diff(
 # =============================================================================
 
 
-def _resolve_contract_fingerprint(contract: str, store: Any) -> Optional[str]:
+def _resolve_contract_fingerprint(contract: str, store: Any, caller: str = "state function") -> Optional[str]:
     """
     Resolve a contract name or path to its fingerprint.
 
     Args:
         contract: Contract name or file path
         store: State store instance
+        caller: Name of the calling function (for error messages)
 
     Returns:
         Contract fingerprint or None if not found
@@ -939,6 +981,8 @@ def _resolve_contract_fingerprint(contract: str, store: Any) -> Optional[str]:
 
     # If it's a file path, load contract and compute semantic fingerprint
     if os.path.isfile(contract):
+        # Validate that it's not a data file (BUG-014)
+        _validate_contract_path(contract, caller)
         contract_obj = ContractLoader.from_path(contract)
         return fingerprint_contract(contract_obj)
 
@@ -968,7 +1012,7 @@ def list_runs(contract: str) -> List[Dict[str, Any]]:
         return []
 
     try:
-        contract_fp = _resolve_contract_fingerprint(contract, store)
+        contract_fp = _resolve_contract_fingerprint(contract, store, "list_runs")
         if contract_fp is None:
             return []
 
@@ -1011,7 +1055,7 @@ def get_run(
         return None
 
     try:
-        contract_fp = _resolve_contract_fingerprint(contract, store)
+        contract_fp = _resolve_contract_fingerprint(contract, store, "get_run")
         if contract_fp is None:
             return None
 
@@ -1079,7 +1123,7 @@ def has_runs(contract: str) -> bool:
         return False
 
     try:
-        contract_fp = _resolve_contract_fingerprint(contract, store)
+        contract_fp = _resolve_contract_fingerprint(contract, store, "has_runs")
         if contract_fp is None:
             return False
 
@@ -1261,7 +1305,7 @@ def annotate(
         raise RuntimeError("State store not available")
 
     # Resolve contract to fingerprint
-    contract_fp = _resolve_contract_fingerprint(contract, store)
+    contract_fp = _resolve_contract_fingerprint(contract, store, "annotate")
     if contract_fp is None:
         raise ValueError(f"Contract not found: {contract}")
 
@@ -1407,7 +1451,7 @@ def get_run_with_annotations(
         return None
 
     try:
-        contract_fp = _resolve_contract_fingerprint(contract, store)
+        contract_fp = _resolve_contract_fingerprint(contract, store, "get_run_with_annotations")
         if contract_fp is None:
             return None
 
@@ -1513,7 +1557,7 @@ def get_annotations(
         return []
 
     try:
-        contract_fp = _resolve_contract_fingerprint(contract, store)
+        contract_fp = _resolve_contract_fingerprint(contract, store, "get_annotations")
         if contract_fp is None:
             return []
 

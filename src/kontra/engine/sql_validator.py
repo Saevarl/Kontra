@@ -15,7 +15,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 
-# Statement types that are NOT allowed (write operations)
+# Statement types that are NOT allowed (write operations and external access)
 FORBIDDEN_STATEMENT_TYPES: Set[type] = {
     exp.Insert,
     exp.Update,
@@ -27,6 +27,10 @@ FORBIDDEN_STATEMENT_TYPES: Set[type] = {
     exp.Grant,
     exp.Revoke,
     exp.Command,  # Generic command execution
+    exp.Copy,     # COPY command (file I/O)
+    exp.Set,      # SET commands (configuration changes)
+    exp.Use,      # USE database (context switching)
+    exp.Attach,   # ATTACH external databases (SEC-002)
 }
 
 # Table prefixes/schemas that are forbidden (system catalogs)
@@ -89,6 +93,28 @@ FORBIDDEN_FUNCTIONS: Set[str] = {
     "execute",
     "call",
     "sleep",
+    # DuckDB file access (SEC-001: arbitrary file read)
+    "read_csv",
+    "read_csv_auto",
+    "read_parquet",
+    "read_json",
+    "read_json_auto",
+    "read_json_objects",
+    "read_blob",
+    "read_text",
+    "read_ndjson",
+    "read_ndjson_auto",
+    "read_ndjson_objects",
+    # DuckDB file listing/globbing
+    "glob",
+    "list_files",
+    # DuckDB external access
+    "httpfs_get",
+    "http_get",
+    "s3_get",
+    # DuckDB query functions that could bypass table reference
+    "query",
+    "query_table",
 }
 
 
@@ -240,9 +266,32 @@ def _check_forbidden_functions(stmt: exp.Expression) -> Optional[str]:
     """
     for node in stmt.walk():
         if isinstance(node, exp.Func):
+            # Check function name via multiple methods
             func_name = node.name.lower() if node.name else ""
             if func_name in FORBIDDEN_FUNCTIONS:
                 return func_name
+
+            # Check sql_name() for functions like ReadCSV, ReadParquet
+            # that have specific class types
+            try:
+                sql_name = node.sql_name().lower() if hasattr(node, "sql_name") else ""
+                if sql_name in FORBIDDEN_FUNCTIONS:
+                    return sql_name
+            except Exception:
+                pass
+
+            # Check class name directly for specific types
+            class_name = type(node).__name__.lower()
+            # Map class names to function names
+            class_to_func = {
+                "readcsv": "read_csv",
+                "readparquet": "read_parquet",
+                "readjson": "read_json",
+            }
+            if class_name in class_to_func:
+                mapped_name = class_to_func[class_name]
+                if mapped_name in FORBIDDEN_FUNCTIONS:
+                    return mapped_name
 
         # Also check for CALL statements disguised as functions
         if isinstance(node, exp.Anonymous):

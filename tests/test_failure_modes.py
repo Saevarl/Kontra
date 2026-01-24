@@ -179,6 +179,42 @@ class TestAllowedValuesFailureMode:
         assert unexpected[0]["value"] == "unknown"
         assert unexpected[0]["count"] == 2
 
+    def test_allowed_values_with_null_in_allowed_list(self):
+        """allowed_values accepts NULL when None is in allowed values list (BUG-007)."""
+        from kontra.rules.builtin.allowed_values import AllowedValuesRule
+
+        df = pl.DataFrame({
+            "status": ["active", "inactive", None],
+        })
+        # NULL is explicitly in the allowed values
+        rule = AllowedValuesRule("allowed_values", {
+            "column": "status",
+            "values": ["active", "inactive", None]
+        })
+        result = rule.validate(df)
+
+        # Should pass - all values including NULL are allowed
+        assert result["passed"] is True
+        assert result["failed_count"] == 0
+
+    def test_allowed_values_rejects_null_when_not_in_list(self):
+        """allowed_values rejects NULL when None is NOT in allowed values list."""
+        from kontra.rules.builtin.allowed_values import AllowedValuesRule
+
+        df = pl.DataFrame({
+            "status": ["active", "inactive", None],
+        })
+        # NULL is NOT in the allowed values
+        rule = AllowedValuesRule("allowed_values", {
+            "column": "status",
+            "values": ["active", "inactive"]
+        })
+        result = rule.validate(df)
+
+        # Should fail - NULL is not allowed
+        assert result["passed"] is False
+        assert result["failed_count"] == 1  # The NULL row
+
 
 class TestDtypeFailureMode:
     """Tests for dtype rule failure details."""
