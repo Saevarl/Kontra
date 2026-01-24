@@ -363,6 +363,7 @@ Use `{table}` placeholder. Kontra transforms your query to `COUNT(*)` for effici
 - INSERT, UPDATE, DELETE, DROP, CREATE, ALTER
 - Dangerous functions like `pg_sleep`, `xp_cmdshell`, `dblink`
 - Multiple statements (SQL injection prevention)
+- System catalog access (`pg_*`, `sys.*`, `information_schema.*`)
 
 ---
 

@@ -29,6 +29,37 @@ FORBIDDEN_STATEMENT_TYPES: Set[type] = {
     exp.Command,  # Generic command execution
 }
 
+# Table prefixes/schemas that are forbidden (system catalogs)
+# These allow information disclosure attacks
+FORBIDDEN_TABLE_PREFIXES: Set[str] = {
+    # PostgreSQL system catalogs
+    "pg_",
+    # SQL Server system views
+    "sys.",
+    # Standard information schema (both PostgreSQL and SQL Server)
+    "information_schema.",
+}
+
+# Specific system tables to block (without prefix, for tables accessed directly)
+FORBIDDEN_TABLES: Set[str] = {
+    # PostgreSQL sensitive tables
+    "pg_shadow",
+    "pg_authid",
+    "pg_roles",
+    "pg_user",
+    "pg_database",
+    "pg_tablespace",
+    "pg_settings",
+    "pg_stat_activity",
+    "pg_stat_user_tables",
+    # SQL Server sensitive tables
+    "syslogins",
+    "sysobjects",
+    "syscolumns",
+    "sysusers",
+    "sysdatabases",
+}
+
 # Function names that could have side effects (case-insensitive)
 FORBIDDEN_FUNCTIONS: Set[str] = {
     # PostgreSQL
@@ -169,6 +200,15 @@ def validate_sql(
             dialect=sqlglot_dialect,
         )
 
+    # Check for system catalog access (information disclosure)
+    forbidden_table = _check_forbidden_tables(stmt)
+    if forbidden_table:
+        return ValidationResult(
+            is_safe=False,
+            reason=f"Access to system catalog not allowed: {forbidden_table}",
+            dialect=sqlglot_dialect,
+        )
+
     # Check for subqueries if not allowed
     if not allow_subqueries:
         for node in stmt.walk():
@@ -209,6 +249,85 @@ def _check_forbidden_functions(stmt: exp.Expression) -> Optional[str]:
             name = node.name.lower() if hasattr(node, "name") and node.name else ""
             if name in FORBIDDEN_FUNCTIONS:
                 return name
+
+    return None
+
+
+def _check_forbidden_tables(stmt: exp.Expression) -> Optional[str]:
+    """
+    Check for access to forbidden system catalog tables.
+
+    Walks the AST looking for table references that match system catalog
+    patterns (pg_*, sys.*, information_schema.*).
+
+    Returns the forbidden table reference if found, None otherwise.
+    """
+    for node in stmt.walk():
+        # Check Table nodes (direct table references)
+        if isinstance(node, exp.Table):
+            table_name = _get_full_table_name(node)
+            if table_name:
+                forbidden = _is_forbidden_table(table_name)
+                if forbidden:
+                    return forbidden
+
+    return None
+
+
+def _get_full_table_name(table_node: exp.Table) -> Optional[str]:
+    """
+    Extract the full table name from a Table node, including schema if present.
+
+    Returns schema.table or just table name.
+    """
+    parts = []
+
+    # Get catalog (database) if present
+    if table_node.catalog:
+        parts.append(str(table_node.catalog))
+
+    # Get schema if present
+    if table_node.db:
+        parts.append(str(table_node.db))
+
+    # Get table name
+    if table_node.name:
+        parts.append(str(table_node.name))
+
+    if parts:
+        return ".".join(parts)
+    return None
+
+
+def _is_forbidden_table(table_ref: str) -> Optional[str]:
+    """
+    Check if a table reference matches forbidden patterns.
+
+    Args:
+        table_ref: Full table reference (e.g., "pg_user", "sys.tables", "information_schema.columns")
+
+    Returns:
+        The forbidden table reference if matched, None otherwise.
+    """
+    table_lower = table_ref.lower()
+
+    # Check exact matches first
+    # Handle both "pg_user" and "public.pg_user" etc.
+    table_parts = table_lower.split(".")
+    base_table = table_parts[-1]  # Last part is the table name
+
+    if base_table in FORBIDDEN_TABLES:
+        return table_ref
+
+    # Check prefixes (handles schema.table patterns)
+    for prefix in FORBIDDEN_TABLE_PREFIXES:
+        # Check if the full reference starts with the prefix
+        if table_lower.startswith(prefix):
+            return table_ref
+        # Also check if any part starts with the prefix
+        for part in table_parts:
+            if part.startswith(prefix.rstrip(".")):
+                return table_ref
 
     return None
 
