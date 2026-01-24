@@ -354,11 +354,10 @@ result.total_rows      # int - row count of validated dataset
 result.total_rules     # int
 result.failed_count    # int
 
-# Calculate failure fractions (LLM-friendly)
+# Per-rule violation rates (LLM-friendly)
 for rule in result.rules:
-    if rule.failed_count > 0:
-        fraction = rule.failed_count / result.total_rows
-        print(f"{rule.rule_id}: {fraction:.2%} of rows failed")
+    if rule.violation_rate:  # None if passed or no failures
+        print(f"{rule.rule_id}: {rule.violation_rate:.2%} of rows failed")
 
 # Iterate rules
 for rule in result.rules:
@@ -574,9 +573,9 @@ See [Transformation Probes](probes.md) for full documentation.
 
 | Type | Key Properties |
 |------|----------------|
-| `ValidationResult` | `passed`, `total_rows`, `rules`, `blocking_failures`, `warnings`, `annotations` (opt-in), `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
+| `ValidationResult` | `passed`, `total_rows`, `data`, `rules`, `blocking_failures`, `warnings`, `annotations` (opt-in), `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
 | `FailureSamples` | `count`, `rule_id`, `to_dict()`, `to_json()`, `to_llm()` (iterable) |
-| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `severity`, `message`, `column`, `details`, `context`, `annotations` (opt-in), `samples`, `samples_source`, `samples_reason` |
+| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `violation_rate`, `severity`, `message`, `column`, `details`, `context`, `annotations` (opt-in), `samples`, `samples_source`, `samples_reason` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 | `Profile` | `row_count`, `column_count`, `columns` |
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |

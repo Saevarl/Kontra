@@ -207,7 +207,7 @@ Annotations are stored in a normalized schema:
 - `kontra_annotations` table (PostgreSQL, SQL Server)
 - `<run_id>.ann.jsonl` files (local, S3)
 
-## Profile Diff (Scout Diff)
+## Profile Diff
 
 Compare data profiles over time:
 

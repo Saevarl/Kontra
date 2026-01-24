@@ -289,6 +289,15 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
+            elif kind == "custom_agg":
+                # Custom rule with to_sql_agg() - use the pre-generated SQL
+                sql_agg = spec.get("sql_agg", {})
+                agg_expr = sql_agg.get(self.DIALECT)
+                if agg_expr:
+                    aggregate_selects.append(f'{agg_expr} AS "{rule_id}"')
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
         return {
             "exists_specs": exists_specs,
             "aggregate_selects": aggregate_selects,

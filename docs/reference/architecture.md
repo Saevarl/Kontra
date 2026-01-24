@@ -55,16 +55,17 @@ Kontra uses a hybrid execution model with three semantically distinct tiers:
 | Tier | What It Returns | Guarantees | Limitations |
 |------|-----------------|------------|-------------|
 | **Metadata (Preplan)** | Binary: 0 or ≥1 | Instant, no data scan | No exact counts; depends on metadata quality |
-| **SQL Pushdown** | Exact count | Database does the work | Dialect-specific behavior |
+| **SQL Pushdown** | Varies by rule | Database does the work | `not_null` uses EXISTS (returns 1); others exact |
 | **Polars** | Exact count | Full Python regex, precise | Requires loading data |
 
 **All tiers agree on whether violations exist.** A rule that passes in preplan will pass in SQL and Polars. But:
 
 - **Preplan returns `failed_count: 1` for any failure**—not an exact count. It means "≥1 violation exists".
+- **SQL `not_null` uses EXISTS** for speed—returns 1 on failure, not exact count. Other SQL rules return exact counts.
 - **Preplan depends on metadata quality.** Parquet writers vary; pg_stats may be stale.
 - **SQL dialects differ.** DuckDB, PostgreSQL, and SQL Server may behave differently for edge cases.
 
-For exact violation counts, use `--preplan off`.
+For exact violation counts, use `--preplan off --pushdown off`.
 
 ### Tier 1: Metadata Preplan
 
@@ -88,12 +89,17 @@ For SQL Server, Kontra uses `sys.columns` metadata:
 
 **Push validation to the database engine.**
 
-Instead of pulling data into Python, Kontra generates a single aggregate SQL query:
+Instead of pulling data into Python, Kontra generates SQL queries in two phases:
 
+**Phase 1: EXISTS for `not_null`** (fast, early termination)
 ```sql
--- All rules in one query
 SELECT
-  SUM(CASE WHEN user_id IS NULL THEN 1 ELSE 0 END) AS "not_null_user_id",
+  EXISTS(SELECT 1 FROM schema.table WHERE user_id IS NULL) AS "not_null_user_id"
+```
+
+**Phase 2: Aggregates for other rules** (batched into one query)
+```sql
+SELECT
   COUNT(*) - COUNT(DISTINCT email) AS "unique_email",
   SUM(CASE WHEN status NOT IN ('active','inactive') THEN 1 ELSE 0 END) AS "allowed_values_status"
 FROM schema.table;

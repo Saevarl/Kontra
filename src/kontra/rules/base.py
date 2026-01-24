@@ -156,3 +156,28 @@ class BaseRule(ABC):
             range rule returns: "amount < 0 OR amount > 100 OR amount IS NULL"
         """
         return None
+
+    def to_sql_agg(self, dialect: str = "duckdb") -> str | None:
+        """
+        Return a SQL aggregate expression for counting violations.
+
+        This enables SQL pushdown for custom rules without modifying executors.
+        The executor wraps this as: {expr} AS "{rule_id}"
+
+        Args:
+            dialect: SQL dialect ("duckdb", "postgres", "mssql")
+
+        Returns:
+            SQL aggregate expression string, or None if not supported.
+
+        Example:
+            A "positive" rule checking col > 0:
+            return 'SUM(CASE WHEN "amount" IS NULL OR "amount" <= 0 THEN 1 ELSE 0 END)'
+
+        Note:
+            - Use double quotes for column names: "column"
+            - Return the full aggregate expression (SUM, COUNT, etc.)
+            - Handle NULL appropriately (usually NULL = violation)
+            - For dialect differences, check the dialect parameter
+        """
+        return None

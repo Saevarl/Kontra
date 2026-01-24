@@ -367,15 +367,21 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
       - min_rows(threshold)
       - max_rows(threshold)
       - allowed_values(column, values)
+      - Any custom rule implementing to_sql_agg()
 
     Notes
     -----
     - If a rule provides `to_sql_spec()`, that takes precedence.
+    - If a rule provides `to_sql_agg()`, use it for custom SQL pushdown.
     - We normalize namespaced rule names, e.g. "DATASET:not_null" → "not_null".
     - For min/max rows, accept both `value` and `threshold` to match existing contracts.
     - Not all executors support all rules (DuckDB: 3, PostgreSQL: 5).
     """
-    # Prefer a rule-provided spec
+    rid = getattr(rule, "rule_id", None)
+    if not isinstance(rid, str):
+        return None
+
+    # Priority 1: Rule-provided spec (full control)
     to_sql = getattr(rule, "to_sql_spec", None)
     if callable(to_sql):
         try:
@@ -384,15 +390,38 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
                 return spec
         except Exception as e:
             log_exception(_logger, f"to_sql_spec failed for {getattr(rule, 'name', '?')}", e)
-            return None
 
-    # Normalize and extract context
+    # Priority 2: Rule-provided SQL aggregate (custom rules)
+    # This allows custom rules to have SQL pushdown without modifying executors
+    to_sql_agg = getattr(rule, "to_sql_agg", None)
+    if callable(to_sql_agg):
+        try:
+            # Try each dialect - executors will use the one they need
+            # We include all dialects in the spec so any executor can use it
+            agg_duckdb = to_sql_agg("duckdb")
+            agg_postgres = to_sql_agg("postgres")
+            agg_mssql = to_sql_agg("mssql")
+
+            # If any dialect is supported, include the spec
+            if agg_duckdb or agg_postgres or agg_mssql:
+                return {
+                    "kind": "custom_agg",
+                    "rule_id": rid,
+                    "sql_agg": {
+                        "duckdb": agg_duckdb,
+                        "postgres": agg_postgres,
+                        "mssql": agg_mssql,
+                    },
+                }
+        except Exception as e:
+            log_exception(_logger, f"to_sql_agg failed for {getattr(rule, 'name', '?')}", e)
+
+    # Priority 3: Built-in rule detection (fallback)
     raw_name = getattr(rule, "name", None)
     name = raw_name.split(":")[-1] if isinstance(raw_name, str) else raw_name
     params: Dict[str, Any] = getattr(rule, "params", {}) or {}
-    rid = getattr(rule, "rule_id", None)
 
-    if not (name and isinstance(params, dict) and isinstance(rid, str)):
+    if not (name and isinstance(params, dict)):
         return None
 
     if name == "not_null":

@@ -265,7 +265,7 @@ class DuckDBSqlExecutor(SqlExecutor):
 
     name = "duckdb"
 
-    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex", "compare", "conditional_not_null", "conditional_range"}
+    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex", "compare", "conditional_not_null", "conditional_range", "custom_agg"}
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
@@ -378,6 +378,15 @@ class DuckDBSqlExecutor(SqlExecutor):
                     isinstance(when_op, str) and when_op in SQL_OP_MAP and
                     (min_val is not None or max_val is not None)):
                     aggregate_selects.append(agg_conditional_range(col, when_column, when_op, when_value, min_val, max_val, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "custom_agg":
+                # Custom rule with to_sql_agg() - use the pre-generated SQL
+                sql_agg = spec.get("sql_agg", {})
+                agg_expr = sql_agg.get(DIALECT) or sql_agg.get("duckdb")
+                if agg_expr:
+                    aggregate_selects.append(f'{agg_expr} AS "{rid}"')
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 

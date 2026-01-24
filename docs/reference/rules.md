@@ -4,12 +4,13 @@ Kontra provides 13 built-in validation rules.
 
 ## Most Contracts Use These
 
-Start here. These four rules cover 80% of use cases:
+Start here. These five rules cover 80% of use cases:
 
 | Rule | What It Checks | Example |
 |------|---------------|---------|
 | `not_null` | No NULL values | `{ column: user_id }` |
 | `unique` | No duplicates | `{ column: email }` |
+| `dtype` | Expected type | `{ column: age, type: int64 }` |
 | `allowed_values` | Values in set | `{ column: status, values: [a, b, c] }` |
 | `range` | Min/max bounds | `{ column: age, min: 0, max: 150 }` |
 
@@ -20,6 +21,9 @@ rules:
 
   - name: unique
     params: { column: email }
+
+  - name: dtype
+    params: { column: age, type: int64 }
 
   - name: allowed_values
     params:
@@ -426,6 +430,8 @@ Preplan returns binary (0 or ≥1), not exact counts. Use `--preplan off` for ex
 
 ## Adding Custom Rules
 
+### Basic Custom Rule (Polars Only)
+
 ```python
 from kontra.rules.base import BaseRule
 from kontra.rules.registry import register_rule
@@ -436,6 +442,83 @@ class MyRule(BaseRule):
         column = self.params["column"]
         mask = df[column] < 0
         return self._failures(df, mask, f"{column} has negative values")
+```
+
+This rule works but requires data to be loaded into Polars.
+
+### Custom Rule with SQL Pushdown
+
+Add `to_sql_agg()` to enable SQL pushdown without modifying executors:
+
+```python
+import polars as pl
+from kontra.rules.base import BaseRule
+from kontra.rules.predicates import Predicate
+from kontra.rules.registry import register_rule
+
+@register_rule("positive")
+class PositiveRule(BaseRule):
+    """Values must be > 0. NULL = violation."""
+
+    def __init__(self, name, params):
+        super().__init__(name, params)
+        self.column = params["column"]
+
+    def validate(self, df):
+        """Fallback: Polars execution."""
+        mask = df[self.column].is_null() | (df[self.column] <= 0)
+        return self._failures(df, mask, f"{self.column} non-positive")
+
+    def compile_predicate(self):
+        """Optional: Vectorized Polars (faster than validate())."""
+        return Predicate(
+            rule_id=self.rule_id,
+            expr=pl.col(self.column).is_null() | (pl.col(self.column) <= 0),
+            columns={self.column},
+            message=f"{self.column} non-positive",
+        )
+
+    def to_sql_agg(self, dialect="duckdb"):
+        """SQL pushdown: no data loading needed."""
+        col = f'"{self.column}"'
+        return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
+
+    def required_columns(self):
+        """For projection optimization."""
+        return {self.column}
+```
+
+| Method | Purpose | Execution Path |
+|--------|---------|----------------|
+| `validate(df)` | **Required**. Fallback | Polars (data loaded) |
+| `compile_predicate()` | Vectorized Polars | Polars (faster) |
+| `to_sql_agg(dialect)` | SQL pushdown | DuckDB/PostgreSQL/SQL Server |
+| `required_columns()` | Projection | Load fewer columns |
+
+### Dialect-Specific SQL
+
+`to_sql_agg(dialect)` is called once per dialect (`"duckdb"`, `"postgres"`, `"mssql"`). Handle differences:
+
+```python
+def to_sql_agg(self, dialect="duckdb"):
+    # SQL Server uses [brackets], others use "double quotes"
+    if dialect == "mssql":
+        col = f'[{self.column}]'
+    else:
+        col = f'"{self.column}"'
+
+    return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
+```
+
+Return `None` to skip SQL pushdown for a dialect (falls back to Polars):
+
+```python
+def to_sql_agg(self, dialect="duckdb"):
+    if dialect == "mssql":
+        return None  # SQL Server not supported, use Polars
+
+    col = f'"{self.column}"'
+    return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
 ```
 
 ---

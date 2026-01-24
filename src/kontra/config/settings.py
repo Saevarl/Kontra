@@ -88,10 +88,12 @@ class PostgresDatasourceConfig(BaseModel):
 class FilesDatasourceConfig(BaseModel):
     """File-based datasource configuration (Parquet, CSV)."""
 
-    type: Literal["files"] = "files"
+    type: Literal["files", "file"] = "files"
     base_path: str = "./"
+    path: str = ""  # Alias for base_path
     # Tables: map alias -> relative path
     tables: Dict[str, str] = Field(default_factory=dict)
+    datasets: Dict[str, str] = Field(default_factory=dict)  # Alias for tables
 
 
 class S3DatasourceConfig(BaseModel):
@@ -104,8 +106,21 @@ class S3DatasourceConfig(BaseModel):
     tables: Dict[str, str] = Field(default_factory=dict)
 
 
+class MSSQLDatasourceConfig(BaseModel):
+    """SQL Server datasource configuration."""
+
+    type: Literal["mssql"] = "mssql"
+    host: str = "localhost"
+    port: int = 1433
+    user: str = "sa"
+    password: str = ""
+    database: str = ""
+    # Tables: map alias -> schema.table
+    tables: Dict[str, str] = Field(default_factory=dict)
+
+
 # Union type for datasource configs
-DatasourceConfig = PostgresDatasourceConfig | FilesDatasourceConfig | S3DatasourceConfig
+DatasourceConfig = PostgresDatasourceConfig | FilesDatasourceConfig | S3DatasourceConfig | MSSQLDatasourceConfig
 
 
 class DefaultsConfig(BaseModel):
@@ -184,9 +199,14 @@ class KontraConfig(BaseModel):
 
         if ds_type == "postgres":
             return PostgresDatasourceConfig.model_validate(ds_data)
+        elif ds_type == "mssql":
+            return MSSQLDatasourceConfig.model_validate(ds_data)
         elif ds_type == "s3":
             return S3DatasourceConfig.model_validate(ds_data)
+        elif ds_type in ("files", "file"):
+            return FilesDatasourceConfig.model_validate(ds_data)
         else:
+            # Default to files for unknown types
             return FilesDatasourceConfig.model_validate(ds_data)
 
 

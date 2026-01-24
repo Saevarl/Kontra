@@ -9,13 +9,15 @@ Kontra uses three execution tiers, each with different characteristics:
 | Tier | Speed | What It Returns | When Used |
 |------|-------|-----------------|-----------|
 | **Metadata (Preplan)** | Instant | Binary: 0 or ≥1 | Parquet stats, pg_stats |
-| **SQL Pushdown** | Fast | Exact count | DuckDB, PostgreSQL, SQL Server |
+| **SQL Pushdown** | Fast | Varies by rule* | DuckDB, PostgreSQL, SQL Server |
 | **Polars** | Varies | Exact count | Fallback |
+
+*`not_null` uses EXISTS (returns 1 on failure for speed). Other rules return exact counts.
 
 ### How Tiers Are Selected
 
 1. **Preplan** tries to resolve rules from metadata (Parquet row-group stats, pg_stats)
-2. **SQL Pushdown** generates a single aggregate query for remaining rules
+2. **SQL Pushdown** generates SQL for remaining rules (EXISTS for `not_null`, aggregates for others)
 3. **Polars** handles anything SQL can't do
 
 All three agree on whether violations exist. The difference is precision and speed.
@@ -162,10 +164,17 @@ kontra validate contract.yml --pushdown on
 
 ### Many Rules
 
-SQL pushdown combines all rules into one query:
+SQL pushdown uses two phases:
+
+**Phase 1: EXISTS for `not_null`** (fast, early termination)
 ```sql
 SELECT
-  SUM(CASE WHEN user_id IS NULL THEN 1 ELSE 0 END) AS "not_null_user_id",
+  EXISTS(SELECT 1 FROM table WHERE user_id IS NULL) AS "not_null_user_id"
+```
+
+**Phase 2: Aggregates for other rules** (one query)
+```sql
+SELECT
   COUNT(*) - COUNT(DISTINCT email) AS "unique_email",
   SUM(CASE WHEN status NOT IN (...) THEN 1 ELSE 0 END) AS "allowed_values_status"
 FROM table;
@@ -195,32 +204,30 @@ Outputs detailed timing:
 - `data_load_ms`: data loading (if needed)
 - `polars_ms`: Polars execution
 
-## Scout Presets & Performance
+## Profile Presets
 
-Scout uses three presets with different speed/detail tradeoffs:
+`kontra.profile()` uses three presets with different speed/detail tradeoffs:
 
-| Preset | PostgreSQL | SQL Server | What You Get |
-|--------|------------|------------|--------------|
-| **lite** | ~37ms | ~27ms | Schema, null counts, distinct counts (metadata only) |
-| **standard** | ~68ms | ~40ms | Lite + numeric stats, top values (strategic queries) |
-| **deep** | ~4300ms | ~570ms | Standard + median, percentiles (full scan) |
-
-*Benchmarks on 100K rows*
+| Preset | What It Does | Best For |
+|--------|--------------|----------|
+| **scout** | Metadata only (no table scan) | Quick recon, large tables |
+| **scan** | Strategic queries + sampling | General profiling (default) |
+| **interrogate** | Full table scan | Exact values, percentiles |
 
 ### How Presets Work
 
-**Lite** reads only metadata:
+**scout** reads only metadata (no data scan):
 - PostgreSQL: `pg_stats` (null_frac, n_distinct, most_common_vals)
 - Parquet: Row-group statistics (null_count, min/max)
-- SQL Server: `sys.dm_db_stats_histogram` + sampled null query
+- SQL Server: `sys.dm_db_stats_histogram`
 
-**Standard** uses strategic queries:
+**scan** uses strategic queries:
 - Metadata for null/distinct counts
-- `TABLESAMPLE SYSTEM` for numeric stats (1% of blocks, not rows)
-- Batched `GROUP BY` for low-cardinality columns only
+- `TABLESAMPLE SYSTEM` for numeric stats (1% of blocks)
+- Batched `GROUP BY` for low-cardinality columns
 - Skips expensive operations (median, percentiles)
 
-**Deep** does a full table scan for exact values.
+**interrogate** does a full table scan for exact values including median and percentiles.
 
 ### Choosing a Preset
 
@@ -228,25 +235,23 @@ Scout uses three presets with different speed/detail tradeoffs:
 # Quick recon (metadata only)
 profile = kontra.profile("data.parquet", preset="scout")
 
-# Systematic pass (full stats) [default]
+# Systematic pass (default)
 profile = kontra.profile("data.parquet", preset="scan")
 
 # Deep investigation (everything + percentiles)
 profile = kontra.profile("data.parquet", preset="interrogate")
 ```
 
-### Scan vs Interrogate Trade-offs
+### Scan vs Interrogate
 
-Scan gives you ~80% of the information at ~1% of the cost:
-
-| Metric | Standard | Deep |
-|--------|----------|------|
+| Metric | scan | interrogate |
+|--------|------|-------------|
 | null_count | ✅ metadata | ✅ exact |
 | distinct_count | ✅ estimated | ✅ exact |
 | min/max | ✅ sampled | ✅ exact |
 | mean/std | ✅ sampled | ✅ exact |
-| median | ❌ | ✅ exact |
-| percentiles | ❌ | ✅ exact |
+| median | ❌ | ✅ |
+| percentiles | ❌ | ✅ |
 | top_values | ✅ low/med cardinality | ✅ all |
 
-Standard's numeric stats come from block sampling, so values may vary slightly from exact (typically within 1-2%).
+`scan` gives ~80% of the information without a full table scan. Numeric stats come from block sampling (typically within 1-2% of exact).

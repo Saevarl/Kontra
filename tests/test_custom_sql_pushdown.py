@@ -400,6 +400,115 @@ class TestToCountQuery:
         assert "COUNT(*)" in result.upper()
 
 
+class TestCustomRuleSqlAgg:
+    """Tests for custom rules with to_sql_agg() for SQL pushdown."""
+
+    def test_custom_agg_spec_generation(self):
+        """Custom rule with to_sql_agg() generates proper spec."""
+        import polars as pl
+        from kontra.rules.base import BaseRule
+        from kontra.rules.predicates import Predicate
+        from kontra.rules.registry import register_rule, RULE_REGISTRY
+        from kontra.rules.execution_plan import _maybe_rule_sql_spec
+
+        # Clean up if already registered
+        if "test_positive" in RULE_REGISTRY:
+            del RULE_REGISTRY["test_positive"]
+
+        @register_rule("test_positive")
+        class TestPositiveRule(BaseRule):
+            def __init__(self, name, params):
+                super().__init__(name, params)
+                self.column = params["column"]
+
+            def validate(self, df):
+                mask = df[self.column].is_null() | (df[self.column] <= 0)
+                return self._failures(df, mask, f"{self.column} non-positive")
+
+            def to_sql_agg(self, dialect="duckdb"):
+                col = f'"{self.column}"'
+                return f"SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)"
+
+        # Build rule and check spec
+        from kontra.rules.factory import RuleFactory
+        from kontra.config.models import RuleSpec
+
+        spec = RuleSpec(name="test_positive", params={"column": "amount"})
+        factory = RuleFactory([spec])
+        rules = factory.build_rules()
+        rule = rules[0]
+
+        sql_spec = _maybe_rule_sql_spec(rule)
+
+        assert sql_spec is not None
+        assert sql_spec["kind"] == "custom_agg"
+        assert "sql_agg" in sql_spec
+        assert sql_spec["sql_agg"]["duckdb"] is not None
+        assert "SUM(CASE WHEN" in sql_spec["sql_agg"]["duckdb"]
+
+        # Clean up
+        del RULE_REGISTRY["test_positive"]
+
+    def test_duckdb_executor_supports_custom_agg(self):
+        """DuckDB executor includes custom_agg in SUPPORTED_RULES."""
+        from kontra.engine.executors.duckdb_sql import DuckDBSqlExecutor
+        assert "custom_agg" in DuckDBSqlExecutor.SUPPORTED_RULES
+
+    def test_postgres_executor_supports_custom_agg(self):
+        """PostgreSQL executor includes custom_agg in SUPPORTED_RULES."""
+        from kontra.engine.executors.postgres_sql import PostgresSqlExecutor
+        assert "custom_agg" in PostgresSqlExecutor.SUPPORTED_RULES
+
+    def test_sqlserver_executor_supports_custom_agg(self):
+        """SQL Server executor includes custom_agg in SUPPORTED_RULES."""
+        from kontra.engine.executors.sqlserver_sql import SqlServerSqlExecutor
+        assert "custom_agg" in SqlServerSqlExecutor.SUPPORTED_RULES
+
+    def test_duckdb_compile_custom_agg(self):
+        """DuckDB executor compiles custom_agg specs."""
+        from kontra.engine.executors.duckdb_sql import DuckDBSqlExecutor
+
+        executor = DuckDBSqlExecutor()
+        specs = [
+            {
+                "kind": "custom_agg",
+                "rule_id": "COL:amount:positive",
+                "sql_agg": {
+                    "duckdb": 'SUM(CASE WHEN "amount" IS NULL OR "amount" <= 0 THEN 1 ELSE 0 END)',
+                    "postgres": 'SUM(CASE WHEN "amount" IS NULL OR "amount" <= 0 THEN 1 ELSE 0 END)',
+                    "mssql": 'SUM(CASE WHEN "amount" IS NULL OR "amount" <= 0 THEN 1 ELSE 0 END)',
+                },
+            }
+        ]
+        compiled = executor.compile(specs)
+
+        assert len(compiled["aggregate_selects"]) == 1
+        assert "COL:amount:positive" in compiled["aggregate_selects"][0]
+        assert len(compiled["supported_specs"]) == 1
+
+    def test_postgres_compile_custom_agg(self):
+        """PostgreSQL executor compiles custom_agg specs."""
+        from kontra.engine.executors.postgres_sql import PostgresSqlExecutor
+
+        executor = PostgresSqlExecutor()
+        specs = [
+            {
+                "kind": "custom_agg",
+                "rule_id": "COL:amount:positive",
+                "sql_agg": {
+                    "duckdb": 'SUM(CASE WHEN "amount" IS NULL OR "amount" <= 0 THEN 1 ELSE 0 END)',
+                    "postgres": 'SUM(CASE WHEN "amount" IS NULL OR "amount" <= 0 THEN 1 ELSE 0 END)',
+                    "mssql": 'SUM(CASE WHEN "amount" IS NULL OR "amount" <= 0 THEN 1 ELSE 0 END)',
+                },
+            }
+        ]
+        compiled = executor.compile(specs)
+
+        assert len(compiled["aggregate_selects"]) == 1
+        assert "COL:amount:positive" in compiled["aggregate_selects"][0]
+        assert len(compiled["supported_specs"]) == 1
+
+
 class TestDatabaseExecutorCompile:
     """Tests for database executor compile() with custom_sql_check."""
 

@@ -272,11 +272,11 @@ See [Performance](../advanced/performance.md) for execution details.
 |---------|--------|---------|-------------|
 | `csv_mode` | auto, duckdb, parquet | auto | CSV processing strategy |
 
-### Scout
+### Profile
 
 | Setting | Values | Default | Description |
 |---------|--------|---------|-------------|
-| `preset` | lite, standard, deep, llm | standard | Profiling depth |
+| `preset` | scout, scan, interrogate | scan | Profiling depth |
 | `save_profile` | true, false | false | Auto-save profiles |
 | `list_values_threshold` | integer | 10 | List all if distinct <= N |
 | `top_n` | integer | 5 | Top N frequent values |

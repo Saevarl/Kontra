@@ -250,6 +250,7 @@ class RuleResult:
         name: Rule type name (e.g., "not_null")
         passed: Whether the rule passed
         failed_count: Number of failing rows
+        violation_rate: Fraction of rows that failed (0.0-1.0), or None if passed
         message: Human-readable result message
         severity: "blocking" | "warning" | "info"
         source: Measurement source ("metadata", "sql", "polars")
@@ -287,6 +288,30 @@ class RuleResult:
 
     # LLM juice: user-defined severity weight (None if unconfigured)
     severity_weight: Optional[float] = None
+
+    # For violation_rate computation (populated during result creation)
+    _total_rows: Optional[int] = field(default=None, repr=False)
+
+    @property
+    def violation_rate(self) -> Optional[float]:
+        """
+        Fraction of rows that failed this rule.
+
+        Returns:
+            Float 0.0-1.0, or None if:
+            - Rule passed (failed_count == 0)
+            - total_rows is 0 or unknown
+
+        Example:
+            for rule in result.rules:
+                if rule.violation_rate:
+                    print(f"{rule.rule_id}: {rule.violation_rate:.2%} of rows failed")
+        """
+        if self.passed or self.failed_count == 0:
+            return None
+        if self._total_rows is None or self._total_rows == 0:
+            return None
+        return self.failed_count / self._total_rows
 
     def __repr__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
@@ -376,6 +401,10 @@ class RuleResult:
         if self.failed_count > 0:
             parts.append(f"({self.failed_count:,} failures)")
 
+        # Include violation_rate for failed rules (LLM juice)
+        if self.violation_rate is not None:
+            parts.append(f"[{self.violation_rate:.1%}]")
+
         # Include severity weight if configured (LLM juice)
         if self.severity_weight is not None:
             parts.append(f"[w={self.severity_weight}]")
@@ -444,6 +473,7 @@ class ValidationResult:
         blocking_failures: List of failed blocking rules
         warnings: List of failed warning rules
         quality_score: Deterministic score 0.0-1.0 (None if weights unconfigured)
+        data: The validated DataFrame (if loaded), None if preplan/pushdown handled everything
         stats: Optional statistics dict
         annotations: List of run-level annotations (opt-in, loaded via get_run_with_annotations)
 
@@ -451,8 +481,7 @@ class ValidationResult:
         sample_failures(rule_id, n=5): Get sample of failing rows for a rule
 
     Note:
-        Consumers can compute failure fractions per rule:
-        `rule.failed_count / result.total_rows`
+        Each RuleResult has a `violation_rate` property for per-rule failure rates.
     """
 
     passed: bool
@@ -469,6 +498,29 @@ class ValidationResult:
     # For sample_failures() - lazy evaluation
     _data_source: Optional[Any] = field(default=None, repr=False)
     _rule_objects: Optional[List[Any]] = field(default=None, repr=False)
+    # Loaded data (if Polars execution occurred)
+    _data: Optional[Any] = field(default=None, repr=False)
+
+    @property
+    def data(self) -> Optional["pl.DataFrame"]:
+        """
+        The validated DataFrame, if data was loaded.
+
+        Returns the Polars DataFrame that was validated when:
+        - Polars execution occurred (residual rules needed data)
+        - A DataFrame was passed directly to validate()
+
+        Returns None when:
+        - All rules were resolved by preplan/pushdown (no data loaded)
+        - Data source was a file path and wasn't materialized
+
+        Example:
+            result = kontra.validate("data.parquet", rules=[...], preplan="off", pushdown="off")
+            if result.passed and result.data is not None:
+                # Use the already-loaded data
+                process(result.data)
+        """
+        return self._data
 
     def __repr__(self) -> str:
         status = "PASSED" if self.passed else "FAILED"
@@ -551,6 +603,7 @@ class ValidationResult:
         sample_budget: int = 50,
         sample_columns: Optional[Union[List[str], str]] = None,
         severity_weights: Optional[Dict[str, float]] = None,
+        data: Optional[Any] = None,
     ) -> "ValidationResult":
         """Create from ValidationEngine.run() result dict.
 
@@ -563,6 +616,7 @@ class ValidationResult:
             sample_budget: Global sample cap across all rules
             sample_columns: Columns to include in samples (None=all, list=specific, "relevant"=rule columns)
             severity_weights: User-defined severity weights from config (None if unconfigured)
+            data: Loaded DataFrame (if Polars execution occurred)
         """
         summary = result.get("summary", {})
         results_list = result.get("results", [])
@@ -599,6 +653,10 @@ class ValidationResult:
         # Extract total_rows from summary
         total_rows = summary.get("total_rows", 0)
 
+        # Populate _total_rows on each rule for violation_rate property
+        for rule_result in rules:
+            rule_result._total_rows = total_rows
+
         # Create instance first (need it for sampling methods)
         instance = cls(
             passed=summary.get("passed", blocking_failed == 0),
@@ -613,6 +671,7 @@ class ValidationResult:
             _raw=result,
             _data_source=data_source,
             _rule_objects=rule_objects,
+            _data=data,
         )
 
         # Perform eager sampling if enabled

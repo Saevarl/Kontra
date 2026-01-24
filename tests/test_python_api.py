@@ -1082,6 +1082,113 @@ class TestRuleResultExtended:
         assert rule.column is None
         assert rule.name == "min_rows"
 
+    def test_violation_rate_with_failures(self):
+        """violation_rate computes correctly for failed rules."""
+        rule = RuleResult(
+            rule_id="COL:id:not_null",
+            name="not_null",
+            passed=False,
+            failed_count=50,
+            message="50 NULL values",
+            _total_rows=1000,
+        )
+
+        assert rule.violation_rate == 0.05  # 50/1000 = 5%
+
+    def test_violation_rate_none_when_passed(self):
+        """violation_rate is None for passing rules."""
+        rule = RuleResult(
+            rule_id="COL:id:not_null",
+            name="not_null",
+            passed=True,
+            failed_count=0,
+            message="Passed",
+            _total_rows=1000,
+        )
+
+        assert rule.violation_rate is None
+
+    def test_violation_rate_none_without_total_rows(self):
+        """violation_rate is None when total_rows not set."""
+        rule = RuleResult(
+            rule_id="COL:id:not_null",
+            name="not_null",
+            passed=False,
+            failed_count=50,
+            message="50 NULL values",
+        )
+
+        assert rule.violation_rate is None
+
+    def test_violation_rate_in_to_llm(self):
+        """violation_rate appears in to_llm() output."""
+        rule = RuleResult(
+            rule_id="COL:id:not_null",
+            name="not_null",
+            passed=False,
+            failed_count=100,
+            message="100 NULL values",
+            _total_rows=1000,
+        )
+
+        llm_output = rule.to_llm()
+        assert "10.0%" in llm_output  # 100/1000 = 10%
+
+
+# =============================================================================
+# ValidationResult.data Tests
+# =============================================================================
+
+
+class TestValidationResultData:
+    """Tests for ValidationResult.data property."""
+
+    def test_data_with_dataframe_input(self, sample_df):
+        """result.data returns input DataFrame when DataFrame passed."""
+        from kontra import rules
+
+        result = kontra.validate(sample_df, rules=[rules.not_null("id")], save=False)
+
+        assert result.data is not None
+        assert result.data is sample_df
+
+    def test_data_with_polars_execution(self, tmp_path, sample_df):
+        """result.data returns loaded DataFrame when Polars executes."""
+        from kontra import rules
+
+        path = tmp_path / "test.parquet"
+        sample_df.write_parquet(path)
+
+        # Force Polars execution
+        result = kontra.validate(
+            str(path),
+            rules=[rules.not_null("id")],
+            preplan="off",
+            pushdown="off",
+            save=False,
+        )
+
+        assert result.data is not None
+        assert result.data.shape[0] == sample_df.shape[0]
+
+    def test_data_none_when_preplan_handles(self, tmp_path, sample_df):
+        """result.data is None when preplan handles everything."""
+        from kontra import rules
+
+        path = tmp_path / "test.parquet"
+        sample_df.write_parquet(path)
+
+        # Let preplan handle it (auto defaults)
+        result = kontra.validate(
+            str(path),
+            rules=[rules.not_null("id")],  # Preplan can prove this via metadata
+            save=False,
+        )
+
+        # Preplan proved pass via metadata - no data loaded
+        assert result.data is None
+        assert result.passed
+
 
 # =============================================================================
 # Suggestions Extended Tests

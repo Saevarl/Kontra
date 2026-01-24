@@ -50,7 +50,7 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
     SUPPORTED_RULES = {
         "not_null", "unique", "min_rows", "max_rows", "allowed_values",
         "freshness", "range", "compare", "conditional_not_null",
-        "conditional_range", "custom_sql_check"
+        "conditional_range", "custom_sql_check", "custom_agg"
     }
 
     @property

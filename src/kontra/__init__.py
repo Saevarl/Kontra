@@ -418,6 +418,15 @@ def validate(
         # list[dict] or dict - store as DataFrame
         data_source = engine.df
 
+    # Determine loaded data to expose via result.data
+    # Priority: engine.df (loaded for Polars) > input DataFrame
+    if engine.df is not None:
+        loaded_data = engine.df
+    elif isinstance(data, pl.DataFrame):
+        loaded_data = data  # User passed DataFrame directly
+    else:
+        loaded_data = None  # Preplan/pushdown handled everything, no data loaded
+
     # Wrap in ValidationResult with data source and rules for sample_failures()
     return ValidationResult.from_engine_result(
         raw_result,
@@ -427,6 +436,7 @@ def validate(
         sample_budget=sample_budget,
         sample_columns=sample_columns,
         severity_weights=cfg.severity_weights,
+        data=loaded_data,
     )
 
 
