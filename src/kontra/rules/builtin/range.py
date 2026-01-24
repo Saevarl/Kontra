@@ -38,6 +38,9 @@ class RangeRule(BaseRule):
         super().__init__(*args, **kwargs)
         from kontra.errors import RuleParameterError
 
+        # Validate required column param
+        self._get_required_param("column", str)
+
         min_val = self.params.get("min")
         max_val = self.params.get("max")
 

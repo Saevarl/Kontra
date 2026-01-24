@@ -20,6 +20,11 @@ class NotNullRule(BaseRule):
     Set include_nan=True to catch both NULL and NaN values.
     """
 
+    def __init__(self, name: str, params: Dict[str, Any]):
+        super().__init__(name, params)
+        # Validate required parameter at construction time
+        self._get_required_param("column", str)
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
         include_nan = self.params.get("include_nan", False)

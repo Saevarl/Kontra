@@ -455,7 +455,7 @@ def validate(
 
 
 def profile(
-    data: Union[str, pl.DataFrame],
+    data: Union[str, pl.DataFrame, List[Dict[str, Any]], Dict[str, Any]],
     preset: str = "scan",
     *,
     columns: Optional[List[str]] = None,
@@ -468,7 +468,7 @@ def profile(
     Profile a dataset.
 
     Args:
-        data: DataFrame (Polars) or path/URI to data file
+        data: DataFrame (Polars), list[dict], dict, or path/URI to data file
         preset: Profiling depth:
             - "scout": Quick recon (metadata only)
             - "scan": Systematic pass (full stats) [default]
@@ -508,6 +508,18 @@ def profile(
             DeprecationWarning,
             stacklevel=2,
         )
+
+    # Convert list/dict to DataFrame
+    if isinstance(data, list):
+        if not data:
+            data = pl.DataFrame()
+        else:
+            data = pl.DataFrame(data)
+    elif isinstance(data, dict) and not isinstance(data, pl.DataFrame):
+        if not data:
+            data = pl.DataFrame()
+        else:
+            data = pl.DataFrame([data])
 
     if isinstance(data, pl.DataFrame):
         # For DataFrame input, write to temp file

@@ -9,6 +9,14 @@ from kontra.state.types import FailureMode
 
 @register_rule("allowed_values")
 class AllowedValuesRule(BaseRule):
+    def __init__(self, name: str, params: Dict[str, Any]):
+        super().__init__(name, params)
+        self._get_required_param("column", str)
+        if "values" not in self.params:
+            raise ValueError(
+                f"Rule '{self.name}' requires parameter 'values' but it was not provided"
+            )
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
         values: Sequence[Any] = self.params["values"]

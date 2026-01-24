@@ -277,15 +277,17 @@ def freshness(
 
 def custom_sql_check(
     sql: str,
+    threshold: int = 0,
     severity: str = "blocking",
     id: Optional[str] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Custom SQL check must return 0 rows (no violations).
+    Custom SQL check must return at most `threshold` rows.
 
     Args:
         sql: SQL query that returns rows that violate the rule
+        threshold: Maximum allowed violations (default: 0)
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple custom checks)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
@@ -293,7 +295,7 @@ def custom_sql_check(
     Returns:
         Rule dict for use with kontra.validate()
     """
-    return _build_rule("custom_sql_check", {"sql": sql}, severity, id, context)
+    return _build_rule("custom_sql_check", {"sql": sql, "threshold": threshold}, severity, id, context)
 
 
 def compare(

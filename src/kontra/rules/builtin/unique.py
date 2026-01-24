@@ -9,6 +9,10 @@ from kontra.state.types import FailureMode
 
 @register_rule("unique")
 class UniqueRule(BaseRule):
+    def __init__(self, name: str, params: Dict[str, Any]):
+        super().__init__(name, params)
+        self._get_required_param("column", str)
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         column = self.params["column"]
 

@@ -74,8 +74,9 @@ def register(app: typer.Typer) -> None:
 
         try:
             from kontra.config.settings import resolve_effective_config
+            from kontra.config.loader import ContractLoader
             from kontra.state.backends import get_default_store, get_store
-            from kontra.state.fingerprint import fingerprint_contract_file
+            from kontra.state.fingerprint import fingerprint_contract
             from kontra.state.types import StateDiff
 
             # --- LOAD CONFIG ---
@@ -111,8 +112,9 @@ def register(app: typer.Typer) -> None:
                     # Looks like a fingerprint
                     contract_fp = contract
                 else:
-                    # Treat as path, compute fingerprint
-                    contract_fp = fingerprint_contract_file(contract)
+                    # Treat as path, load and compute semantic fingerprint
+                    contract_obj = ContractLoader.from_path(contract)
+                    contract_fp = fingerprint_contract(contract_obj)
 
             # If no contract specified, find most recent
             if not contract_fp:

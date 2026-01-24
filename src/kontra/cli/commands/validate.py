@@ -265,6 +265,11 @@ def register(app: typer.Typer) -> None:
         """
         del no_actions  # placeholder until actions are wired
 
+        # Validate contract path is not empty
+        if not contract or not contract.strip():
+            typer.secho("Error: Contract path cannot be empty", fg=typer.colors.RED)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+
         try:
             # --- DRY RUN MODE ---
             if dry_run:

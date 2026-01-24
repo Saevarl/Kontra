@@ -489,15 +489,26 @@ class ScoutProfiler:
         if numeric_cols:
             numeric_exprs = []
             # SQL Server uses STDEV, PostgreSQL/DuckDB use STDDEV
+            is_duckdb = self.backend.source_format in ("parquet", "csv", "duckdb")
             stddev_fn = "STDEV" if self.backend.source_format == "sqlserver" else "STDDEV"
             for col_name, _ in numeric_cols:
                 c = self.backend.esc_ident(col_name)
-                numeric_exprs.extend([
-                    f"MIN({c}) AS {self.backend.esc_ident(f'__min__{col_name}')}",
-                    f"MAX({c}) AS {self.backend.esc_ident(f'__max__{col_name}')}",
-                    f"AVG({c}) AS {self.backend.esc_ident(f'__mean__{col_name}')}",
-                    f"{stddev_fn}({c}) AS {self.backend.esc_ident(f'__std__{col_name}')}",
-                ])
+                # DuckDB: Filter out infinity values to prevent overflow errors
+                if is_duckdb:
+                    finite_col = f"CASE WHEN ISFINITE({c}) THEN {c} END"
+                    numeric_exprs.extend([
+                        f"MIN({finite_col}) AS {self.backend.esc_ident(f'__min__{col_name}')}",
+                        f"MAX({finite_col}) AS {self.backend.esc_ident(f'__max__{col_name}')}",
+                        f"AVG({finite_col}) AS {self.backend.esc_ident(f'__mean__{col_name}')}",
+                        f"{stddev_fn}({finite_col}) AS {self.backend.esc_ident(f'__std__{col_name}')}",
+                    ])
+                else:
+                    numeric_exprs.extend([
+                        f"MIN({c}) AS {self.backend.esc_ident(f'__min__{col_name}')}",
+                        f"MAX({c}) AS {self.backend.esc_ident(f'__max__{col_name}')}",
+                        f"AVG({c}) AS {self.backend.esc_ident(f'__mean__{col_name}')}",
+                        f"{stddev_fn}({c}) AS {self.backend.esc_ident(f'__std__{col_name}')}",
+                    ])
 
             # Use SYSTEM sampling (block-level) - much faster than BERNOULLI
             # If stats are fresh, use smaller sample; if stale, use larger sample
@@ -566,7 +577,9 @@ class ScoutProfiler:
         """Generate SQL expressions for a single column's statistics."""
         esc = self.backend.esc_ident
         c = esc(col)
-        is_sqlserver = getattr(self.backend, "source_format", "") == "sqlserver"
+        source_fmt = getattr(self.backend, "source_format", "")
+        is_sqlserver = source_fmt == "sqlserver"
+        is_duckdb = source_fmt in ("parquet", "csv", "duckdb")
 
         # Core stats: always included (null count, distinct count)
         exprs = [
@@ -578,15 +591,30 @@ class ScoutProfiler:
         if _is_numeric(dtype) and self.include_numeric_stats:
             # SQL Server: Cast to FLOAT to prevent overflow on large tables
             avg_expr = f"AVG(CAST({c} AS FLOAT))" if is_sqlserver else f"AVG({c})"
-            exprs.extend([
-                f"MIN({c}) AS {esc(f'__min__{col}')}",
-                f"MAX({c}) AS {esc(f'__max__{col}')}",
-                f"{avg_expr} AS {esc(f'__mean__{col}')}",
-            ])
+            # DuckDB: Filter out infinity values to prevent overflow errors
+            if is_duckdb:
+                finite_col = f"CASE WHEN ISFINITE({c}) THEN {c} END"
+                exprs.extend([
+                    f"MIN({finite_col}) AS {esc(f'__min__{col}')}",
+                    f"MAX({finite_col}) AS {esc(f'__max__{col}')}",
+                    f"AVG({finite_col}) AS {esc(f'__mean__{col}')}",
+                ])
+            else:
+                exprs.extend([
+                    f"MIN({c}) AS {esc(f'__min__{col}')}",
+                    f"MAX({c}) AS {esc(f'__max__{col}')}",
+                    f"{avg_expr} AS {esc(f'__mean__{col}')}",
+                ])
             # SQL Server requires different PERCENTILE_CONT syntax (window function)
             # Skip median/percentiles for SQL Server - use STDEV instead of STDDEV
             if is_sqlserver:
                 exprs.append(f"STDEV({c}) AS {esc(f'__std__{col}')}")
+            elif is_duckdb:
+                finite_col = f"CASE WHEN ISFINITE({c}) THEN {c} END"
+                exprs.extend([
+                    f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {finite_col}) AS {esc(f'__median__{col}')}",
+                    f"STDDEV({finite_col}) AS {esc(f'__std__{col}')}",
+                ])
             else:
                 exprs.extend([
                     f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {c}) AS {esc(f'__median__{col}')}",
