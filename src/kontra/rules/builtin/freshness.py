@@ -41,16 +41,10 @@ def parse_duration(duration_str: str) -> timedelta:
         "30m" -> 30 minutes
         "7 days" -> 7 days
         "2w" -> 2 weeks
+        "1h30m" -> 1 hour 30 minutes
+        "2d12h" -> 2 days 12 hours
     """
     duration_str = duration_str.strip().lower()
-
-    # Match number + optional space + unit
-    match = re.match(r'^(\d+(?:\.\d+)?)\s*([a-z]+)$', duration_str)
-    if not match:
-        raise ValueError(f"Invalid duration format: '{duration_str}'. Expected format like '24h', '1d', '30m'")
-
-    value = float(match.group(1))
-    unit = match.group(2)
 
     # Map unit variations to timedelta kwargs
     unit_map = {
@@ -61,10 +55,29 @@ def parse_duration(duration_str: str) -> timedelta:
         'w': 'weeks', 'week': 'weeks', 'weeks': 'weeks',
     }
 
-    if unit not in unit_map:
-        raise ValueError(f"Unknown time unit: '{unit}'. Supported: s, m, h, d, w (or full names)")
+    # Find all number+unit pairs (e.g., "1h30m" -> [("1", "h"), ("30", "m")])
+    pattern = r'(\d+(?:\.\d+)?)\s*([a-z]+)'
+    matches = re.findall(pattern, duration_str)
 
-    return timedelta(**{unit_map[unit]: value})
+    if not matches:
+        raise ValueError(f"Invalid duration format: '{duration_str}'. Expected format like '24h', '1d', '30m', '1h30m'")
+
+    # Verify that the matches cover the entire string (no unmatched parts)
+    reconstructed = ''.join(f'{v}{u}' for v, u in matches)
+    # Remove spaces from original for comparison
+    original_no_spaces = re.sub(r'\s+', '', duration_str)
+    if reconstructed != original_no_spaces:
+        raise ValueError(f"Invalid duration format: '{duration_str}'. Expected format like '24h', '1d', '30m', '1h30m'")
+
+    # Accumulate timedelta components
+    total = timedelta()
+    for value_str, unit in matches:
+        value = float(value_str)
+        if unit not in unit_map:
+            raise ValueError(f"Unknown time unit: '{unit}'. Supported: s, m, h, d, w (or full names)")
+        total += timedelta(**{unit_map[unit]: value})
+
+    return total
 
 
 @register_rule("freshness")

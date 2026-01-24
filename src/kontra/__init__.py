@@ -543,8 +543,17 @@ def profile(
         finally:
             os.unlink(temp_path)
     else:
+        # Resolve named datasources (e.g., "prod_db.users" -> actual URI)
+        resolved_data = data
+        if isinstance(data, str):
+            try:
+                resolved_data = resolve_datasource(data)
+            except ValueError:
+                # Not a named datasource - use as-is (file path or URI)
+                pass
+
         profiler = ScoutProfiler(
-            data,
+            resolved_data,
             preset=preset,
             columns=columns,
             sample_size=sample,
