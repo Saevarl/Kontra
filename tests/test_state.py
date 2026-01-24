@@ -935,3 +935,165 @@ class TestValidationStateAnnotations:
         assert d2["annotations"][0]["actor_id"] == "alice"
         assert "annotations" in d2["rules"][0]
         assert d2["rules"][0]["annotations"][0]["actor_id"] == "agent1"
+
+
+# ---------------------------------------------------------------------------
+# get_annotations API Tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetAnnotationsAPI:
+    """Tests for kontra.get_annotations() cross-run query."""
+
+    def test_get_annotations_basic(self, tmp_path):
+        """Test basic annotation retrieval."""
+        import kontra
+        from kontra import rules
+        import polars as pl
+        import os
+
+        # Setup temp directory
+        os.makedirs(tmp_path / ".kontra", exist_ok=True)
+        os.chdir(tmp_path)
+
+        # Create data and contract
+        df = pl.DataFrame({"email": ["a@b.com", None, "c@d.com"]})
+        df.write_parquet("users.parquet")
+
+        with open("users_contract.yml", "w") as f:
+            f.write("""
+name: users_contract
+datasource: users.parquet
+rules:
+  - name: not_null
+    params:
+      column: email
+""")
+
+        # Validate
+        result = kontra.validate("users.parquet", "users_contract.yml")
+        assert result.passed is False
+
+        # Annotate
+        kontra.annotate(
+            "users_contract.yml",
+            rule_id="COL:email:not_null",
+            actor_id="test-agent",
+            annotation_type="root_cause",
+            summary="Missing emails from legacy import",
+        )
+
+        # Retrieve all annotations
+        annotations = kontra.get_annotations("users_contract.yml")
+        assert len(annotations) == 1
+        assert annotations[0]["annotation_type"] == "root_cause"
+        assert annotations[0]["rule_id"] == "COL:email:not_null"
+        assert annotations[0]["summary"] == "Missing emails from legacy import"
+
+    def test_get_annotations_filter_by_rule(self, tmp_path):
+        """Test filtering annotations by rule_id."""
+        import kontra
+        from kontra import rules
+        import polars as pl
+        import os
+
+        os.makedirs(tmp_path / ".kontra", exist_ok=True)
+        os.chdir(tmp_path)
+
+        df = pl.DataFrame({"email": [None], "name": [None]})
+        df.write_parquet("data.parquet")
+
+        with open("contract.yml", "w") as f:
+            f.write("""
+name: test_contract
+datasource: data.parquet
+rules:
+  - name: not_null
+    params:
+      column: email
+  - name: not_null
+    params:
+      column: name
+""")
+
+        kontra.validate("data.parquet", "contract.yml")
+
+        # Annotate both rules
+        kontra.annotate(
+            "contract.yml",
+            rule_id="COL:email:not_null",
+            actor_id="agent",
+            annotation_type="resolution",
+            summary="Fixed email",
+        )
+        kontra.annotate(
+            "contract.yml",
+            rule_id="COL:name:not_null",
+            actor_id="agent",
+            annotation_type="resolution",
+            summary="Fixed name",
+        )
+
+        # Get all
+        all_annotations = kontra.get_annotations("contract.yml")
+        assert len(all_annotations) == 2
+
+        # Filter to email rule
+        email_annotations = kontra.get_annotations("contract.yml", rule_id="COL:email:not_null")
+        assert len(email_annotations) == 1
+        assert email_annotations[0]["summary"] == "Fixed email"
+
+        # Filter to name rule
+        name_annotations = kontra.get_annotations("contract.yml", rule_id="COL:name:not_null")
+        assert len(name_annotations) == 1
+        assert name_annotations[0]["summary"] == "Fixed name"
+
+    def test_get_annotations_filter_by_type(self, tmp_path):
+        """Test filtering annotations by annotation_type."""
+        import kontra
+        from kontra import rules
+        import polars as pl
+        import os
+
+        os.makedirs(tmp_path / ".kontra", exist_ok=True)
+        os.chdir(tmp_path)
+
+        df = pl.DataFrame({"x": [None]})
+        df.write_parquet("data.parquet")
+
+        with open("contract.yml", "w") as f:
+            f.write("""
+name: test_contract
+datasource: data.parquet
+rules:
+  - name: not_null
+    params:
+      column: x
+""")
+
+        kontra.validate("data.parquet", "contract.yml")
+
+        # Add different annotation types
+        kontra.annotate("contract.yml", rule_id="COL:x:not_null", actor_id="a", annotation_type="resolution", summary="Fixed")
+        kontra.annotate("contract.yml", rule_id="COL:x:not_null", actor_id="b", annotation_type="root_cause", summary="Upstream issue")
+        kontra.annotate("contract.yml", rule_id="COL:x:not_null", actor_id="c", annotation_type="resolution", summary="Fixed again")
+
+        # Filter by type
+        resolutions = kontra.get_annotations("contract.yml", annotation_type="resolution")
+        assert len(resolutions) == 2
+
+        root_causes = kontra.get_annotations("contract.yml", annotation_type="root_cause")
+        assert len(root_causes) == 1
+        assert root_causes[0]["summary"] == "Upstream issue"
+
+    def test_get_annotations_empty(self, tmp_path):
+        """Test get_annotations returns empty list when no annotations."""
+        import kontra
+        import os
+
+        os.makedirs(tmp_path / ".kontra", exist_ok=True)
+        os.chdir(tmp_path)
+
+        # No contract exists
+        annotations = kontra.get_annotations("nonexistent_contract")
+        assert annotations == []

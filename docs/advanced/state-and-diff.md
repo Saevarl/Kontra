@@ -181,6 +181,14 @@ kontra.annotate(
 result = kontra.get_run_with_annotations("users_contract.yml")
 for ann in result.annotations or []:
     print(f"[{ann['annotation_type']}] {ann['summary']}")
+
+# Query annotations across runs (agent memory)
+hints = kontra.get_annotations(
+    "users_contract.yml",
+    rule_id="COL:email:not_null",  # filter to specific rule
+)
+for hint in hints:
+    print(f"[{hint['annotation_type']}] {hint['summary']}")
 ```
 
 **Key invariant**: Kontra never reads annotations during validation or diff. They're purely for consumer use.

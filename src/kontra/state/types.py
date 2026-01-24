@@ -47,6 +47,7 @@ class Annotation:
     id: Optional[int] = None  # Database-assigned ID (None for new annotations)
     run_id: int = 0  # Reference to kontra_runs.id
     rule_result_id: Optional[int] = None  # Reference to kontra_rule_results.id (None for run-level)
+    rule_id: Optional[str] = None  # Semantic rule ID (e.g., "COL:email:not_null") for cross-run queries
 
     # Who created it
     actor_type: str = "agent"  # "agent" | "human" | "system"
@@ -78,6 +79,8 @@ class Annotation:
             d["id"] = self.id
         if self.rule_result_id is not None:
             d["rule_result_id"] = self.rule_result_id
+        if self.rule_id is not None:
+            d["rule_id"] = self.rule_id
         if self.payload is not None:
             d["payload"] = self.payload
         return d
@@ -94,6 +97,7 @@ class Annotation:
             id=d.get("id"),
             run_id=d.get("run_id", 0),
             rule_result_id=d.get("rule_result_id"),
+            rule_id=d.get("rule_id"),
             actor_type=d.get("actor_type", "agent"),
             actor_id=d.get("actor_id", ""),
             annotation_type=d.get("annotation_type", ""),

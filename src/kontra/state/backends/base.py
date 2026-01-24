@@ -278,6 +278,30 @@ class StateBackend(ABC):
         """
         return []
 
+    def get_annotations_for_contract(
+        self,
+        contract_fingerprint: str,
+        rule_id: Optional[str] = None,
+        annotation_type: Optional[str] = None,
+        limit: int = 20,
+    ) -> List["Annotation"]:
+        """
+        Get annotations across all runs for a contract.
+
+        This is the cross-run query for agent memory - "what annotations exist
+        for this rule across all past runs?"
+
+        Args:
+            contract_fingerprint: The contract's fingerprint hash
+            rule_id: If provided, filter to annotations on this rule
+            annotation_type: If provided, filter by annotation type
+            limit: Maximum number of annotations to return
+
+        Returns:
+            List of Annotation objects, newest first, with rule_id populated
+        """
+        return []
+
     def get_run_with_annotations(
         self,
         contract_fingerprint: str,

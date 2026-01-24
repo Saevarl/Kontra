@@ -754,6 +754,69 @@ class PostgresStore(StateBackend):
         except Exception:
             return []
 
+    def get_annotations_for_contract(
+        self,
+        contract_fingerprint: str,
+        rule_id: Optional[str] = None,
+        annotation_type: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Annotation]:
+        """Get annotations across all runs for a contract."""
+        conn = self._get_conn()
+
+        # Build the query with JOINs to get rule_id
+        # We join runs to filter by contract, and rule_results to get rule_id
+        sql = f"""
+        SELECT
+            a.id, a.run_id, a.rule_result_id, a.actor_type, a.actor_id,
+            a.annotation_type, a.summary, a.payload, a.created_at,
+            rr.rule_id
+        FROM {self.ANNOTATIONS_TABLE} a
+        JOIN {self.RUNS_TABLE} r ON a.run_id = r.id
+        LEFT JOIN {self.RULE_RESULTS_TABLE} rr ON a.rule_result_id = rr.id
+        WHERE r.contract_fingerprint = %s
+        """
+        params: List[Any] = [contract_fingerprint]
+
+        if rule_id is not None:
+            sql += " AND rr.rule_id = %s"
+            params.append(rule_id)
+
+        if annotation_type is not None:
+            sql += " AND a.annotation_type = %s"
+            params.append(annotation_type)
+
+        sql += " ORDER BY a.created_at DESC LIMIT %s"
+        params.append(limit)
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall()
+
+                annotations = []
+                for row in rows:
+                    (
+                        ann_id, run_id, rule_result_id, actor_type, actor_id,
+                        ann_type, summary, payload, created_at, rule_id_val
+                    ) = row
+                    annotation = Annotation(
+                        id=ann_id,
+                        run_id=run_id,
+                        rule_result_id=rule_result_id,
+                        rule_id=rule_id_val,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        annotation_type=ann_type,
+                        summary=summary,
+                        payload=payload,
+                        created_at=created_at,
+                    )
+                    annotations.append(annotation)
+                return annotations
+        except Exception:
+            return []
+
     def get_run_with_annotations(
         self,
         contract_fingerprint: str,

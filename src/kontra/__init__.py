@@ -1307,6 +1307,7 @@ def annotate(
     annotation = Annotation(
         run_id=state.id or 0,
         rule_result_id=rule_result_id,
+        rule_id=rule_id,  # Store semantic rule ID for cross-run queries
         actor_type=actor_type,
         actor_id=actor_id,
         annotation_type=annotation_type,
@@ -1455,6 +1456,78 @@ def get_run_with_annotations(
     except Exception as e:
         log_exception(_logger, "Failed to get run with annotations", e)
         return None
+
+
+def get_annotations(
+    contract: str,
+    *,
+    rule_id: Optional[str] = None,
+    annotation_type: Optional[str] = None,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve annotations across runs for a contract.
+
+    Primary use case: Agent sees a failure, wants to check if past runs
+    have hints about this rule. This provides cross-session memory.
+
+    Args:
+        contract: Contract name or path
+        rule_id: Filter to annotations on this rule (recommended)
+        annotation_type: Filter by type (e.g., "resolution", "false_positive")
+        limit: Max annotations to return (default 20)
+
+    Returns:
+        List of annotation dicts, most recent first. Each dict contains:
+        - id: Annotation ID
+        - run_id: Which run this was attached to
+        - rule_id: Semantic rule ID (e.g., "COL:email:not_null") or None for run-level
+        - actor_type: "agent" | "human" | "system"
+        - actor_id: Who created it
+        - annotation_type: Type (e.g., "resolution", "root_cause")
+        - summary: Human-readable summary
+        - payload: Optional structured data
+        - created_at: When it was created
+
+    Example:
+        # Agent sees COL:email:not_null failing, checks for past hints
+        hints = kontra.get_annotations(
+            "users_contract.yml",
+            rule_id="COL:email:not_null",
+        )
+
+        for hint in hints:
+            print(f"[{hint['annotation_type']}] {hint['summary']}")
+
+        # Get only resolutions
+        resolutions = kontra.get_annotations(
+            "users_contract.yml",
+            rule_id="COL:email:not_null",
+            annotation_type="resolution",
+        )
+    """
+    from kontra.state.backends import get_default_store
+
+    store = get_default_store()
+    if store is None:
+        return []
+
+    try:
+        contract_fp = _resolve_contract_fingerprint(contract, store)
+        if contract_fp is None:
+            return []
+
+        annotations = store.get_annotations_for_contract(
+            contract_fp,
+            rule_id=rule_id,
+            annotation_type=annotation_type,
+            limit=limit,
+        )
+
+        return [a.to_dict() for a in annotations]
+    except Exception as e:
+        log_exception(_logger, "Failed to get annotations", e)
+        return []
 
 
 # =============================================================================
@@ -1691,6 +1764,7 @@ __all__ = [
     "get_profile",
     # Annotation functions
     "annotate",
+    "get_annotations",
     "get_run_with_annotations",
     # Configuration functions
     "resolve",

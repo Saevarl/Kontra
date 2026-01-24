@@ -324,6 +324,52 @@ class LocalStore(StateBackend):
         # File-based backends need the fingerprint to locate annotations
         return []
 
+    def get_annotations_for_contract(
+        self,
+        contract_fingerprint: str,
+        rule_id: Optional[str] = None,
+        annotation_type: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Annotation]:
+        """Get annotations across all runs for a contract."""
+        runs_dir = self._runs_dir(contract_fingerprint)
+        if not runs_dir.exists():
+            return []
+
+        # Collect all annotations from all .ann.jsonl files
+        all_annotations: List[Annotation] = []
+
+        for ann_file in runs_dir.glob("*.ann.jsonl"):
+            with open(ann_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ann = Annotation.from_json(line)
+
+                        # Filter by rule_id if specified
+                        if rule_id is not None and ann.rule_id != rule_id:
+                            continue
+
+                        # Filter by annotation_type if specified
+                        if annotation_type is not None and ann.annotation_type != annotation_type:
+                            continue
+
+                        all_annotations.append(ann)
+                    except Exception:
+                        # Skip malformed annotations
+                        continue
+
+        # Sort by created_at descending (newest first)
+        all_annotations.sort(
+            key=lambda a: a.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+
+        # Apply limit
+        return all_annotations[:limit]
+
     def get_run_with_annotations(
         self,
         contract_fingerprint: str,

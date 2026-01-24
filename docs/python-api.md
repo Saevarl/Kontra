@@ -568,6 +568,7 @@ See [Transformation Probes](probes.md) for full documentation.
 | Function | Description |
 |----------|-------------|
 | `kontra.annotate(contract, ...)` | Add annotation to a run or rule |
+| `kontra.get_annotations(contract, rule_id=, ...)` | Query annotations across runs |
 | `kontra.get_run_with_annotations(contract)` | Get run with annotations loaded |
 
 ### Result Types
