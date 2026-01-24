@@ -34,6 +34,7 @@ from kontra.version import VERSION as __version__
 # Type imports
 from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
+import json
 import os
 import polars as pl
 
@@ -1028,6 +1029,7 @@ def get_run(
         return ValidationResult(
             passed=state.summary.passed,
             dataset=state.dataset_uri,
+            total_rows=state.summary.row_count or 0,
             total_rules=state.summary.total_rules,
             passed_count=state.summary.passed_rules,
             failed_count=state.summary.blocking_failures,

@@ -292,7 +292,10 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
             elif kind == "custom_agg":
                 # Custom rule with to_sql_agg() - use the pre-generated SQL
                 sql_agg = spec.get("sql_agg", {})
+                # Try exact dialect match first, then fallback for sqlserver/mssql naming
                 agg_expr = sql_agg.get(self.DIALECT)
+                if not agg_expr and self.DIALECT == "sqlserver":
+                    agg_expr = sql_agg.get("mssql")  # Fallback: mssql -> sqlserver
                 if agg_expr:
                     aggregate_selects.append(f'{agg_expr} AS "{rule_id}"')
                     aggregate_specs.append(spec)

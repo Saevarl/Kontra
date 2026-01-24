@@ -722,7 +722,7 @@ profile:
 #
 # Usage:
 #   kontra validate contract.yml --data prod_db.users
-#   kontra scout prod_db.orders
+#   kontra profile prod_db.orders
 #
 # Or in contract YAML:
 #   dataset: prod_db.users

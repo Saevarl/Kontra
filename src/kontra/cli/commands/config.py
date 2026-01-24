@@ -32,7 +32,7 @@ def register(app: typer.Typer) -> None:
             kontra init --force             # Overwrite existing config
 
         To generate a contract from data, use:
-            kontra scout data.parquet --suggest-rules > contracts/data.yml
+            kontra profile data.parquet --draft > contracts/data.yml
         """
         from pathlib import Path
 
@@ -68,10 +68,10 @@ def register(app: typer.Typer) -> None:
         typer.echo("Next steps:")
         typer.echo("  1. Edit .kontra/config.yml to configure datasources")
         typer.echo("  2. Profile your data:")
-        typer.secho("     kontra scout data.parquet", fg=typer.colors.CYAN)
+        typer.secho("     kontra profile data.parquet", fg=typer.colors.CYAN)
         typer.echo("  3. Generate a contract:")
         typer.secho(
-            "     kontra scout data.parquet --suggest-rules > contracts/data.yml",
+            "     kontra profile data.parquet --draft > contracts/data.yml",
             fg=typer.colors.CYAN,
         )
         typer.echo("  4. Run validation:")

@@ -175,7 +175,10 @@ class DtypeRule(BaseRule):
             }
 
         actual = df[column].dtype
-        passed = actual in allowed
+        # Use equality comparison instead of set membership because parametric
+        # types like Datetime(time_unit='us') have different hashes than pl.Datetime
+        # but are equal via __eq__
+        passed = any(actual == a for a in allowed)
 
         result: Dict[str, Any] = {
             "rule_id": self.rule_id,
