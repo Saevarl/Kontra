@@ -136,9 +136,10 @@ class DefaultsConfig(BaseModel):
 
 
 class ScoutConfig(BaseModel):
-    """Scout-specific settings."""
+    """Profile-specific settings (also known as Scout internally)."""
 
-    preset: Literal["lite", "standard", "deep", "llm"] = "standard"
+    # Accept both new (scout/scan/interrogate) and old (lite/standard/deep) preset names
+    preset: Literal["scout", "scan", "interrogate", "lite", "standard", "deep", "llm"] = "scan"
     save_profile: bool = False
     list_values_threshold: Optional[int] = None
     top_n: Optional[int] = None
@@ -168,9 +169,12 @@ class KontraConfig(BaseModel):
 
     version: str = "1"
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
-    scout: ScoutConfig = Field(default_factory=ScoutConfig)
+    # Accept both "profile" and "scout" as the config key (profile is preferred)
+    scout: ScoutConfig = Field(default_factory=ScoutConfig, alias="profile")
     datasources: Dict[str, Any] = Field(default_factory=dict)  # Flexible for different types
     environments: Dict[str, EnvironmentConfig] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}  # Allow both 'scout' and 'profile'
 
     # LLM juice: user-defined severity weights (Kontra carries but never acts on these)
     severity_weights: Optional[Dict[str, float]] = Field(
@@ -700,11 +704,11 @@ defaults:
   csv_mode: "auto"      # auto | duckdb | parquet
 
 # ─────────────────────────────────────────────────────────────
-# Scout Settings
+# Profile Settings
 # ─────────────────────────────────────────────────────────────
 
-scout:
-  preset: "standard"    # lite | standard | deep | llm
+profile:
+  preset: "scan"        # scout | scan | interrogate
   save_profile: false   # Save profile to state storage
   # list_values_threshold: 10  # List all values if distinct <= N
   # top_n: 5                   # Show top N frequent values

@@ -245,6 +245,7 @@ class ValidationEngine:
         self.data_path = data_path
         self._input_dataframe = dataframe  # Store user-provided DataFrame
         self._inline_rules = inline_rules  # Store inline rules for merging
+        self._inline_built_rules = []  # Populated in _load_contract() if BaseRule instances passed
         self.emit_report = emit_report
         self.stats_mode = stats_mode
 
@@ -541,17 +542,32 @@ class ValidationEngine:
         """
         from kontra.config.models import RuleSpec
 
-        # Convert inline rules to RuleSpec objects
+        # Convert inline rules to RuleSpec objects (or pass through BaseRule instances)
         inline_specs = []
+        inline_built_rules = []  # Already-built BaseRule instances
         if self._inline_rules:
-            for rule_dict in self._inline_rules:
-                spec = RuleSpec(
-                    name=rule_dict.get("name", ""),
-                    id=rule_dict.get("id"),
-                    params=rule_dict.get("params", {}),
-                    severity=rule_dict.get("severity", "blocking"),
-                )
-                inline_specs.append(spec)
+            from kontra.rules.base import BaseRule as BaseRuleType
+            for rule in self._inline_rules:
+                if isinstance(rule, BaseRuleType):
+                    # Already a rule instance - use directly
+                    inline_built_rules.append(rule)
+                elif isinstance(rule, dict):
+                    # Dict format - convert to RuleSpec
+                    spec = RuleSpec(
+                        name=rule.get("name", ""),
+                        id=rule.get("id"),
+                        params=rule.get("params", {}),
+                        severity=rule.get("severity", "blocking"),
+                    )
+                    inline_specs.append(spec)
+                else:
+                    raise ValueError(
+                        f"Invalid rule type: {type(rule).__name__}. "
+                        f"Expected dict or BaseRule instance."
+                    )
+
+        # Store built rules to merge with factory-built rules later
+        self._inline_built_rules = inline_built_rules
 
         # Load from file if path provided
         if self.contract_path:
@@ -582,6 +598,9 @@ class ValidationEngine:
         # 2) Rules & plan
         t0 = now_ms()
         rules = RuleFactory(self.contract.rules).build_rules()
+        # Merge with any pre-built rule instances passed directly
+        if self._inline_built_rules:
+            rules = rules + self._inline_built_rules
         self._rules = rules  # Store for sample_failures()
         plan = RuleExecutionPlan(rules)
         compiled_full = plan.compile()

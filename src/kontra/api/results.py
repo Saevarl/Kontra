@@ -367,6 +367,9 @@ class RuleResult:
             "severity": self.severity,
             "source": self.source,
         }
+        # Include violation_rate if available
+        if self.violation_rate is not None:
+            d["violation_rate"] = self.violation_rate
         if self.column:
             d["column"] = self.column
         if self.details:

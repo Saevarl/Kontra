@@ -220,7 +220,12 @@ class ScoutProfiler:
         self.columns_filter = columns
 
         # Apply preset, then override with explicit args
-        preset_config = PRESETS.get(preset, PRESETS["standard"])
+        if preset not in PRESETS:
+            valid_presets = ["scout", "scan", "interrogate"]
+            raise ValueError(
+                f"Invalid preset '{preset}'. Valid presets: {', '.join(valid_presets)}"
+            )
+        preset_config = PRESETS[preset]
         self.list_values_threshold = (
             list_values_threshold
             if list_values_threshold is not None

@@ -253,12 +253,17 @@ def validate(
                 errors.append(f"Contract error: {e}")
 
         # Add inline rules if provided
+        inline_built_rules = []  # Already-built BaseRule instances
         if rules is not None:
-            # Convert inline rules to RuleSpec format
+            # Convert inline rules to RuleSpec format (or pass through BaseRule instances)
             from kontra.config.models import RuleSpec
+            from kontra.rules.base import BaseRule as BaseRuleType
             for i, r in enumerate(rules):
                 try:
-                    if isinstance(r, dict):
+                    if isinstance(r, BaseRuleType):
+                        # Already a rule instance - use directly
+                        inline_built_rules.append(r)
+                    elif isinstance(r, dict):
                         spec = RuleSpec(
                             name=r.get("name", ""),
                             id=r.get("id"),
@@ -267,7 +272,10 @@ def validate(
                         )
                         all_rule_specs.append(spec)
                     else:
-                        errors.append(f"Inline rule {i} is not a dict")
+                        errors.append(
+                            f"Inline rule {i}: expected dict or BaseRule, "
+                            f"got {type(r).__name__}"
+                        )
                 except Exception as e:
                     errors.append(f"Inline rule {i} error: {e}")
 
@@ -275,9 +283,11 @@ def validate(
         columns_needed: List[str] = []
         rules_count = 0
 
-        if not errors and all_rule_specs:
+        if not errors and (all_rule_specs or inline_built_rules):
             try:
-                built_rules = RuleFactory(all_rule_specs).build_rules()
+                built_rules = RuleFactory(all_rule_specs).build_rules() if all_rule_specs else []
+                # Merge with already-built rule instances
+                built_rules = list(built_rules) + inline_built_rules
                 rules_count = len(built_rules)
 
                 # Extract required columns
@@ -376,7 +386,11 @@ def validate(
     elif isinstance(data, dict) and not isinstance(data, pl.DataFrame):
         # Single dict - convert to 1-row DataFrame
         # Note: check for pl.DataFrame first since it's also dict-like in some contexts
-        df = pl.DataFrame([data])
+        if not data:
+            # Empty dict - create empty DataFrame
+            df = pl.DataFrame()
+        else:
+            df = pl.DataFrame([data])
         engine = ValidationEngine(dataframe=df, **engine_kwargs)
     elif isinstance(data, pl.DataFrame):
         # Polars DataFrame
@@ -672,21 +686,37 @@ def scout(
 
 
 def suggest_rules(
-    profile: DatasetProfile,
+    data: Union[str, DatasetProfile, pl.DataFrame],
     min_confidence: float = 0.5,
 ) -> Suggestions:
     """
-    DEPRECATED: Use kontra.draft() instead.
+    DEPRECATED: Use kontra.profile() then kontra.draft() instead.
 
-    Generate validation rule suggestions from a profile.
+    Generate validation rule suggestions from data or a profile.
+
+    Args:
+        data: File path, DataFrame, or DatasetProfile
+        min_confidence: Minimum confidence score (0.0-1.0)
+
+    Returns:
+        Suggestions with .to_yaml(), .save(), .filter()
     """
     import warnings
     warnings.warn(
-        "kontra.suggest_rules() is deprecated, use kontra.draft() instead",
+        "kontra.suggest_rules() is deprecated, use kontra.profile() then kontra.draft() instead",
         DeprecationWarning,
         stacklevel=2,
     )
-    return draft(profile, min_confidence=min_confidence)
+    # Handle different input types
+    if isinstance(data, DatasetProfile):
+        prof = data
+    elif isinstance(data, (str, pl.DataFrame)):
+        prof = profile(data, preset="scan")
+    else:
+        raise TypeError(
+            f"suggest_rules() expects str, DataFrame, or DatasetProfile, got {type(data).__name__}"
+        )
+    return draft(prof, min_confidence=min_confidence)
 
 
 def explain(

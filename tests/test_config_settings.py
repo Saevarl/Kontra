@@ -101,7 +101,7 @@ class TestPydanticModels:
     def test_scout_config_defaults(self):
         """ScoutConfig has sensible defaults."""
         config = ScoutConfig()
-        assert config.preset == "standard"
+        assert config.preset == "scan"  # New default preset name (v0.7+)
         assert config.save_profile is False
         assert config.include_patterns is False
 
@@ -300,7 +300,7 @@ class TestConfigTemplate:
         data = yaml.safe_load(DEFAULT_CONFIG_TEMPLATE)
         assert data["version"] == "1"
         assert "defaults" in data
-        assert "scout" in data
+        assert "profile" in data  # Renamed from "scout" in v0.7
         assert "environments" in data
 
     def test_template_creates_valid_config(self, tmp_path):
