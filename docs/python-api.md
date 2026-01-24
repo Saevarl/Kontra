@@ -310,6 +310,7 @@ rules.conditional_range("discount", when="tier == 'premium'", min=10, max=50)
 rules.min_rows(1000)
 rules.max_rows(1000000)
 rules.freshness("updated_at", max_age="24h")
+rules.custom_sql_check("SELECT * FROM {table} WHERE balance < 0")
 
 # All rules accept optional parameters
 rules.not_null("email", severity="warning")  # "blocking" | "warning" | "info"
@@ -577,7 +578,7 @@ See [Transformation Probes](probes.md) for full documentation.
 | `FailureSamples` | `count`, `rule_id`, `to_dict()`, `to_json()`, `to_llm()` (iterable) |
 | `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `violation_rate`, `severity`, `message`, `column`, `details`, `context`, `annotations` (opt-in), `samples`, `samples_source`, `samples_reason` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
-| `Profile` | `row_count`, `column_count`, `columns` |
+| `DatasetProfile` | `row_count`, `column_count`, `columns` |
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |
 | `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved` |
 | `Suggestions` | `filter(min_confidence)`, `to_dict()`, `to_yaml()`, `save(path)` |

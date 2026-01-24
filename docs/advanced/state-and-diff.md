@@ -45,24 +45,6 @@ kontra history contract.yml -o json
 kontra history contract.yml --limit 20
 ```
 
-Output:
-```
-Diff: users_contract
-Comparing: 2024-01-10 14:30 -> 2024-01-12 09:15
-==================================================
-
-Overall: PASSED -> FAILED
-
-New Blocking Failures (1)
-  - COL:email:not_null (523 violations)
-
-Warning Regressions (1)
-  - COL:status:allowed_values: 10 -> 45 (+35)
-
-Resolved (1)
-  - COL:age:range
-```
-
 ## Python API
 
 ```python
@@ -103,11 +85,11 @@ diff.to_llm()
 # List past runs
 runs = kontra.list_runs("my_contract")
 for run in runs:
-    print(f"{run.timestamp}: {'PASS' if run.passed else 'FAIL'}")
+    print(f"{run['timestamp']}: {'PASS' if run['passed'] else 'FAIL'}")
 
-# Get specific run
-run = kontra.get_run("my_contract")  # latest
-run = kontra.get_run("my_contract", run_id="abc123")
+# Get specific run (returns ValidationResult)
+result = kontra.get_run("my_contract")  # latest
+result = kontra.get_run("my_contract", run_id="2024-01-15T10:30:00")
 
 # Check if history exists
 if kontra.has_runs("my_contract"):

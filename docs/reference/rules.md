@@ -527,14 +527,18 @@ def to_sql_agg(self, dialect="duckdb"):
 
 ### CSV Files
 
-**Empty strings are NULL**: Both `""` (quoted empty) and trailing empty values in CSV are treated as NULL by Polars. This differs from Parquet where empty string and NULL are distinct.
+**Empty strings vs NULL**: In Polars CSV parsing:
+- `""` (quoted empty) is an **empty string**, not NULL
+- Trailing empty (no value) is **NULL**
 
 ```csv
 id,name
 1,Alice
-2,""     # NULL, not empty string
+2,""     # empty string ""
 3,       # NULL
 ```
+
+This differs from some other tools. Use `not_null` to catch NULLs; empty strings require `regex` or `allowed_values`.
 
 **First row is always header**: CSV files are assumed to have a header row. If your CSV has no header, the first data row becomes column names.
 
