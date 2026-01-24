@@ -7,7 +7,7 @@ name = "kontra"
 version = "0.5.0"
 description = "Developer-first data quality engine"
 readme = "README.md"
-authors = [{ name = "Kontra Team" }]
+authors = [{ name = "Saevarlb" }]
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 keywords = ["data-quality", "validation", "data-contracts", "polars", "duckdb"]
@@ -35,10 +35,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kontra-data/kontra"
-Documentation = "https://github.com/kontra-data/kontra#readme"
-Repository = "https://github.com/kontra-data/kontra"
-Issues = "https://github.com/kontra-data/kontra/issues"
+Homepage = "https://github.com/Saevarl/Kontra"
+Documentation = "https://github.com/Saevarl/Kontra#readme"
+Repository = "https://github.com/Saevarl/Kontra"
+Issues = "https://github.com/Saevarl/Kontra/issues"
 
 [project.scripts]
 kontra = "kontra.cli.main:main"

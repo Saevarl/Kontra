@@ -1,0 +1,39 @@
+# Basic contract - common validation patterns
+# Run: kontra validate contracts/examples/01_basic.yml
+
+name: users_basic
+datasource: data/users.parquet
+
+rules:
+  # Primary key must exist and be unique
+  - name: not_null
+    params: { column: user_id }
+
+  - name: unique
+    params: { column: user_id }
+
+  # Email format validation
+  - name: not_null
+    params: { column: email }
+
+  - name: regex
+    params:
+      column: email
+      pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+  # Status must be one of allowed values
+  - name: allowed_values
+    params:
+      column: status
+      values: [active, inactive, pending]
+
+  # Age must be reasonable
+  - name: range
+    params:
+      column: age
+      min: 13
+      max: 120
+
+  # Expect at least some data
+  - name: min_rows
+    params: { threshold: 1 }

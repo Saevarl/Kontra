@@ -1,0 +1,58 @@
+# Advanced rules - cross-column and conditional validation
+# Run: kontra validate contracts/examples/03_advanced_rules.yml
+
+name: shipments_advanced
+datasource: data/shipments.parquet
+
+rules:
+  # Basic identity
+  - name: not_null
+    params: { column: shipment_id }
+
+  - name: unique
+    params: { column: shipment_id }
+
+  # Cross-column: ship date must be after order date
+  - name: compare
+    params:
+      left: ship_date
+      right: order_date
+      op: ">="
+    context:
+      fix_hint: Ship date cannot be before order date
+
+  # Cross-column: delivery date must be after ship date
+  - name: compare
+    params:
+      left: delivery_date
+      right: ship_date
+      op: ">="
+    context:
+      fix_hint: Delivery date cannot be before ship date
+
+  # Conditional: if status is 'delivered', tracking_number required
+  - name: conditional_not_null
+    params:
+      column: tracking_number
+      when: "status == 'delivered'"
+    context:
+      owner: logistics
+      fix_hint: Delivered shipments must have tracking numbers
+
+  # Conditional: if status is 'delivered', delivery_date required
+  - name: conditional_not_null
+    params:
+      column: delivery_date
+      when: "status == 'delivered'"
+
+  # Conditional range: if priority is 'express', transit_days <= 3
+  - name: conditional_range
+    params:
+      column: transit_days
+      when: "priority == 'express'"
+      min: 1
+      max: 3
+    severity: warning
+    context:
+      owner: logistics
+      fix_hint: Express shipments should arrive within 3 days

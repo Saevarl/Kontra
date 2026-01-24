@@ -1,0 +1,52 @@
+# Contract with severity levels and context metadata
+# Run: kontra validate contracts/examples/02_severity_and_context.yml
+
+name: orders_production
+datasource: data/orders.parquet
+
+rules:
+  # Critical: order_id must exist (blocking)
+  - name: not_null
+    params: { column: order_id }
+    severity: blocking
+    context:
+      owner: data-platform
+      tier: critical
+      fix_hint: Check upstream ETL job
+
+  # Critical: no duplicate orders (blocking)
+  - name: unique
+    params: { column: order_id }
+    severity: blocking
+    context:
+      owner: data-platform
+      tier: critical
+
+  # Important but not fatal: expect reasonable amounts (warning)
+  - name: range
+    params:
+      column: amount
+      min: 0
+      max: 100000
+    severity: warning
+    context:
+      owner: finance-team
+      fix_hint: Amounts over $100k may need manual review
+
+  # Data quality tracking: freshness (info)
+  - name: freshness
+    params:
+      column: created_at
+      max_age: 24h
+    severity: info
+    context:
+      owner: data-platform
+      sla: daily
+
+  # Volume sanity check
+  - name: min_rows
+    params: { threshold: 100 }
+    severity: blocking
+    context:
+      owner: data-platform
+      fix_hint: Empty or near-empty dataset indicates pipeline failure

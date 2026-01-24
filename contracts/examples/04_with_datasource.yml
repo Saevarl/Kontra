@@ -1,0 +1,49 @@
+# Contract using named datasource from config
+# Requires .kontra/config.yml with datasource definition
+# Run: kontra validate contracts/examples/04_with_datasource.yml
+
+name: users_from_warehouse
+datasource: warehouse.users  # References named datasource
+
+rules:
+  - name: not_null
+    params: { column: user_id }
+
+  - name: unique
+    params: { column: user_id }
+
+  - name: not_null
+    params: { column: email }
+
+  - name: allowed_values
+    params:
+      column: status
+      values: [active, inactive, pending, suspended]
+
+  - name: min_rows
+    params: { threshold: 1000 }
+    severity: warning
+    context:
+      fix_hint: Expected at least 1000 users in production
+
+# Example .kontra/config.yml:
+#
+# datasources:
+#   warehouse:
+#     type: postgres
+#     uri: postgres://user:pass@localhost:5432/analytics
+#     tables:
+#       - users
+#       - orders
+#       - products
+#
+# Or for S3:
+#
+# datasources:
+#   datalake:
+#     type: s3
+#     bucket: my-data-lake
+#     prefix: production/
+#     tables:
+#       - users: users.parquet
+#       - orders: orders/
