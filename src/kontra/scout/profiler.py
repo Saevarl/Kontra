@@ -311,11 +311,8 @@ class ScoutProfiler:
             return []
 
         # Check if we can use metadata-only path (faster, no table scan)
-        # Skip metadata_only for Azure URIs (PyArrow doesn't have Azure credentials)
-        is_azure = self.source_uri.lower().startswith(("abfs://", "abfss://", "az://"))
         use_metadata_only = (
             self.metadata_only
-            and not is_azure
             and hasattr(self.backend, "supports_metadata_only")
             and self.backend.supports_metadata_only()
         )

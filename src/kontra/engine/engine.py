@@ -164,6 +164,45 @@ def _create_s3_filesystem(handle: DatasetHandle) -> pafs.S3FileSystem:
     return pafs.S3FileSystem(**kwargs)
 
 
+def _create_azure_filesystem(handle: DatasetHandle) -> pafs.FileSystem:
+    """
+    Create a PyArrow AzureFileSystem from handle's fs_opts (populated from env vars).
+    Supports account key and SAS token authentication.
+    """
+    opts = handle.fs_opts or {}
+
+    kwargs: Dict[str, Any] = {}
+    if opts.get("azure_account_name"):
+        kwargs["account_name"] = opts["azure_account_name"]
+    if opts.get("azure_account_key"):
+        kwargs["account_key"] = opts["azure_account_key"]
+    if opts.get("azure_sas_token"):
+        # PyArrow requires SAS token WITH the leading '?'
+        sas = opts["azure_sas_token"]
+        if not sas.startswith("?"):
+            sas = "?" + sas
+        kwargs["sas_token"] = sas
+
+    return pafs.AzureFileSystem(**kwargs)
+
+
+def _azure_uri_to_path(uri: str) -> str:
+    """
+    Convert Azure URI to container/path format for PyArrow AzureFileSystem.
+
+    abfss://container@account.dfs.core.windows.net/path -> container/path
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(uri)
+    # netloc is "container@account.dfs.core.windows.net"
+    if "@" in parsed.netloc:
+        container = parsed.netloc.split("@", 1)[0]
+    else:
+        container = parsed.netloc.split(".")[0]
+    path_part = parsed.path.lstrip("/")
+    return f"{container}/{path_part}"
+
+
 def _is_parquet(path: str | None) -> bool:
     return isinstance(path, str) and path.lower().endswith(".parquet")
 
@@ -659,7 +698,7 @@ class ValidationEngine:
             "row_groups_pruned": None,
         }
 
-        # Get filesystem from handle; preplan needs this for S3/remote access.
+        # Get filesystem from handle; preplan needs this for S3/Azure/remote access.
         preplan_fs: pafs.FileSystem | None = None
         if _is_s3_uri(handle.uri):
             try:
@@ -668,17 +707,26 @@ class ValidationEngine:
                 # If S3 libs aren't installed, this will fail.
                 # We'll let the ParquetFile call fail below and be caught.
                 log_exception(_logger, "Could not create S3 filesystem for preplan", e)
+        elif _is_azure_uri(handle.uri):
+            try:
+                preplan_fs = _create_azure_filesystem(handle)
+            except Exception as e:
+                # If Azure libs aren't available or creds invalid, fall back to no preplan
+                log_exception(_logger, "Could not create Azure filesystem for preplan", e)
 
-        # Skip preplan for Azure URIs - PyArrow Azure filesystem not yet implemented
-        # Azure validation works fine via DuckDB pushdown and Polars fallback
-        skip_preplan_azure = _is_azure_uri(handle.uri)
-
-        if self.preplan in {"on", "auto"} and _is_parquet(handle.uri) and not skip_preplan_azure:
+        if self.preplan in {"on", "auto"} and _is_parquet(handle.uri):
             try:
                 t0 = now_ms()
                 static_preds = extract_static_predicates(rules=rules)
-                # PyArrow S3FileSystem expects 'bucket/key' format, not 's3://bucket/key'
-                preplan_path = _s3_uri_to_path(handle.uri) if preplan_fs else handle.uri
+                # PyArrow filesystems expect specific path formats:
+                # - S3: 'bucket/key' (not 's3://bucket/key')
+                # - Azure: 'container/path' (not 'abfss://container@account/path')
+                if _is_s3_uri(handle.uri) and preplan_fs:
+                    preplan_path = _s3_uri_to_path(handle.uri)
+                elif _is_azure_uri(handle.uri) and preplan_fs:
+                    preplan_path = _azure_uri_to_path(handle.uri)
+                else:
+                    preplan_path = handle.uri
                 pre: PrePlan = preplan_single_parquet(
                     path=preplan_path,
                     required_columns=compiled_full.required_cols,  # DC-driven columns
@@ -957,9 +1005,19 @@ class ValidationEngine:
                     except Exception as e:
                         # Let ParquetFile try default credentials
                         log_exception(_logger, "Could not create S3 filesystem for residual load", e)
+                elif residual_fs is None and _is_azure_uri(handle.uri):
+                    try:
+                        residual_fs = _create_azure_filesystem(handle)
+                    except Exception as e:
+                        log_exception(_logger, "Could not create Azure filesystem for residual load", e)
 
-                # PyArrow S3FileSystem expects 'bucket/key' format, not 's3://bucket/key'
-                residual_path = _s3_uri_to_path(handle.uri) if residual_fs else handle.uri
+                # PyArrow filesystems expect specific path formats
+                if _is_s3_uri(handle.uri) and residual_fs:
+                    residual_path = _s3_uri_to_path(handle.uri)
+                elif _is_azure_uri(handle.uri) and residual_fs:
+                    residual_path = _azure_uri_to_path(handle.uri)
+                else:
+                    residual_path = handle.uri
                 pf = pq.ParquetFile(residual_path, filesystem=residual_fs)
 
                 pa_cols = cols if cols else None

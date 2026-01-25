@@ -238,21 +238,25 @@ class DuckDBBackend:
                 if opts.get("azure_account_key"):
                     kwargs["account_key"] = opts["azure_account_key"]
                 if opts.get("azure_sas_token"):
-                    # PyArrow expects SAS token as 'sas_token' credential
+                    # PyArrow requires SAS token WITH the leading '?'
                     sas = opts["azure_sas_token"]
-                    if sas.startswith("?"):
-                        sas = sas[1:]
+                    if not sas.startswith("?"):
+                        sas = "?" + sas
                     kwargs["sas_token"] = sas
 
                 try:
                     fs = pafs.AzureFileSystem(**kwargs)
-                    # Strip scheme prefix for PyArrow
-                    if uri.lower().startswith("abfss://"):
-                        uri = uri[8:]
-                    elif uri.lower().startswith("abfs://"):
-                        uri = uri[7:]
-                    elif uri.lower().startswith("az://"):
-                        uri = uri[5:]
+                    # Parse Azure URI to get container/path for PyArrow
+                    # Format: abfss://container@account.dfs.core.windows.net/path
+                    from urllib.parse import urlparse
+                    parsed = urlparse(uri)
+                    # netloc is "container@account.dfs.core.windows.net"
+                    if "@" in parsed.netloc:
+                        container = parsed.netloc.split("@", 1)[0]
+                    else:
+                        container = parsed.netloc.split(".")[0]
+                    path_part = parsed.path.lstrip("/")
+                    uri = f"{container}/{path_part}"
                 except Exception:
                     # Azure filesystem not available or credentials invalid
                     # Fall back to DuckDB-based profiling
