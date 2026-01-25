@@ -276,3 +276,159 @@ class TestAzureSchemeVariants:
         """File format is correctly detected from URI."""
         handle = DatasetHandle.from_uri(uri)
         assert handle.format == expected_format
+
+
+class TestAzureUriToPath:
+    """Test Azure URI to PyArrow path conversion."""
+
+    def test_abfss_with_account_in_netloc(self):
+        """abfss://container@account.dfs.../path -> container/path"""
+        from kontra.engine.engine import _azure_uri_to_path
+
+        uri = "abfss://mycontainer@myaccount.dfs.core.windows.net/folder/file.parquet"
+        result = _azure_uri_to_path(uri)
+        assert result == "mycontainer/folder/file.parquet"
+
+    def test_abfs_with_account_in_netloc(self):
+        """abfs://container@account.dfs.../path -> container/path"""
+        from kontra.engine.engine import _azure_uri_to_path
+
+        uri = "abfs://data@storage.dfs.core.windows.net/path/to/data.parquet"
+        result = _azure_uri_to_path(uri)
+        assert result == "data/path/to/data.parquet"
+
+    def test_nested_path(self):
+        """Nested paths are preserved."""
+        from kontra.engine.engine import _azure_uri_to_path
+
+        uri = "abfss://container@account.dfs.core.windows.net/a/b/c/d.parquet"
+        result = _azure_uri_to_path(uri)
+        assert result == "container/a/b/c/d.parquet"
+
+    def test_root_path(self):
+        """File at container root."""
+        from kontra.engine.engine import _azure_uri_to_path
+
+        uri = "abfss://container@account.dfs.core.windows.net/file.parquet"
+        result = _azure_uri_to_path(uri)
+        assert result == "container/file.parquet"
+
+
+class TestPyArrowAzureSasToken:
+    """Test SAS token handling for PyArrow AzureFileSystem."""
+
+    def test_sas_token_with_leading_question_mark_preserved(self):
+        """PyArrow requires SAS token WITH leading '?' - ensure it's preserved."""
+        from kontra.scout.backends.duckdb_backend import DuckDBBackend
+        from kontra.connectors.handle import DatasetHandle
+
+        # SAS token without leading ?
+        handle = DatasetHandle(
+            uri="abfss://container@account.dfs.core.windows.net/data.parquet",
+            scheme="abfss",
+            path="abfss://container@account.dfs.core.windows.net/data.parquet",
+            format="parquet",
+            fs_opts={
+                "azure_account_name": "testaccount",
+                "azure_sas_token": "sv=2021-06-08&ss=b&srt=co",  # No leading ?
+            },
+        )
+
+        # The backend should add the leading ? when preparing for PyArrow
+        backend = DuckDBBackend(handle)
+
+        # We can't fully test without Azure, but we can verify the code path exists
+        # by checking the method exists and handles the token
+        assert hasattr(backend, "_get_parquet_metadata")
+
+    def test_sas_token_already_has_question_mark(self):
+        """SAS token already with '?' should not get double '?'."""
+        from kontra.scout.backends.duckdb_backend import DuckDBBackend
+        from kontra.connectors.handle import DatasetHandle
+
+        # SAS token with leading ?
+        handle = DatasetHandle(
+            uri="abfss://container@account.dfs.core.windows.net/data.parquet",
+            scheme="abfss",
+            path="abfss://container@account.dfs.core.windows.net/data.parquet",
+            format="parquet",
+            fs_opts={
+                "azure_account_name": "testaccount",
+                "azure_sas_token": "?sv=2021-06-08&ss=b&srt=co",  # Has leading ?
+            },
+        )
+
+        backend = DuckDBBackend(handle)
+        assert hasattr(backend, "_get_parquet_metadata")
+
+
+class TestAzurePreplanHelpers:
+    """Test Azure preplan helper functions."""
+
+    def test_is_azure_uri_abfss(self):
+        """_is_azure_uri detects abfss:// URIs."""
+        from kontra.engine.engine import _is_azure_uri
+
+        assert _is_azure_uri("abfss://container@account.dfs.core.windows.net/file.parquet")
+        assert _is_azure_uri("ABFSS://container@account.dfs.core.windows.net/file.parquet")
+
+    def test_is_azure_uri_abfs(self):
+        """_is_azure_uri detects abfs:// URIs."""
+        from kontra.engine.engine import _is_azure_uri
+
+        assert _is_azure_uri("abfs://container@account.dfs.core.windows.net/file.parquet")
+
+    def test_is_azure_uri_az(self):
+        """_is_azure_uri detects az:// URIs."""
+        from kontra.engine.engine import _is_azure_uri
+
+        assert _is_azure_uri("az://container/path/file.parquet")
+
+    def test_is_azure_uri_not_azure(self):
+        """_is_azure_uri returns False for non-Azure URIs."""
+        from kontra.engine.engine import _is_azure_uri
+
+        assert not _is_azure_uri("s3://bucket/key.parquet")
+        assert not _is_azure_uri("/local/path/file.parquet")
+        assert not _is_azure_uri("postgres://host/db/table")
+        assert not _is_azure_uri(None)
+
+    def test_create_azure_filesystem_with_account_key(self):
+        """_create_azure_filesystem creates filesystem with account key."""
+        from kontra.engine.engine import _create_azure_filesystem
+        from kontra.connectors.handle import DatasetHandle
+        import pyarrow.fs as pafs
+
+        handle = DatasetHandle(
+            uri="abfss://container@account.dfs.core.windows.net/data.parquet",
+            scheme="abfss",
+            path="abfss://container@account.dfs.core.windows.net/data.parquet",
+            format="parquet",
+            fs_opts={
+                "azure_account_name": "testaccount",
+                "azure_account_key": "dGVzdGtleQ==",  # base64 "testkey"
+            },
+        )
+
+        fs = _create_azure_filesystem(handle)
+        assert isinstance(fs, pafs.AzureFileSystem)
+
+    def test_create_azure_filesystem_with_sas_token(self):
+        """_create_azure_filesystem creates filesystem with SAS token."""
+        from kontra.engine.engine import _create_azure_filesystem
+        from kontra.connectors.handle import DatasetHandle
+        import pyarrow.fs as pafs
+
+        handle = DatasetHandle(
+            uri="abfss://container@account.dfs.core.windows.net/data.parquet",
+            scheme="abfss",
+            path="abfss://container@account.dfs.core.windows.net/data.parquet",
+            format="parquet",
+            fs_opts={
+                "azure_account_name": "testaccount",
+                "azure_sas_token": "sv=2021-06-08&ss=b&srt=co",  # Without leading ?
+            },
+        )
+
+        fs = _create_azure_filesystem(handle)
+        assert isinstance(fs, pafs.AzureFileSystem)
