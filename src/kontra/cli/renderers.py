@@ -228,10 +228,12 @@ def render_diff_rich(diff) -> str:
 
 def render_profile_diff_rich(diff) -> str:
     """Render profile diff in human-readable format."""
+    from kontra.connectors.handle import mask_credentials
+
     lines = []
 
     # Header
-    lines.append(f"Profile Diff: {diff.after.source_uri}")
+    lines.append(f"Profile Diff: {mask_credentials(diff.after.source_uri)}")
     lines.append(
         f"Comparing: {diff.before.profiled_at[:16]} → {diff.after.profiled_at[:16]}"
     )

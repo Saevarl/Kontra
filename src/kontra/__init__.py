@@ -290,6 +290,7 @@ def validate(
                             id=r.get("id"),
                             params=r.get("params", {}),
                             severity=r.get("severity", "blocking"),
+                            context=r.get("context", {}),
                         )
                         all_rule_specs.append(spec)
                     else:
@@ -427,9 +428,17 @@ def validate(
     try:
         raw_result = engine.run()
     except OSError as e:
-        # Catch internal errors about unsupported formats and wrap in user-friendly error
+        # Catch internal errors about data sources and wrap in user-friendly error
         error_str = str(e)
-        if "Unsupported format" in error_str or "PolarsConnectorMaterializer" in error_str:
+        data_errors = [
+            "Unsupported format",
+            "PolarsConnectorMaterializer",
+            "Data file not found",
+            "Unsupported data source URI",
+            "Unsupported file format",
+            "No data path specified",
+        ]
+        if any(err in error_str for err in data_errors):
             # Extract the problematic value from the error
             if isinstance(data, str):
                 raise InvalidDataError(

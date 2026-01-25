@@ -31,7 +31,43 @@ the engine or materializers.
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 import os
+import re
 from urllib.parse import urlparse
+
+
+def mask_credentials(uri: str) -> str:
+    """
+    Mask credentials in a URI for safe display in logs/output.
+
+    Handles patterns like:
+    - postgres://user:password@host/db -> postgres://user:***@host/db
+    - mssql://sa:Secret123!@host/db -> mssql://sa:***@host/db
+    - Any URI with ://user:password@ pattern (including @ in password)
+
+    Args:
+        uri: URI that may contain credentials
+
+    Returns:
+        URI with password masked as '***'
+    """
+    if not uri or "://" not in uri:
+        return uri
+
+    # Use urlparse for robust handling of credentials
+    try:
+        parsed = urlparse(uri)
+        if parsed.password:
+            # Reconstruct with masked password
+            # netloc format: user:password@host:port
+            if parsed.port:
+                new_netloc = f"{parsed.username}:***@{parsed.hostname}:{parsed.port}"
+            else:
+                new_netloc = f"{parsed.username}:***@{parsed.hostname}"
+            return uri.replace(parsed.netloc, new_netloc)
+    except Exception:
+        pass
+
+    return uri
 
 
 @dataclass(frozen=True)

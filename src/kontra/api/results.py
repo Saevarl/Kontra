@@ -530,8 +530,11 @@ class ValidationResult:
         return self._data
 
     def __repr__(self) -> str:
+        from kontra.connectors.handle import mask_credentials
+
         status = "PASSED" if self.passed else "FAILED"
-        parts = [f"ValidationResult({self.dataset}) {status}"]
+        safe_dataset = mask_credentials(self.dataset) if self.dataset else self.dataset
+        parts = [f"ValidationResult({safe_dataset}) {status}"]
         parts.append(f"  Total: {self.total_rules} rules | Passed: {self.passed_count} | Failed: {self.failed_count}")
         if self.warning_count > 0:
             parts.append(f"  Warnings: {self.warning_count}")
@@ -552,6 +555,11 @@ class ValidationResult:
     def warnings(self) -> List[RuleResult]:
         """Get all failed warning rules."""
         return [r for r in self.rules if not r.passed and r.severity == "warning"]
+
+    @property
+    def info_failures(self) -> List[RuleResult]:
+        """Get all failed info rules."""
+        return [r for r in self.rules if not r.passed and r.severity == "info"]
 
     @property
     def quality_score(self) -> Optional[float]:
@@ -1158,12 +1166,16 @@ class ValidationResult:
             WARNING: COL:age:range (3 out of bounds)
             PASSED: 15 rules
         """
+        from kontra.connectors.handle import mask_credentials
+
         lines = []
 
         status = "PASSED" if self.passed else "FAILED"
         rows_str = f" ({self.total_rows:,} rows)" if self.total_rows > 0 else ""
         score_str = f" [score={self.quality_score:.2f}]" if self.quality_score is not None else ""
-        lines.append(f"VALIDATION: {self.dataset} {status}{rows_str}{score_str}")
+        # Mask credentials in dataset URI for safe display
+        safe_dataset = mask_credentials(self.dataset) if self.dataset else self.dataset
+        lines.append(f"VALIDATION: {safe_dataset} {status}{rows_str}{score_str}")
 
         # Blocking failures
         blocking = self.blocking_failures
@@ -1187,6 +1199,18 @@ class ValidationResult:
             line = "WARNING: " + ", ".join(parts)
             if len(warnings) > 5:
                 line += f" ... +{len(warnings) - 5} more"
+            lines.append(line)
+
+        # Info failures
+        info = self.info_failures
+        if info:
+            parts = []
+            for r in info[:5]:
+                count = f"({r.failed_count:,})" if r.failed_count > 0 else ""
+                parts.append(f"{r.rule_id} {count}".strip())
+            line = "INFO: " + ", ".join(parts)
+            if len(info) > 5:
+                line += f" ... +{len(info) - 5} more"
             lines.append(line)
 
         # Passed summary
@@ -2064,6 +2088,48 @@ class Suggestions:
     def to_json(self, indent: Optional[int] = None) -> str:
         """Convert to JSON string."""
         return json.dumps(self.to_dict(), indent=indent, default=str)
+
+    def to_llm(self) -> str:
+        """
+        Token-optimized format for LLM context.
+
+        Example output:
+            SUGGESTIONS: my_data.parquet (5 rules)
+            HIGH (0.9+): not_null(id), unique(id)
+            MEDIUM (0.7-0.9): range(amount), allowed_values(status)
+            LOW (<0.7): regex(email)
+        """
+        lines = []
+
+        lines.append(f"SUGGESTIONS: {self.source} ({len(self._rules)} rules)")
+
+        # Group by confidence level
+        high = [r for r in self._rules if r.confidence >= 0.9]
+        medium = [r for r in self._rules if 0.7 <= r.confidence < 0.9]
+        low = [r for r in self._rules if r.confidence < 0.7]
+
+        if high:
+            parts = [f"{r.name}({r.params.get('column', '')})" for r in high[:5]]
+            line = "HIGH (0.9+): " + ", ".join(parts)
+            if len(high) > 5:
+                line += f" +{len(high) - 5} more"
+            lines.append(line)
+
+        if medium:
+            parts = [f"{r.name}({r.params.get('column', '')})" for r in medium[:5]]
+            line = "MEDIUM (0.7-0.9): " + ", ".join(parts)
+            if len(medium) > 5:
+                line += f" +{len(medium) - 5} more"
+            lines.append(line)
+
+        if low:
+            parts = [f"{r.name}({r.params.get('column', '')})" for r in low[:3]]
+            line = "LOW (<0.7): " + ", ".join(parts)
+            if len(low) > 3:
+                line += f" +{len(low) - 3} more"
+            lines.append(line)
+
+        return "\n".join(lines)
 
     def to_yaml(self, contract_name: str = "suggested_contract") -> str:
         """

@@ -14,11 +14,16 @@ class MaxRowsRule(BaseRule):
         h = int(df.height)
         passed = h <= max_count
 
+        if passed:
+            message = f"Dataset has {h:,} rows (max allowed: {max_count:,})"
+        else:
+            message = f"Dataset has {h:,} rows, exceeds max {max_count:,}"
+
         result: Dict[str, Any] = {
             "rule_id": self.rule_id,
             "passed": passed,
             "failed_count": 0 if passed else (h - max_count),
-            "message": f"Dataset has {h} rows, exceeds max {max_count}",
+            "message": message,
         }
 
         if not passed:

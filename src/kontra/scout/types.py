@@ -153,6 +153,7 @@ class DatasetProfile:
     source_format: str  # "parquet", "csv"
     profiled_at: str  # ISO timestamp
     engine_version: str
+    preset: str = "scan"  # "scout", "scan", "interrogate"
 
     # Dataset-level stats
     row_count: int = 0
@@ -169,6 +170,24 @@ class DatasetProfile:
     # Timing
     profile_duration_ms: int = 0
 
+    def __repr__(self) -> str:
+        """Human-readable representation for notebooks/REPL."""
+        from kontra.connectors.handle import mask_credentials
+
+        lines = [f"DatasetProfile({mask_credentials(self.source_uri)})"]
+        lines.append(f"  Preset: {self.preset}")
+        lines.append(f"  Rows: {self.row_count:,} | Columns: {self.column_count}")
+        if self.sampled:
+            lines.append(f"  Sampled: {self.sample_size:,} rows")
+        lines.append(f"  Duration: {self.profile_duration_ms}ms")
+        lines.append(f"  Columns:")
+        for col in self.columns[:10]:
+            null_info = f", nulls={col.null_count}" if col.null_count > 0 else ""
+            lines.append(f"    - {col.name} ({col.dtype}){null_info}")
+        if len(self.columns) > 10:
+            lines.append(f"    ... and {len(self.columns) - 10} more columns")
+        return "\n".join(lines)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -177,6 +196,7 @@ class DatasetProfile:
             "source_format": self.source_format,
             "profiled_at": self.profiled_at,
             "engine_version": self.engine_version,
+            "preset": self.preset,
             "dataset": {
                 "row_count": self.row_count,
                 "column_count": self.column_count,
@@ -197,8 +217,10 @@ class DatasetProfile:
 
     def to_llm(self) -> str:
         """Token-optimized format for LLM context."""
+        from kontra.connectors.handle import mask_credentials
+
         lines = []
-        lines.append(f"PROFILE: {self.source_uri}")
+        lines.append(f"PROFILE: {mask_credentials(self.source_uri)}")
         lines.append(f"rows={self.row_count:,} cols={self.column_count}")
         if self.sampled:
             lines.append(f"(sampled: {self.sample_size:,} rows)")
@@ -299,6 +321,7 @@ class DatasetProfile:
             source_format=d.get("source_format", ""),
             profiled_at=d.get("profiled_at", ""),
             engine_version=d.get("engine_version", ""),
+            preset=d.get("preset", "scan"),
             row_count=ds.get("row_count", 0),
             column_count=ds.get("column_count", 0),
             estimated_size_bytes=ds.get("estimated_size_bytes"),
@@ -592,10 +615,12 @@ class ProfileDiff:
 
     def to_llm(self) -> str:
         """Render diff in token-optimized format for LLM context."""
+        from kontra.connectors.handle import mask_credentials
+
         lines = []
 
         # Header
-        lines.append(f"# Profile Diff: {self.after.source_uri}")
+        lines.append(f"# Profile Diff: {mask_credentials(self.after.source_uri)}")
         lines.append(f"comparing: {self.before.profiled_at[:10]} → {self.after.profiled_at[:10]}")
 
         # Row count

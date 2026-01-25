@@ -225,6 +225,7 @@ class ScoutProfiler:
             raise ValueError(
                 f"Invalid preset '{preset}'. Valid presets: {', '.join(valid_presets)}"
             )
+        self.preset_name = preset  # Store for output
         preset_config = PRESETS[preset]
         self.list_values_threshold = (
             list_values_threshold
@@ -291,6 +292,7 @@ class ScoutProfiler:
                 source_format=self.backend.source_format,
                 profiled_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 engine_version=VERSION,
+                preset=self.preset_name,
                 row_count=row_count,
                 column_count=len(column_profiles),
                 estimated_size_bytes=estimated_size,
@@ -377,9 +379,16 @@ class ScoutProfiler:
             col_meta = metadata.get(col_name, {})
 
             null_count = col_meta.get("null_count", 0)
-            distinct_count = col_meta.get("distinct_count", 0)
-
             non_null_count = row_count - null_count
+
+            # Handle distinct_count estimates:
+            # - Parquet upper-bound estimates (is_upper_bound=True) are unreliable
+            # - pg_stats estimates are reliable even if they equal non_null_count
+            distinct_count = col_meta.get("distinct_count", 0)
+            if col_meta.get("is_upper_bound", False):
+                # Discard unreliable upper-bound estimates (e.g., Parquet without stats)
+                distinct_count = 0
+
             null_rate = null_count / row_count if row_count > 0 else 0.0
             uniqueness_ratio = (
                 distinct_count / non_null_count if non_null_count > 0 else 0.0
@@ -394,7 +403,8 @@ class ScoutProfiler:
                 null_rate=null_rate,
                 distinct_count=distinct_count,
                 uniqueness_ratio=uniqueness_ratio,
-                is_low_cardinality=distinct_count <= self.list_values_threshold,
+                # Only classify as low cardinality if we have meaningful distinct count
+                is_low_cardinality=distinct_count > 0 and distinct_count <= self.list_values_threshold,
             )
 
             # Use most_common_vals from pg_stats for low-cardinality columns
@@ -615,12 +625,20 @@ class ScoutProfiler:
                     f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {finite_col}) AS {esc(f'__median__{col}')}",
                     f"STDDEV({finite_col}) AS {esc(f'__std__{col}')}",
                 ])
+                # Additional percentiles for DuckDB: expensive, only in interrogate preset
+                if self.include_percentiles:
+                    for p in self.percentiles:
+                        if p != 50:  # 50th is already the median
+                            exprs.append(
+                                f"PERCENTILE_CONT({p / 100}) WITHIN GROUP (ORDER BY {finite_col}) "
+                                f"AS {esc(f'__p{p}__{col}')}"
+                            )
             else:
                 exprs.extend([
                     f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {c}) AS {esc(f'__median__{col}')}",
                     f"STDDEV({c}) AS {esc(f'__std__{col}')}",
                 ])
-                # Additional percentiles: expensive, only in deep preset
+                # Additional percentiles: expensive, only in interrogate preset
                 if self.include_percentiles:
                     for p in self.percentiles:
                         if p != 50:  # 50th is already the median

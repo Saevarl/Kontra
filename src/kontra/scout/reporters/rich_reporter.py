@@ -38,8 +38,11 @@ def print_rich(profile: DatasetProfile) -> None:
 
 def _print_to_console(console: Console, profile: DatasetProfile) -> None:
     """Internal: render profile to a console instance."""
-    # Header
-    title = f"[bold cyan]Kontra Scout[/bold cyan] - {profile.source_uri}"
+    from kontra.connectors.handle import mask_credentials
+
+    # Header - use preset name in title
+    preset_title = profile.preset.title() if profile.preset else "Scout"
+    title = f"[bold cyan]Kontra {preset_title}[/bold cyan] - {mask_credentials(profile.source_uri)}"
     size_str = ""
     if profile.estimated_size_bytes:
         size_mb = profile.estimated_size_bytes / (1024 * 1024)

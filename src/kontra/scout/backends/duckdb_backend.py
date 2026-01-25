@@ -358,6 +358,7 @@ class DuckDBBackend:
                 "distinct_count": distinct_count,
                 "has_statistics": has_stats,
                 "is_estimate": True,  # Flag that distinct_count is estimated
+                "is_upper_bound": True,  # Parquet doesn't track distinct, this is always upper bound
             }
 
         return result

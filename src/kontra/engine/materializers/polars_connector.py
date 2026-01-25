@@ -114,7 +114,22 @@ class PolarsConnectorMaterializer(BaseMaterializer):
             # Add CSV options here if your data requires (delimiter, nulls, dtypes).
             lf = pl.scan_csv(uri)
         else:
-            raise IOError(f"Unsupported format for PolarsConnectorMaterializer: {uri}")
+            # Provide helpful error message based on URI
+            if uri == "inline" or not uri:
+                raise IOError(
+                    f"No data path specified. Either:\n"
+                    f"  1. Add 'data: path/to/file.parquet' to your contract YAML\n"
+                    f"  2. Use --data to specify the data path: kontra validate contract.yml --data path/to/file.parquet"
+                )
+            elif "://" in uri:
+                raise IOError(f"Unsupported data source URI: {uri}")
+            else:
+                # Assume it's a file path - check if it exists
+                from pathlib import Path
+                if not Path(uri).exists():
+                    raise IOError(f"Data file not found: '{uri}'. Check that the path is correct.")
+                else:
+                    raise IOError(f"Unsupported file format: '{uri}'. Kontra supports .parquet and .csv files.")
 
         if columns:
             lf = lf.select([pl.col(c) for c in columns])

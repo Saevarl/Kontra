@@ -103,6 +103,27 @@ def _resolve_datasource_uri(reference: str) -> str:
         return reference
 
 
+def _get_display_name(contract: Optional["Contract"]) -> str:
+    """
+    Get display name for validation output.
+
+    Prefers contract name over datasource for clearer user-facing output.
+    Falls back to datasource if no name is set.
+
+    Args:
+        contract: Contract object (may be None for inline rules)
+
+    Returns:
+        Display name (contract name, datasource, or "dataframe")
+    """
+    if contract is None:
+        return "dataframe"
+    # Prefer contract.name if set, otherwise use datasource
+    if contract.name:
+        return contract.name
+    return contract.datasource
+
+
 def _is_s3_uri(val: str | None) -> bool:
     return isinstance(val, str) and val.lower().startswith("s3://")
 
@@ -534,7 +555,7 @@ class ValidationEngine:
 
         # Summary (use the plan's summary method for consistency)
         summary = plan.summary(all_results)
-        summary["dataset_name"] = self.contract.datasource if self.contract else "dataframe"
+        summary["dataset_name"] = _get_display_name(self.contract)
         summary["total_rows"] = int(self.df.height) if self.df is not None else 0
         engine_label = "polars (dataframe mode)"
 
@@ -610,6 +631,7 @@ class ValidationEngine:
                         id=rule.get("id"),
                         params=rule.get("params", {}),
                         severity=rule.get("severity", "blocking"),
+                        context=rule.get("context", {}),
                     )
                     inline_specs.append(spec)
                 else:
@@ -1044,7 +1066,7 @@ class ValidationEngine:
 
         # 8) Summary
         summary = plan.summary(results)
-        summary["dataset_name"] = self.contract.datasource
+        summary["dataset_name"] = _get_display_name(self.contract)
         # Row count priority: SQL executor > DataFrame > preplan metadata > 0
         if sql_row_count is not None:
             summary["total_rows"] = int(sql_row_count)
