@@ -211,6 +211,30 @@ kontra profile data_lake.events
 
 Resolves to: `s3://my-bucket/warehouse/events.parquet`
 
+### Azure ADLS Gen2
+
+```yaml
+datasources:
+  azure_lake:
+    type: azure
+    account: myaccount
+    container: mycontainer
+    prefix: data/
+    tables:
+      users: users.parquet
+```
+
+Usage:
+```bash
+kontra profile azure_lake.users
+```
+
+Resolves to: `abfss://mycontainer@myaccount.dfs.core.windows.net/data/users.parquet`
+
+Requires environment variables:
+- `AZURE_STORAGE_ACCOUNT_NAME` - Storage account name
+- `AZURE_STORAGE_ACCESS_KEY` or `AZURE_STORAGE_SAS_TOKEN` - Authentication
+
 ## Environments
 
 Define named profiles for different contexts:

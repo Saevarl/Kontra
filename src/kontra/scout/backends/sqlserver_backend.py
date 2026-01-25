@@ -316,8 +316,32 @@ class SqlServerBackend:
             # dm_db_stats_histogram might not be available (requires SQL Server 2016 SP1 CU2+)
             pass
 
-        # For null counts, use a sampled query (SQL Server doesn't store null stats)
-        # Use TABLESAMPLE for efficiency
+        # Fallback: For columns without stats, query COUNT(DISTINCT) directly
+        # This handles columns without indexes/statistics
+        cols_without_stats = [
+            col_name for col_name, _ in schema
+            if stats_info.get(col_name, {}).get("distinct_count", 0) == 0
+        ]
+        if cols_without_stats:
+            try:
+                # Batch COUNT(DISTINCT) for all columns without stats
+                distinct_exprs = [
+                    f"COUNT(DISTINCT {self.esc_ident(col)}) AS [{col}_distinct]"
+                    for col in cols_without_stats
+                ]
+                table = self._qualified_table()
+                sql = f"SELECT {', '.join(distinct_exprs)} FROM {table}"
+                cursor.execute(sql)
+                row = cursor.fetchone()
+                if row:
+                    for i, col_name in enumerate(cols_without_stats):
+                        stats_info[col_name]["distinct_count"] = int(row[i] or 0)
+                        stats_info[col_name]["is_estimate"] = False
+            except Exception:
+                pass
+
+        # For null counts, SQL Server doesn't store null statistics in metadata
+        # For small tables, just do full count; for large tables, use sampling
         try:
             null_exprs = []
             for col_name, _ in schema:
@@ -327,38 +351,33 @@ class SqlServerBackend:
                 )
 
             table = self._qualified_table()
-            # Sample 1% for null estimation
-            sql = f"""
-                SELECT {', '.join(null_exprs)}
-                FROM {table}
-                TABLESAMPLE (1 PERCENT)
-            """
-            cursor.execute(sql)
-            row = cursor.fetchone()
 
-            if row:
-                for i, (col_name, _) in enumerate(schema):
-                    sample_nulls = row[i] or 0
-                    # Extrapolate to full table (rough estimate)
-                    stats_info[col_name]["null_count"] = int(sample_nulls * 100)
-        except Exception:
-            # TABLESAMPLE might fail on small tables, fall back to full count
-            try:
-                null_exprs = []
-                for col_name, _ in schema:
-                    c = self.esc_ident(col_name)
-                    null_exprs.append(
-                        f"SUM(CASE WHEN {c} IS NULL THEN 1 ELSE 0 END) AS [{col_name}_nulls]"
-                    )
-                sql = f"SELECT {', '.join(null_exprs)} FROM {self._qualified_table()}"
+            # For small tables (< 100K rows), full count is fast enough
+            if row_count < 100000:
+                sql = f"SELECT {', '.join(null_exprs)} FROM {table}"
                 cursor.execute(sql)
                 row = cursor.fetchone()
                 if row:
                     for i, (col_name, _) in enumerate(schema):
                         stats_info[col_name]["null_count"] = int(row[i] or 0)
                         stats_info[col_name]["is_estimate"] = False
-            except Exception:
-                pass
+            else:
+                # For large tables, use 1% sample and extrapolate
+                sql = f"""
+                    SELECT {', '.join(null_exprs)}
+                    FROM {table}
+                    TABLESAMPLE (1 PERCENT)
+                """
+                cursor.execute(sql)
+                row = cursor.fetchone()
+                if row:
+                    for i, (col_name, _) in enumerate(schema):
+                        sample_nulls = row[i] or 0
+                        stats_info[col_name]["null_count"] = int(sample_nulls * 100)
+                        stats_info[col_name]["is_estimate"] = True
+        except Exception:
+            # Fallback if anything fails
+            pass
 
         return stats_info
 

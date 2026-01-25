@@ -254,8 +254,8 @@ def _inject_azure_env(opts: Dict[str, str]) -> None:
     if account_name:
         opts["azure_account_name"] = account_name
 
-    # Account key auth
-    account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+    # Account key auth (accept both common env var names)
+    account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY") or os.getenv("AZURE_STORAGE_ACCESS_KEY")
     if account_key:
         opts["azure_account_key"] = account_key
 

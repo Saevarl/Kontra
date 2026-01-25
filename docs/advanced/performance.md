@@ -45,6 +45,7 @@ result = kontra.validate(df, rules=[...], preplan="off")
 | Local Parquet | DuckDB |
 | Local CSV | DuckDB |
 | S3 Parquet | DuckDB |
+| Azure ADLS (`abfss://`) | DuckDB |
 | `postgres://` | PostgreSQL |
 | `mssql://` | SQL Server |
 

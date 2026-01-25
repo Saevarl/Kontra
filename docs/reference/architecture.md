@@ -111,6 +111,7 @@ FROM schema.table;
 |-------------|------------|
 | Local Parquet/CSV | DuckDB |
 | S3 Parquet | DuckDB |
+| Azure ADLS (`abfss://`) | DuckDB |
 | `postgres://` URI | PostgreSQL |
 | `mssql://` URI | SQL Server |
 
@@ -288,6 +289,7 @@ Kontra makes explicit what it does and does not guarantee:
 |--------|------------|-------|
 | Parquet | DuckDB (built-in) | Always available |
 | CSV | DuckDB (built-in) | Always available |
+| Azure ADLS | DuckDB (built-in) | Uses DuckDB's azure extension |
 | PostgreSQL | `kontra[postgres]` | Requires psycopg |
 | SQL Server | `kontra[sqlserver]` | Requires pymssql |
 | S3 | `kontra[s3]` | Requires s3fs |
@@ -405,6 +407,9 @@ Output includes:
 | `PGHOST`, `PGPORT`, etc. | PostgreSQL connection |
 | `AWS_ACCESS_KEY_ID` | S3 credentials |
 | `AWS_ENDPOINT_URL` | MinIO/custom S3 endpoint |
+| `AZURE_STORAGE_ACCOUNT_NAME` | Azure storage account |
+| `AZURE_STORAGE_ACCESS_KEY` | Azure account key |
+| `AZURE_STORAGE_SAS_TOKEN` | Azure SAS token (alternative) |
 
 ## Tests
 

@@ -164,7 +164,7 @@ def _configure_azure(
     Configure the Azure extension for ADLS Gen2 (abfs://, abfss://) and Azure Blob (az://).
 
     DuckDB 0.10+ has native Azure support via the 'azure' extension.
-    This handles authentication and endpoint configuration.
+    This handles authentication via DuckDB's secret manager.
 
     Expected fs_opts keys:
     - azure_account_name: Storage account name
@@ -189,39 +189,71 @@ def _configure_azure(
             f"Error: {e}"
         ) from e
 
-    # Account name (required for key/SAS auth)
-    if account_name := fs_opts.get("azure_account_name"):
-        _safe_set(con, "azure_storage_account_name", account_name)
+    account_name = fs_opts.get("azure_account_name")
+    account_key = fs_opts.get("azure_account_key")
+    sas_token = fs_opts.get("azure_sas_token")
+    conn_string = fs_opts.get("azure_connection_string")
+    tenant_id = fs_opts.get("azure_tenant_id")
+    client_id = fs_opts.get("azure_client_id")
+    client_secret = fs_opts.get("azure_client_secret")
+    endpoint = fs_opts.get("azure_endpoint")
 
-    # Account key auth
-    if account_key := fs_opts.get("azure_account_key"):
-        _safe_set(con, "azure_account_key", account_key)
-
-    # SAS token auth (alternative to account key)
-    # Note: DuckDB expects the token without leading '?'
-    if sas_token := fs_opts.get("azure_sas_token"):
-        # Strip leading '?' if present
+    # Build connection string for DuckDB secret
+    # Priority: explicit connection_string > account_key > sas_token > service_principal
+    if conn_string:
+        # User provided full connection string
+        _create_azure_secret(con, conn_string)
+    elif account_name and account_key:
+        # Account key auth
+        cs = f"DefaultEndpointsProtocol=https;AccountName={account_name};AccountKey={account_key}"
+        if endpoint:
+            cs += f";BlobEndpoint={endpoint}"
+        _create_azure_secret(con, cs)
+    elif account_name and sas_token:
+        # SAS token auth - strip leading '?' if present
         if sas_token.startswith("?"):
             sas_token = sas_token[1:]
-        _safe_set(con, "azure_sas_token", sas_token)
+        cs = f"DefaultEndpointsProtocol=https;AccountName={account_name};SharedAccessSignature={sas_token}"
+        if endpoint:
+            cs += f";BlobEndpoint={endpoint}"
+        _create_azure_secret(con, cs)
+    elif tenant_id and client_id and client_secret:
+        # Service principal auth - use credential chain
+        _safe_set(con, "azure_account_name", account_name or "")
+        # Set up credential chain for service principal
+        con.execute(f"""
+            CREATE SECRET azure_sp (
+                TYPE AZURE,
+                PROVIDER CREDENTIAL_CHAIN,
+                ACCOUNT_NAME '{account_name or ""}'
+            )
+        """)
+        # Set the environment variables for the credential chain to pick up
+        os.environ.setdefault("AZURE_TENANT_ID", tenant_id)
+        os.environ.setdefault("AZURE_CLIENT_ID", client_id)
+        os.environ.setdefault("AZURE_CLIENT_SECRET", client_secret)
+    elif account_name:
+        # Just account name - try credential chain (CLI, managed identity, etc.)
+        _safe_set(con, "azure_account_name", account_name)
 
-    # Connection string auth
-    if conn_string := fs_opts.get("azure_connection_string"):
-        _safe_set(con, "azure_storage_connection_string", conn_string)
-
-    # OAuth / Service Principal auth
-    if tenant_id := fs_opts.get("azure_tenant_id"):
-        _safe_set(con, "azure_tenant_id", tenant_id)
-    if client_id := fs_opts.get("azure_client_id"):
-        _safe_set(con, "azure_client_id", client_id)
-    if client_secret := fs_opts.get("azure_client_secret"):
-        _safe_set(con, "azure_client_secret", client_secret)
-
-    # Custom endpoint (for Databricks, sovereign clouds, Azurite emulator)
-    if endpoint := fs_opts.get("azure_endpoint"):
+    # Custom endpoint for Azurite/sovereign clouds
+    if endpoint and not conn_string and not (account_name and (account_key or sas_token)):
         _safe_set(con, "azure_endpoint", endpoint)
 
     # Performance settings (same as S3)
     _safe_set(con, "http_timeout", "600")  # 10 minutes for large files
     _safe_set(con, "http_retries", "5")
     _safe_set(con, "http_retry_wait_ms", "2000")
+
+
+def _create_azure_secret(con: duckdb.DuckDBPyConnection, connection_string: str) -> None:
+    """Create a DuckDB secret for Azure authentication."""
+    # Escape single quotes in connection string
+    escaped_cs = connection_string.replace("'", "''")
+    con.execute(f"""
+        CREATE SECRET kontra_azure (
+            TYPE AZURE,
+            PROVIDER CONFIG,
+            CONNECTION_STRING '{escaped_cs}'
+        )
+    """)

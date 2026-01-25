@@ -2,7 +2,7 @@
 
 **Data quality validation for developers.**
 
-Kontra validates datasets against declarative contracts. Define rules in YAML, run them against Parquet, CSV, PostgreSQL, or SQL Server. Get violation counts back.
+Kontra validates datasets against declarative contracts. Define rules in YAML, run them against Parquet, CSV, PostgreSQL, SQL Server, S3, or Azure. Get violation counts back.
 
 ```bash
 pip install kontra
@@ -54,7 +54,7 @@ rules:
 
 - **18 built-in rules**: not_null, unique, range, regex, contains, length, freshness, and more
 - **Fast execution**: Metadata analysis and SQL pushdown before loading data
-- **Multiple sources**: Parquet, CSV, PostgreSQL, SQL Server, S3
+- **Multiple sources**: Parquet, CSV, PostgreSQL, SQL Server, S3, Azure ADLS
 - **Python API**: Use as a library with `kontra.validate(df, rules=[...])`
 - **State tracking**: Compare runs over time with `kontra diff`
 

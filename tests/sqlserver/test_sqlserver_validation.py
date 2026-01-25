@@ -284,7 +284,8 @@ class TestSqlServerRegexFallback:
         import kontra
         from kontra import rules
 
-        # username column has no nulls - test that regex matching works
+        # username column has user_N and dup_user_N patterns
+        # Test that regex matching works and correctly identifies non-matches
         result = kontra.validate(
             sqlserver_uri,
             rules=[
@@ -292,8 +293,12 @@ class TestSqlServerRegexFallback:
             ],
         )
 
-        # Should pass since all usernames match the pattern
-        assert result.passed
+        # Should fail - 2 rows have dup_user_* which don't match ^user_\d+$
+        assert not result.passed
+        # failed_count on result is number of failed rules (1)
+        # The rule itself has 2 row violations
+        rule_result = result.to_dict()["rules"][0]
+        assert rule_result["failed_count"] == 2
 
     def test_regex_with_nulls_via_fallback(self, sqlserver_uri):
         """Verify regex correctly counts NULL as failure via Polars.

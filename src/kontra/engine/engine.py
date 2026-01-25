@@ -107,6 +107,14 @@ def _is_s3_uri(val: str | None) -> bool:
     return isinstance(val, str) and val.lower().startswith("s3://")
 
 
+def _is_azure_uri(val: str | None) -> bool:
+    """Check if URI is an Azure storage URI (ADLS Gen2 or Blob)."""
+    if not isinstance(val, str):
+        return False
+    lower = val.lower()
+    return lower.startswith(("abfs://", "abfss://", "az://"))
+
+
 def _s3_uri_to_path(uri: str) -> str:
     """Convert s3://bucket/key to bucket/key (PyArrow S3FileSystem format)."""
     if uri.lower().startswith("s3://"):
@@ -660,7 +668,11 @@ class ValidationEngine:
                 # We'll let the ParquetFile call fail below and be caught.
                 log_exception(_logger, "Could not create S3 filesystem for preplan", e)
 
-        if self.preplan in {"on", "auto"} and _is_parquet(handle.uri):
+        # Skip preplan for Azure URIs - PyArrow Azure filesystem not yet implemented
+        # Azure validation works fine via DuckDB pushdown and Polars fallback
+        skip_preplan_azure = _is_azure_uri(handle.uri)
+
+        if self.preplan in {"on", "auto"} and _is_parquet(handle.uri) and not skip_preplan_azure:
             try:
                 t0 = now_ms()
                 static_preds = extract_static_predicates(rules=rules)

@@ -8,11 +8,12 @@ This guide takes you from install to validated dataset.
 pip install kontra
 ```
 
-For database support:
+For cloud/database support:
 ```bash
 pip install kontra[postgres]    # PostgreSQL
 pip install kontra[sqlserver]   # SQL Server
 pip install kontra[s3]          # S3
+# Azure ADLS Gen2 is built-in (no extra install needed)
 ```
 
 ## 1. Initialize Project
