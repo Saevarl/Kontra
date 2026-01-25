@@ -1,7 +1,7 @@
 name: sqlserver_5m_benchmark
 description: Benchmark contract for 5M row SQL Server table
 
-datasource: "mssql://sa:Kontra_Test123!@localhost:1434/kontra_test/dbo.users_5m"
+datasource: "mssql://sa:Kontra_Test123!@localhost:1433/kontra_test/dbo.users_5m"
 
 rules:
   # Row count check

@@ -367,17 +367,187 @@ RULE_KIND_TO_FAILURE_MODE = {
     "not_null": "null_values",
     "unique": "duplicate_values",
     "allowed_values": "novel_category",
+    "disallowed_values": "disallowed_value",
     "min_rows": "row_count_low",
     "max_rows": "row_count_high",
     "range": "range_violation",
+    "length": "length_violation",
     "freshness": "freshness_lag",
     "regex": "pattern_mismatch",
+    "contains": "pattern_mismatch",
+    "starts_with": "pattern_mismatch",
+    "ends_with": "pattern_mismatch",
     "dtype": "schema_drift",
     "custom_sql_check": "custom_check_failed",
     "compare": "comparison_failed",
     "conditional_not_null": "conditional_null",
     "conditional_range": "conditional_range_violation",
 }
+
+
+# =============================================================================
+# String Validation Aggregate Expression Builders
+# =============================================================================
+
+def escape_like_pattern(value: str, escape_char: str = "\\") -> str:
+    """
+    Escape special characters in a LIKE pattern value.
+
+    LIKE special characters: %, _, and the escape character itself.
+
+    Args:
+        value: The literal string to escape
+        escape_char: The escape character to use (default: backslash)
+
+    Returns:
+        Escaped string safe for use in LIKE patterns
+    """
+    # Order matters: escape the escape char first
+    for c in (escape_char, "%", "_"):
+        value = value.replace(c, escape_char + c)
+    return value
+
+
+def agg_disallowed_values(
+    col: str, values: List[Any], rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    Count values that ARE in the disallowed set.
+
+    Inverse of allowed_values: fails if value IS in the list.
+    NULL values are NOT failures (NULL is not in any list).
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    if not values:
+        # No disallowed values means nothing can fail
+        return f"0 AS {r}"
+
+    val_list = ", ".join(
+        lit_str(str(v), dialect) if isinstance(v, str) else str(v)
+        for v in values
+        if v is not None  # NULL in disallowed list doesn't make sense
+    )
+
+    if dialect == "sqlserver":
+        cast_col = f"CAST({c} AS NVARCHAR(MAX))"
+    elif dialect == "postgres":
+        cast_col = f"{c}::text"
+    else:
+        cast_col = c
+
+    # Failure = value IS in the disallowed list (and not null)
+    return (
+        f"SUM(CASE WHEN {c} IS NOT NULL AND {cast_col} IN ({val_list}) "
+        f"THEN 1 ELSE 0 END) AS {r}"
+    )
+
+
+def agg_length(
+    col: str,
+    min_len: Optional[int],
+    max_len: Optional[int],
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    Count values where string length is outside [min_len, max_len].
+
+    NULL values are failures (can't measure length of NULL).
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    # SQL Server uses LEN(), others use LENGTH()
+    if dialect == "sqlserver":
+        len_func = f"LEN({c})"
+    else:
+        len_func = f"LENGTH({c})"
+
+    conditions = [f"{c} IS NULL"]
+    if min_len is not None:
+        conditions.append(f"{len_func} < {int(min_len)}")
+    if max_len is not None:
+        conditions.append(f"{len_func} > {int(max_len)}")
+
+    violation = " OR ".join(conditions)
+    return f"SUM(CASE WHEN {violation} THEN 1 ELSE 0 END) AS {r}"
+
+
+def agg_contains(
+    col: str, substring: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    Count values that do NOT contain the substring.
+
+    Uses LIKE for efficiency (faster than regex).
+    NULL values are failures.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    # Escape LIKE special characters in the substring
+    escaped = escape_like_pattern(substring)
+    pattern = f"%{escaped}%"
+
+    if dialect == "sqlserver":
+        # SQL Server LIKE is case-insensitive by default (depends on collation)
+        # Use ESCAPE clause for backslash
+        return (
+            f"SUM(CASE WHEN {c} IS NULL OR {c} NOT LIKE '{pattern}' ESCAPE '\\' "
+            f"THEN 1 ELSE 0 END) AS {r}"
+        )
+    else:
+        # DuckDB and PostgreSQL
+        return (
+            f"SUM(CASE WHEN {c} IS NULL OR {c} NOT LIKE '{pattern}' ESCAPE '\\' "
+            f"THEN 1 ELSE 0 END) AS {r}"
+        )
+
+
+def agg_starts_with(
+    col: str, prefix: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    Count values that do NOT start with the prefix.
+
+    Uses LIKE for efficiency (faster than regex).
+    NULL values are failures.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    # Escape LIKE special characters in the prefix
+    escaped = escape_like_pattern(prefix)
+    pattern = f"{escaped}%"
+
+    return (
+        f"SUM(CASE WHEN {c} IS NULL OR {c} NOT LIKE '{pattern}' ESCAPE '\\' "
+        f"THEN 1 ELSE 0 END) AS {r}"
+    )
+
+
+def agg_ends_with(
+    col: str, suffix: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    Count values that do NOT end with the suffix.
+
+    Uses LIKE for efficiency (faster than regex).
+    NULL values are failures.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    # Escape LIKE special characters in the suffix
+    escaped = escape_like_pattern(suffix)
+    pattern = f"%{escaped}"
+
+    return (
+        f"SUM(CASE WHEN {c} IS NULL OR {c} NOT LIKE '{pattern}' ESCAPE '\\' "
+        f"THEN 1 ELSE 0 END) AS {r}"
+    )
 
 
 def results_from_row(

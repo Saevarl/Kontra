@@ -170,7 +170,7 @@ src/kontra/
 │   ├── factory.py    # Rule instantiation
 │   ├── registry.py   # Rule registration
 │   ├── execution_plan.py  # CompiledPlan
-│   └── builtin/      # 13 built-in rules
+│   └── builtin/      # 18 built-in rules
 ├── scout/            # Dataset profiling
 │   ├── profiler.py   # ScoutProfiler
 │   ├── suggest.py    # Rule inference

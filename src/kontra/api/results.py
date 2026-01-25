@@ -769,15 +769,18 @@ class ValidationResult:
                     sql_rules.append((rule_result, rule_obj, n, cols_to_include))
                     sql_filter_available = True
 
-            # Fall back to compile_predicate if SQL not available
+            # Fall back to sample_predicate/compile_predicate if SQL not available
             if not sql_filter_available:
-                if hasattr(rule_obj, "compile_predicate"):
+                # Check sample_predicate() first (for rules like unique that have
+                # different counting vs sampling semantics)
+                pred_obj = None
+                if hasattr(rule_obj, "sample_predicate"):
+                    pred_obj = rule_obj.sample_predicate()
+                if pred_obj is None and hasattr(rule_obj, "compile_predicate"):
                     pred_obj = rule_obj.compile_predicate()
-                    if pred_obj is not None:
-                        polars_rules.append((rule_result, rule_obj, pred_obj.expr, n, cols_to_include))
-                    else:
-                        rule_result.samples = None
-                        rule_result.samples_reason = SampleReason.UNAVAILABLE_UNSUPPORTED
+
+                if pred_obj is not None:
+                    polars_rules.append((rule_result, rule_obj, pred_obj.expr, n, cols_to_include))
                 else:
                     rule_result.samples = None
                     rule_result.samples_reason = SampleReason.UNAVAILABLE_UNSUPPORTED
@@ -1265,8 +1268,14 @@ class ValidationResult:
             raise ValueError(f"Rule object not found for: {rule_id}")
 
         # Get the failure predicate
+        # Check sample_predicate() first (used by rules like unique that have
+        # different counting vs sampling semantics), then fall back to compile_predicate()
         predicate = None
-        if hasattr(rule_obj, "compile_predicate"):
+        if hasattr(rule_obj, "sample_predicate"):
+            pred_obj = rule_obj.sample_predicate()
+            if pred_obj is not None:
+                predicate = pred_obj.expr
+        if predicate is None and hasattr(rule_obj, "compile_predicate"):
             pred_obj = rule_obj.compile_predicate()
             if pred_obj is not None:
                 predicate = pred_obj.expr

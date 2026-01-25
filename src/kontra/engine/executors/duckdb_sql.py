@@ -31,11 +31,17 @@ from kontra.engine.sql_utils import (
     agg_max_rows,
     agg_freshness,
     agg_range,
+    agg_length,
     agg_regex,
+    agg_unique,
+    agg_contains,
+    agg_starts_with,
+    agg_ends_with,
     agg_compare,
     agg_conditional_not_null,
     agg_conditional_range,
     agg_allowed_values,
+    agg_disallowed_values,
     exists_not_null,
     results_from_row,
     SQL_OP_MAP,
@@ -266,7 +272,13 @@ class DuckDBSqlExecutor(SqlExecutor):
 
     name = "duckdb"
 
-    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex", "compare", "conditional_not_null", "conditional_range", "custom_agg", "allowed_values"}
+    SUPPORTED_RULES = {
+        "not_null", "unique", "min_rows", "max_rows", "freshness",
+        "range", "length",
+        "regex", "contains", "starts_with", "ends_with",
+        "compare", "conditional_not_null", "conditional_range",
+        "custom_agg", "allowed_values", "disallowed_values"
+    }
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
@@ -309,6 +321,13 @@ class DuckDBSqlExecutor(SqlExecutor):
                     exists_specs.append(spec)
                     supported_specs.append(spec)
 
+            elif kind == "unique":
+                col = spec.get("column")
+                if isinstance(col, str) and col:
+                    aggregate_selects.append(agg_unique(col, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "min_rows":
                 aggregate_selects.append(agg_min_rows(int(spec.get("threshold", 0)), rid, DIALECT))
                 aggregate_specs.append(spec)
@@ -349,6 +368,47 @@ class DuckDBSqlExecutor(SqlExecutor):
                 values = spec.get("values")
                 if isinstance(col, str) and col and values is not None:
                     aggregate_selects.append(agg_allowed_values(col, values, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "disallowed_values":
+                col = spec.get("column")
+                values = spec.get("values")
+                if isinstance(col, str) and col and values is not None:
+                    aggregate_selects.append(agg_disallowed_values(col, values, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "length":
+                col = spec.get("column")
+                min_len = spec.get("min")
+                max_len = spec.get("max")
+                if isinstance(col, str) and col and (min_len is not None or max_len is not None):
+                    aggregate_selects.append(agg_length(col, min_len, max_len, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "contains":
+                col = spec.get("column")
+                substring = spec.get("substring")
+                if isinstance(col, str) and col and isinstance(substring, str) and substring:
+                    aggregate_selects.append(agg_contains(col, substring, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "starts_with":
+                col = spec.get("column")
+                prefix = spec.get("prefix")
+                if isinstance(col, str) and col and isinstance(prefix, str) and prefix:
+                    aggregate_selects.append(agg_starts_with(col, prefix, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "ends_with":
+                col = spec.get("column")
+                suffix = spec.get("suffix")
+                if isinstance(col, str) and col and isinstance(suffix, str) and suffix:
+                    aggregate_selects.append(agg_ends_with(col, suffix, rid, DIALECT))
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 

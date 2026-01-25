@@ -8,7 +8,7 @@ services:
       MSSQL_SA_PASSWORD: "Kontra_Test123!"
       MSSQL_PID: "Developer"
     ports:
-      - "1434:1433"
+      - "1433:1433"
     healthcheck:
       test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Kontra_Test123!" -C -Q "SELECT 1" || exit 1
       interval: 10s

@@ -299,7 +299,14 @@ rules.unique("column")
 rules.dtype("column", "int64")
 rules.range("column", min=0, max=100)
 rules.allowed_values("column", ["a", "b", "c"])
+rules.disallowed_values("column", ["bad", "invalid"])
 rules.regex("column", r"^[A-Z]{2}\d{4}$")
+
+# String checks (efficient LIKE patterns, faster than regex)
+rules.length("column", min=3, max=50)
+rules.contains("email", "@")
+rules.starts_with("url", "https://")
+rules.ends_with("filename", ".csv")
 
 # Cross-column checks
 rules.compare("end_date", "start_date", ">=")

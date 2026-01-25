@@ -1647,14 +1647,39 @@ def list_rules() -> List[Dict[str, Any]]:
             "params": {"column": "required", "values": "required (list)"},
             "scope": "column",
         },
+        "disallowed_values": {
+            "description": "Fails where column contains values that ARE in the disallowed list",
+            "params": {"column": "required", "values": "required (list)"},
+            "scope": "column",
+        },
         "range": {
             "description": "Fails where column values are outside [min, max] range",
+            "params": {"column": "required", "min": "optional", "max": "optional"},
+            "scope": "column",
+        },
+        "length": {
+            "description": "Fails where string length is outside [min, max] bounds",
             "params": {"column": "required", "min": "optional", "max": "optional"},
             "scope": "column",
         },
         "regex": {
             "description": "Fails where column values don't match regex pattern",
             "params": {"column": "required", "pattern": "required"},
+            "scope": "column",
+        },
+        "contains": {
+            "description": "Fails where column values don't contain the substring",
+            "params": {"column": "required", "substring": "required"},
+            "scope": "column",
+        },
+        "starts_with": {
+            "description": "Fails where column values don't start with the prefix",
+            "params": {"column": "required", "prefix": "required"},
+            "scope": "column",
+        },
+        "ends_with": {
+            "description": "Fails where column values don't end with the suffix",
+            "params": {"column": "required", "suffix": "required"},
             "scope": "column",
         },
         "dtype": {

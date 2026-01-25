@@ -1,10 +1,10 @@
 # Rules Reference
 
-Kontra provides 13 built-in validation rules.
+Kontra provides 18 built-in validation rules.
 
 ## Most Contracts Use These
 
-Start here. These five rules cover 80% of use cases:
+Start here. These rules cover 80% of use cases:
 
 | Rule | What It Checks | Example |
 |------|---------------|---------|
@@ -46,8 +46,13 @@ rules:
 | `not_null` | No NULL values | `column`, `include_nan` |
 | `unique` | No duplicates | `column` |
 | `allowed_values` | Values in set | `column`, `values` |
+| `disallowed_values` | Values NOT in set | `column`, `values` |
 | `range` | Min/max bounds | `column`, `min`, `max` |
+| `length` | String length bounds | `column`, `min`, `max` |
 | `regex` | Pattern match | `column`, `pattern` |
+| `contains` | Contains substring | `column`, `substring` |
+| `starts_with` | Starts with prefix | `column`, `prefix` |
+| `ends_with` | Ends with suffix | `column`, `suffix` |
 | `dtype` | Type check | `column`, `type` |
 | `min_rows` | Minimum rows | `threshold` |
 | `max_rows` | Maximum rows | `threshold` |
@@ -98,6 +103,8 @@ No duplicate values in column. NULLs are ignored (SQL semantics).
 |-----------|------|----------|
 | `column` | string | Yes |
 
+**Count semantics**: `failed_count` = total rows - distinct values (i.e., "extra" rows that would need to be removed to make values unique). For `[a, a, b, c, c, c]`, `failed_count` = 3 (6 total - 3 distinct).
+
 ---
 
 ### allowed_values
@@ -115,6 +122,26 @@ Values must be in allowed set. NULL = violation.
 |-----------|------|----------|
 | `column` | string | Yes |
 | `values` | list | Yes |
+
+---
+
+### disallowed_values
+
+Values must NOT be in disallowed set. Inverse of `allowed_values`. NULL = pass (NULL is not in any list).
+
+```yaml
+- name: disallowed_values
+  params:
+    column: status
+    values: [deleted, banned, spam]
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `column` | string | Yes |
+| `values` | list | Yes |
+
+**Use case**: Block specific known-bad values while allowing everything else.
 
 ---
 
@@ -140,6 +167,28 @@ Values must be within bounds. NULL = violation.
 
 ---
 
+### length
+
+String length must be within bounds. NULL = violation.
+
+```yaml
+- name: length
+  params:
+    column: username
+    min: 3
+    max: 50
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `column` | string | Yes |
+| `min` | integer | No* |
+| `max` | integer | No* |
+
+*At least one of `min` or `max` required.
+
+---
+
 ### regex
 
 Values must match pattern. NULL = violation.
@@ -157,6 +206,62 @@ Values must match pattern. NULL = violation.
 | `pattern` | string | Yes |
 
 SQL Server has limited regex support (PATINDEX only).
+
+---
+
+### contains
+
+Values must contain substring. NULL = violation. Uses efficient LIKE patterns (faster than regex).
+
+```yaml
+- name: contains
+  params:
+    column: email
+    substring: "@"
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `column` | string | Yes |
+| `substring` | string | Yes |
+
+For complex patterns, use `regex` instead.
+
+---
+
+### starts_with
+
+Values must start with prefix. NULL = violation. Uses efficient LIKE patterns.
+
+```yaml
+- name: starts_with
+  params:
+    column: url
+    prefix: "https://"
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `column` | string | Yes |
+| `prefix` | string | Yes |
+
+---
+
+### ends_with
+
+Values must end with suffix. NULL = violation. Uses efficient LIKE patterns.
+
+```yaml
+- name: ends_with
+  params:
+    column: filename
+    suffix: ".csv"
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `column` | string | Yes |
+| `suffix` | string | Yes |
 
 ---
 
@@ -396,8 +501,13 @@ All rules accept an optional `severity` parameter:
 | `not_null` | NULL = violation |
 | `unique` | NULLs ignored |
 | `allowed_values` | NULL = violation |
+| `disallowed_values` | NULL = pass (NULL is not in any list) |
 | `range` | NULL = violation |
+| `length` | NULL = violation |
 | `regex` | NULL = violation |
+| `contains` | NULL = violation |
+| `starts_with` | NULL = violation |
+| `ends_with` | NULL = violation |
 | `compare` | NULL = violation |
 | `conditional_not_null` | NULL in condition → condition is FALSE |
 | `conditional_range` | NULL in column = violation (if condition TRUE); NULL in condition → condition is FALSE |
@@ -416,8 +526,13 @@ All rules accept an optional `severity` parameter:
 | `not_null` | ✓ | ✓ | |
 | `unique` | | ✓ | |
 | `allowed_values` | | ✓ | |
+| `disallowed_values` | | ✓ | |
 | `range` | ✓ | ✓ | |
+| `length` | | ✓ | SQL Server uses LEN() |
 | `regex` | | ✓ | SQL Server limited |
+| `contains` | | ✓ | Uses LIKE (fast) |
+| `starts_with` | | ✓ | Uses LIKE (fast) |
+| `ends_with` | | ✓ | Uses LIKE (fast) |
 | `dtype` | Schema | | |
 | `min_rows` | ✓ | ✓ | |
 | `max_rows` | ✓ | ✓ | |

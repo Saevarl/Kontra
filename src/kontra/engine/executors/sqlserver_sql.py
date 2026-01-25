@@ -47,10 +47,14 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
 
     DIALECT = "sqlserver"
     # Note: regex is NOT supported - PATINDEX uses LIKE wildcards, not regex.
+    # But contains/starts_with/ends_with use LIKE, so they work!
     SUPPORTED_RULES = {
-        "not_null", "unique", "min_rows", "max_rows", "allowed_values",
-        "freshness", "range", "compare", "conditional_not_null",
-        "conditional_range", "custom_sql_check", "custom_agg"
+        "not_null", "unique", "min_rows", "max_rows",
+        "allowed_values", "disallowed_values",
+        "freshness", "range", "length",
+        "contains", "starts_with", "ends_with",  # LIKE-based, works on SQL Server
+        "compare", "conditional_not_null", "conditional_range",
+        "custom_sql_check", "custom_agg"
     }
 
     @property

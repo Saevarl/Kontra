@@ -42,9 +42,12 @@ class PostgresSqlExecutor(DatabaseSqlExecutor):
 
     DIALECT = "postgres"
     SUPPORTED_RULES = {
-        "not_null", "unique", "min_rows", "max_rows", "allowed_values",
-        "freshness", "range", "regex", "compare", "conditional_not_null",
-        "conditional_range", "custom_sql_check", "custom_agg"
+        "not_null", "unique", "min_rows", "max_rows",
+        "allowed_values", "disallowed_values",
+        "freshness", "range", "length",
+        "regex", "contains", "starts_with", "ends_with",
+        "compare", "conditional_not_null", "conditional_range",
+        "custom_sql_check", "custom_agg"
     }
 
     @property

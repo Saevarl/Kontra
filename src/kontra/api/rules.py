@@ -461,6 +461,191 @@ def conditional_range(
     return _build_rule("conditional_range", params, severity, id, context)
 
 
+def disallowed_values(
+    column: str,
+    values: List[Any],
+    severity: str = "blocking",
+    id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Column values must NOT be in the disallowed set.
+
+    Inverse of allowed_values: fails if value IS in the list.
+
+    Args:
+        column: Column name to check
+        values: List of disallowed values
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (use when applying multiple rules to same column)
+        context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
+
+    Note:
+        NULL values are NOT failures (NULL is not in any list).
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Example:
+        rules.disallowed_values("status", ["deleted", "banned", "spam"])
+    """
+    _validate_column(column, "disallowed_values")
+    return _build_rule("disallowed_values", {"column": column, "values": values}, severity, id, context)
+
+
+def length(
+    column: str,
+    min: Optional[int] = None,
+    max: Optional[int] = None,
+    severity: str = "blocking",
+    id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Column string length must be within the specified range.
+
+    Args:
+        column: Column name to check
+        min: Minimum length (inclusive)
+        max: Maximum length (inclusive)
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (use when applying multiple rules to same column)
+        context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
+
+    At least one of `min` or `max` must be provided.
+
+    Note:
+        NULL values are failures (can't measure length of NULL).
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Raises:
+        ValueError: If neither min nor max is provided, or if min > max
+
+    Example:
+        rules.length("username", min=3, max=50)
+    """
+    _validate_column(column, "length")
+
+    if min is None and max is None:
+        raise ValueError("length rule: at least one of 'min' or 'max' must be provided")
+
+    if min is not None and max is not None and min > max:
+        raise ValueError(f"length rule: min ({min}) must be <= max ({max})")
+
+    params: Dict[str, Any] = {"column": column}
+    if min is not None:
+        params["min"] = min
+    if max is not None:
+        params["max"] = max
+
+    return _build_rule("length", params, severity, id, context)
+
+
+def contains(
+    column: str,
+    substring: str,
+    severity: str = "blocking",
+    id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Column values must contain the specified substring.
+
+    Uses literal substring matching for efficiency.
+    For regex patterns, use the `regex` rule instead.
+
+    Args:
+        column: Column name to check
+        substring: Substring that must be present
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (use when applying multiple rules to same column)
+        context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
+
+    Note:
+        NULL values are failures (can't search in NULL).
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Example:
+        rules.contains("email", "@")
+    """
+    _validate_column(column, "contains")
+    if not substring:
+        raise ValueError("contains rule: substring cannot be empty")
+    return _build_rule("contains", {"column": column, "substring": substring}, severity, id, context)
+
+
+def starts_with(
+    column: str,
+    prefix: str,
+    severity: str = "blocking",
+    id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Column values must start with the specified prefix.
+
+    Uses LIKE pattern matching for efficiency (faster than regex).
+
+    Args:
+        column: Column name to check
+        prefix: Prefix that must be present at the start
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (use when applying multiple rules to same column)
+        context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
+
+    Note:
+        NULL values are failures (can't check NULL).
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Example:
+        rules.starts_with("url", "https://")
+    """
+    _validate_column(column, "starts_with")
+    if not prefix:
+        raise ValueError("starts_with rule: prefix cannot be empty")
+    return _build_rule("starts_with", {"column": column, "prefix": prefix}, severity, id, context)
+
+
+def ends_with(
+    column: str,
+    suffix: str,
+    severity: str = "blocking",
+    id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Column values must end with the specified suffix.
+
+    Uses LIKE pattern matching for efficiency (faster than regex).
+
+    Args:
+        column: Column name to check
+        suffix: Suffix that must be present at the end
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (use when applying multiple rules to same column)
+        context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
+
+    Note:
+        NULL values are failures (can't check NULL).
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Example:
+        rules.ends_with("filename", ".csv")
+    """
+    _validate_column(column, "ends_with")
+    if not suffix:
+        raise ValueError("ends_with rule: suffix cannot be empty")
+    return _build_rule("ends_with", {"column": column, "suffix": suffix}, severity, id, context)
+
+
 # Module-level access for `from kontra import rules` then `rules.not_null(...)`
 class _RulesModule:
     """
@@ -474,7 +659,12 @@ class _RulesModule:
     dtype = staticmethod(dtype)
     range = staticmethod(range)
     allowed_values = staticmethod(allowed_values)
+    disallowed_values = staticmethod(disallowed_values)
     regex = staticmethod(regex)
+    length = staticmethod(length)
+    contains = staticmethod(contains)
+    starts_with = staticmethod(starts_with)
+    ends_with = staticmethod(ends_with)
     min_rows = staticmethod(min_rows)
     max_rows = staticmethod(max_rows)
     freshness = staticmethod(freshness)

@@ -484,9 +484,9 @@ class TestUniqueNullHandling:
         rule = UniqueRule("unique", {"column": "v"})
         result = rule.validate(df)
 
-        # "a" is duplicated (2 rows), but NULLs are ignored
+        # "a" is duplicated - SQL semantics: 3 non-null - 2 distinct = 1 extra
         assert result["passed"] is False
-        assert result["failed_count"] == 2  # Both rows with "a" are failures
+        assert result["failed_count"] == 1  # One extra "a" row
 
     def test_unique_all_nulls_passes(self):
         """Column with all NULLs should pass unique check."""

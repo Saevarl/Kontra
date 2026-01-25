@@ -962,15 +962,15 @@ class TestServiceAgentSupport:
             assert "scope" in rule
 
     def test_list_rules_includes_all_rules(self):
-        """list_rules() includes all 13 built-in rules."""
+        """list_rules() includes all 18 built-in rules."""
         result = kontra.list_rules()
         rule_names = [r["name"] for r in result]
 
         expected = [
-            "not_null", "unique", "allowed_values", "range",
-            "regex", "dtype", "min_rows", "max_rows",
-            "freshness", "custom_sql_check", "compare", "conditional_not_null",
-            "conditional_range",
+            "not_null", "unique", "allowed_values", "disallowed_values",
+            "range", "length", "regex", "contains", "starts_with", "ends_with",
+            "dtype", "min_rows", "max_rows", "freshness", "custom_sql_check",
+            "compare", "conditional_not_null", "conditional_range",
         ]
 
         for expected_rule in expected:

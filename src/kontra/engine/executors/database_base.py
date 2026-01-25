@@ -25,9 +25,14 @@ from kontra.engine.sql_utils import (
     agg_min_rows,
     agg_max_rows,
     agg_allowed_values,
+    agg_disallowed_values,
     agg_freshness,
     agg_range,
+    agg_length,
     agg_regex,
+    agg_contains,
+    agg_starts_with,
+    agg_ends_with,
     agg_compare,
     agg_conditional_not_null,
     agg_conditional_range,
@@ -222,6 +227,14 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
+            elif kind == "disallowed_values":
+                col = spec.get("column")
+                values = spec.get("values", [])
+                if isinstance(col, str) and col and values:
+                    aggregate_selects.append(agg_disallowed_values(col, values, rule_id, self.DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "freshness":
                 col = spec.get("column")
                 max_age_seconds = spec.get("max_age_seconds")
@@ -239,11 +252,44 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
+            elif kind == "length":
+                col = spec.get("column")
+                min_len = spec.get("min")
+                max_len = spec.get("max")
+                if isinstance(col, str) and col and (min_len is not None or max_len is not None):
+                    aggregate_selects.append(agg_length(col, min_len, max_len, rule_id, self.DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
             elif kind == "regex":
                 col = spec.get("column")
                 pattern = spec.get("pattern")
                 if isinstance(col, str) and col and isinstance(pattern, str) and pattern:
                     aggregate_selects.append(agg_regex(col, pattern, rule_id, self.DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "contains":
+                col = spec.get("column")
+                substring = spec.get("substring")
+                if isinstance(col, str) and col and isinstance(substring, str) and substring:
+                    aggregate_selects.append(agg_contains(col, substring, rule_id, self.DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "starts_with":
+                col = spec.get("column")
+                prefix = spec.get("prefix")
+                if isinstance(col, str) and col and isinstance(prefix, str) and prefix:
+                    aggregate_selects.append(agg_starts_with(col, prefix, rule_id, self.DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "ends_with":
+                col = spec.get("column")
+                suffix = spec.get("suffix")
+                if isinstance(col, str) and col and isinstance(suffix, str) and suffix:
+                    aggregate_selects.append(agg_ends_with(col, suffix, rule_id, self.DIALECT))
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 

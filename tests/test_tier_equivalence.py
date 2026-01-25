@@ -267,35 +267,31 @@ class TestUniqueEquivalence:
     for PostgreSQL since DuckDB doesn't support unique pushdown.
 
     TODO: Resolve this semantic difference - either:
-    1. Change Polars to match SQL semantics (count extra rows)
-    2. Change SQL to match Polars semantics (count all duplicate rows)
-    3. Document as intentional difference
+    Both Polars and SQL now use consistent semantics:
+    COUNT(*) - COUNT(DISTINCT col) = "extra rows beyond unique"
 
-    For now, Polars uses is_duplicated() which counts ALL rows that participate
-    in duplicates. For user_ids [0-99, 0, 1, 2]: values 0,1,2 each appear twice
-    = 6 rows are duplicates.
+    For user_ids [0-99, 0, 1, 2]: 103 total - 100 distinct = 3 extra rows
     """
 
     RULE = {"name": "unique", "params": {"column": "user_id"}}
     RULE_ID = "COL:user_id:unique"
-    # Polars counts all rows that participate in duplicates
-    # user_ids 0, 1, 2 each appear twice = 6 duplicate rows
-    EXPECTED_VIOLATIONS = 6
+    # SQL semantics: COUNT(*) - COUNT(DISTINCT col)
+    # 103 total rows - 100 distinct values = 3 extra rows
+    EXPECTED_VIOLATIONS = 3
 
     def test_polars_consistency(self, tier_test_data, write_contract):
-        """Both pushdown=on and pushdown=off should use Polars for DuckDB sources."""
+        """SQL pushdown and Polars should report same duplicate count."""
         cpath = write_contract(dataset=tier_test_data, rules=[self.RULE])
 
-        # DuckDB doesn't support unique pushdown, so both should use Polars
         sql_result = run_with_tier(cpath, "sql")
         polars_result = run_with_tier(cpath, "polars")
 
         sql_count = get_violation_count(sql_result, self.RULE_ID)
         polars_count = get_violation_count(polars_result, self.RULE_ID)
 
-        # Both should be identical since both use Polars
+        # Both should be identical with SQL semantics
         assert sql_count == polars_count == self.EXPECTED_VIOLATIONS, (
-            f"unique mismatch: SQL-fallback={sql_count}, Polars={polars_count}, expected={self.EXPECTED_VIOLATIONS}"
+            f"unique mismatch: SQL={sql_count}, Polars={polars_count}, expected={self.EXPECTED_VIOLATIONS}"
         )
 
 
