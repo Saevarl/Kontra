@@ -487,13 +487,14 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                     raise ValueError("Query returned no result")
 
                 failed_count = int(row[0]) if row[0] is not None else 0
+                threshold = spec.get("params", {}).get("threshold", 0)
 
-                passed = failed_count == 0
+                passed = failed_count <= threshold
                 results.append({
                     "rule_id": rule_id,
                     "passed": passed,
                     "failed_count": failed_count,
-                    "message": "Passed" if passed else f"Custom SQL check failed for {failed_count} rows",
+                    "message": "Passed" if passed else f"Custom SQL check failed for {failed_count} rows (threshold: {threshold})",
                     "execution_source": self.DIALECT,
                 })
 

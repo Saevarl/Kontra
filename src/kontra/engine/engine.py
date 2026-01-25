@@ -637,6 +637,7 @@ class ValidationEngine:
             source_ref = self.data_path or self.contract.datasource
             source_uri = _resolve_datasource_uri(source_ref)
             handle = DatasetHandle.from_uri(source_uri, storage_options=self._storage_options)
+            self._handle = handle  # Store for sample_failures() to access db_params
 
         # ------------------------------------------------------------------ #
         # 3) Preplan (metadata-only; independent of pushdown/projection)

@@ -441,14 +441,19 @@ def validate(
         raise
 
     # Determine data source for sample_failures()
-    # Priority: DataFrame > handle > data path
+    # Priority: DataFrame > handle (with db_params) > data path
     if isinstance(data, pl.DataFrame):
         data_source = data
     elif is_byoc:
         # Store the handle for BYOC
         data_source = engine._handle
     elif isinstance(data, str):
-        data_source = data
+        # For URI strings, store the handle if available (has db_params for reconnection)
+        # Otherwise fall back to the string
+        if engine._handle is not None and engine._handle.db_params is not None:
+            data_source = engine._handle
+        else:
+            data_source = engine._handle if engine._handle is not None else data
     else:
         # list[dict] or dict - store as DataFrame
         data_source = engine.df
@@ -530,7 +535,7 @@ def profile(
             stacklevel=2,
         )
 
-    # Convert list/dict to DataFrame
+    # Convert list/dict/pandas to Polars DataFrame
     if isinstance(data, list):
         if not data:
             data = pl.DataFrame()
@@ -541,6 +546,11 @@ def profile(
             data = pl.DataFrame()
         else:
             data = pl.DataFrame([data])
+    elif hasattr(data, "__dataframe__"):
+        # Pandas DataFrame (or any dataframe-protocol compatible)
+        import pandas as pd
+        if isinstance(data, pd.DataFrame):
+            data = pl.from_pandas(data)
 
     if isinstance(data, pl.DataFrame):
         # Handle empty DataFrame (no columns) - DuckDB can't read parquet with no columns

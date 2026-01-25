@@ -73,12 +73,14 @@ class CustomSQLCheck(BaseRule):
                 raise ValueError("Query returned no result")
 
             failed_count = int(result[0]) if result[0] is not None else 0
+            threshold = self.params.get("threshold", 0)
+            passed = failed_count <= threshold
 
             res: Dict[str, Any] = {
                 "rule_id": self.rule_id,
-                "passed": failed_count == 0,
+                "passed": passed,
                 "failed_count": failed_count,
-                "message": "Passed" if failed_count == 0 else f"Custom SQL check failed for {failed_count} rows",
+                "message": "Passed" if passed else f"Custom SQL check failed for {failed_count} rows (threshold: {threshold})",
             }
 
             if failed_count > 0:

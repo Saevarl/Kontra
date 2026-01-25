@@ -828,6 +828,7 @@ class ValidationResult:
         db_conn = None
         db_table = None
         parquet_path = None
+        owns_connection = False  # Track if we created the connection (need to close it)
 
         is_s3 = False
 
@@ -847,12 +848,40 @@ class ValidationResult:
                 is_database = True
                 dialect = "postgres"
                 db_conn = getattr(handle, "external_conn", None)
-                db_table = getattr(handle, "table_ref", None) or f'"{handle.schema}"."{handle.path}"'
+                # If no external connection but we have db_params, create one
+                if db_conn is None and handle.db_params is not None:
+                    try:
+                        from kontra.connectors.postgres import get_connection
+                        db_conn = get_connection(handle.db_params)
+                        owns_connection = True  # We need to close this
+                    except Exception:
+                        db_conn = None
+                # Get table reference from handle or db_params
+                if handle.table_ref:
+                    db_table = handle.table_ref
+                elif handle.db_params:
+                    db_table = f'"{handle.db_params.schema}"."{handle.db_params.table}"'
+                else:
+                    db_table = None
             elif handle.scheme == "mssql":
                 is_database = True
                 dialect = "mssql"
                 db_conn = getattr(handle, "external_conn", None)
-                db_table = getattr(handle, "table_ref", None) or f"[{handle.schema}].[{handle.path}]"
+                # If no external connection but we have db_params, create one
+                if db_conn is None and handle.db_params is not None:
+                    try:
+                        from kontra.connectors.sqlserver import get_connection
+                        db_conn = get_connection(handle.db_params)
+                        owns_connection = True  # We need to close this
+                    except Exception:
+                        db_conn = None
+                # Get table reference from handle or db_params
+                if handle.table_ref:
+                    db_table = handle.table_ref
+                elif handle.db_params:
+                    db_table = f"[{handle.db_params.schema}].[{handle.db_params.table}]"
+                else:
+                    db_table = None
             elif handle.scheme == "s3":
                 # S3 via handle - use DuckDB
                 is_parquet = True
@@ -916,6 +945,14 @@ class ValidationResult:
             for rule_result, rule_obj, n, cols_to_include in sql_rules:
                 rule_result.samples = None
                 rule_result.samples_reason = f"error: {str(e)[:50]}"
+
+        finally:
+            # Close connection if we created it
+            if owns_connection and db_conn is not None:
+                try:
+                    db_conn.close()
+                except Exception:
+                    pass
 
     def _can_sample_source(self) -> bool:
         """
@@ -1359,38 +1396,67 @@ class ValidationResult:
             handle = source
 
             # Check for BYOC (external connection)
-            if handle.scheme == "byoc" or hasattr(handle, "external_conn"):
-                conn = getattr(handle, "external_conn", None)
+            if handle.scheme == "byoc" or (handle.external_conn is not None):
+                conn = handle.external_conn
                 if conn is None:
                     raise RuntimeError(
                         "Database connection is closed. "
                         "For BYOC, keep the connection open until done with sample_failures()."
                     )
                 table = getattr(handle, "table_ref", None) or handle.path
-                return self._query_db_with_filter(conn, table, rule, n, "postgres"), "sql"
+                dialect = handle.dialect or "postgres"
+                return self._query_db_with_filter(conn, table, rule, n, dialect), "sql"
 
             elif handle.scheme in ("postgres", "postgresql"):
                 # PostgreSQL via URI
-                if hasattr(handle, "external_conn") and handle.external_conn:
-                    conn = handle.external_conn
-                else:
+                conn = getattr(handle, "external_conn", None)
+                owns_conn = False
+                if conn is None and handle.db_params is not None:
+                    # Create connection from stored params
+                    try:
+                        from kontra.connectors.postgres import get_connection
+                        conn = get_connection(handle.db_params)
+                        owns_conn = True
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"Failed to connect to PostgreSQL for sampling: {e}"
+                        ) from e
+                if conn is None:
                     raise RuntimeError(
                         "Database connection is not available. "
                         "For URI-based connections, sample_failures() requires re-connection."
                     )
                 table = getattr(handle, "table_ref", None) or handle.path
-                return self._query_db_with_filter(conn, table, rule, n, "postgres"), "sql"
+                try:
+                    return self._query_db_with_filter(conn, table, rule, n, "postgres"), "sql"
+                finally:
+                    if owns_conn:
+                        conn.close()
 
             elif handle.scheme == "mssql":
                 # SQL Server
-                if hasattr(handle, "external_conn") and handle.external_conn:
-                    conn = handle.external_conn
-                else:
+                conn = getattr(handle, "external_conn", None)
+                owns_conn = False
+                if conn is None and handle.db_params is not None:
+                    # Create connection from stored params
+                    try:
+                        from kontra.connectors.sqlserver import get_connection
+                        conn = get_connection(handle.db_params)
+                        owns_conn = True
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"Failed to connect to SQL Server for sampling: {e}"
+                        ) from e
+                if conn is None:
                     raise RuntimeError(
                         "Database connection is not available."
                     )
                 table = getattr(handle, "table_ref", None) or handle.path
-                return self._query_db_with_filter(conn, table, rule, n, "mssql"), "sql"
+                try:
+                    return self._query_db_with_filter(conn, table, rule, n, "mssql"), "sql"
+                finally:
+                    if owns_conn:
+                        conn.close()
 
             elif handle.scheme in ("file", None) or (handle.uri and not handle.scheme):
                 # File-based
