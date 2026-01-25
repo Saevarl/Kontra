@@ -666,9 +666,9 @@ class TestEagerSampling:
     """Tests for eager sampling (samples embedded in RuleResult)."""
 
     def test_samples_populated_during_validation(self):
-        """Samples are populated during validate() call."""
+        """Samples are populated during validate() call when sample > 0."""
         df = pl.DataFrame({"email": [None, "a@b.com", None]})
-        result = kontra.validate(df, rules=[rules.not_null("email")])
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=5)
 
         r = result.rules[0]
         assert r.samples is not None
@@ -678,7 +678,7 @@ class TestEagerSampling:
     def test_passing_rule_has_empty_samples(self):
         """Passing rules have samples=[] and reason=rule_passed."""
         df = pl.DataFrame({"name": ["a", "b", "c"]})
-        result = kontra.validate(df, rules=[rules.not_null("name")])
+        result = kontra.validate(df, rules=[rules.not_null("name")], sample=5)
 
         r = result.rules[0]
         assert r.passed
@@ -755,7 +755,7 @@ class TestEagerSampling:
     def test_unsupported_rule_has_unavailable_samples(self):
         """Dataset-level rules have samples=None with reason."""
         df = pl.DataFrame({"a": [1, 2, 3]})
-        result = kontra.validate(df, rules=[{"name": "min_rows", "params": {"threshold": 10}}])
+        result = kontra.validate(df, rules=[{"name": "min_rows", "params": {"threshold": 10}}], sample=5)
 
         r = result.rules[0]
         assert not r.passed
@@ -781,7 +781,7 @@ class TestEagerSampling:
             "user_id": [1, 1, 1, 2, 2, 3],  # 1 has 3, 2 has 2
             "name": list("ABCDEF"),
         })
-        result = kontra.validate(df, rules=[rules.unique("user_id")])
+        result = kontra.validate(df, rules=[rules.unique("user_id")], sample=5)
 
         r = result.rules[0]
         assert r.samples is not None
@@ -794,7 +794,7 @@ class TestEagerSampling:
     def test_to_dict_includes_samples(self):
         """to_dict() includes sample data."""
         df = pl.DataFrame({"email": [None, "a@b.com"]})
-        result = kontra.validate(df, rules=[rules.not_null("email")])
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=5)
 
         d = result.to_dict()
         assert "samples" in d["rules"][0]
@@ -803,7 +803,7 @@ class TestEagerSampling:
     def test_rule_result_to_llm_includes_samples(self):
         """RuleResult.to_llm() includes sample data."""
         df = pl.DataFrame({"email": [None, "a@b.com"]})
-        result = kontra.validate(df, rules=[rules.not_null("email")])
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=5)
 
         llm = result.rules[0].to_llm()
         assert "Samples" in llm
@@ -826,7 +826,7 @@ class TestEagerSamplingWithParquet:
 
     def test_parquet_preplan_still_samples(self, parquet_with_nulls):
         """Parquet files with preplan still get samples (file can be read)."""
-        result = kontra.validate(parquet_with_nulls, rules=[rules.not_null("email")])
+        result = kontra.validate(parquet_with_nulls, rules=[rules.not_null("email")], sample=5)
 
         r = result.rules[0]
         # Even if preplan was used, we can still sample from file
@@ -835,7 +835,7 @@ class TestEagerSamplingWithParquet:
 
     def test_parquet_samples_source_indicates_upgrade(self, parquet_with_nulls):
         """samples_source reflects how samples were obtained."""
-        result = kontra.validate(parquet_with_nulls, rules=[rules.not_null("email")])
+        result = kontra.validate(parquet_with_nulls, rules=[rules.not_null("email")], sample=5)
 
         r = result.rules[0]
         # If preplan was used for measurement but polars for sampling
@@ -869,6 +869,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             df_many_columns,
             rules=[rules.not_null("email")],
+            sample=5,
             save=False
         )
         r = result.rules[0]
@@ -884,6 +885,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             df_many_columns,
             rules=[rules.not_null("email")],
+            sample=5,
             sample_columns=["id", "email"],
             save=False
         )
@@ -898,6 +900,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             df_many_columns,
             rules=[rules.not_null("email")],
+            sample=5,
             sample_columns="relevant",
             save=False
         )
@@ -918,6 +921,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             df,
             rules=[rules.compare("end_date", "start_date", ">=")],
+            sample=5,
             sample_columns="relevant",
             save=False
         )
@@ -932,6 +936,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             df_many_columns,
             rules=[rules.conditional_not_null("email", "status == 'active'")],
+            sample=5,
             sample_columns="relevant",
             save=False
         )
@@ -947,6 +952,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             df_many_columns,
             rules=[rules.not_null("email")],
+            sample=5,
             sample_columns=["email"],  # Doesn't include _row_index
             save=False
         )
@@ -959,6 +965,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             df_many_columns,
             rules=[rules.not_null("email")],
+            sample=5,
             sample_columns=["id", "nonexistent_column"],
             save=False
         )
@@ -979,6 +986,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             df,
             rules=[rules.unique("code")],
+            sample=5,
             sample_columns=["code"],
             save=False
         )
@@ -997,11 +1005,13 @@ class TestSampleColumnProjection:
         result_full = kontra.validate(
             df_many_columns,
             rules=[rules.not_null("email")],
+            sample=5,
             save=False
         )
         result_proj = kontra.validate(
             df_many_columns,
             rules=[rules.not_null("email")],
+            sample=5,
             sample_columns=["id"],
             save=False
         )
@@ -1026,6 +1036,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             str(path),
             rules=[rules.not_null("email")],
+            sample=5,
             sample_columns=["id", "email"],
             save=False
         )
@@ -1048,6 +1059,7 @@ class TestSampleColumnProjection:
         result = kontra.validate(
             str(path),
             rules=[rules.not_null("email")],
+            sample=5,
             sample_columns=["id", "email"],
             save=False
         )

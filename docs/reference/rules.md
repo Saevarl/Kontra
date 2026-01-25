@@ -441,13 +441,75 @@ from kontra.rules.registry import register_rule
 
 @register_rule("my_rule")
 class MyRule(BaseRule):
+    def __init__(self, name, params):
+        super().__init__(name, params)
+        self.column = self._get_required_param("column", str)
+
     def validate(self, df):
-        column = self.params["column"]
-        mask = df[column] < 0
-        return self._failures(df, mask, f"{column} has negative values")
+        mask = df[self.column] < 0
+        return self._failures(df, mask, f"{self.column} has negative values")
 ```
 
 This rule works but requires data to be loaded into Polars.
+
+### Where to Put Custom Rules
+
+Custom rules must be **imported before** `kontra.validate()` is called. The `@register_rule` decorator registers the rule when the module is imported.
+
+```python
+# my_rules.py
+from kontra.rules.base import BaseRule
+from kontra.rules.registry import register_rule
+
+@register_rule("positive")
+class PositiveRule(BaseRule):
+    def __init__(self, name, params):
+        super().__init__(name, params)
+        self.column = self._get_required_param("column", str)
+
+    def validate(self, df):
+        mask = df[self.column].is_null() | (df[self.column] <= 0)
+        return self._failures(df, mask, f"{self.column} must be positive")
+```
+
+```python
+# main.py
+import my_rules  # Must import to register the rule
+import kontra
+
+result = kontra.validate("data.parquet", rules=[
+    {"name": "positive", "params": {"column": "amount"}}
+])
+```
+
+### Parameter Validation
+
+Use built-in helpers for parameter validation:
+
+```python
+def __init__(self, name, params):
+    super().__init__(name, params)
+
+    # Required parameter - raises ValueError if missing or wrong type
+    self.column = self._get_required_param("column", str)
+
+    # Optional parameter with default
+    self.threshold = params.get("threshold", 0)
+
+    # Manual validation
+    if self.threshold < 0:
+        raise ValueError(f"threshold must be >= 0, got {self.threshold}")
+```
+
+### Available Helper Methods
+
+| Method | Purpose |
+|--------|---------|
+| `_get_required_param(name, type)` | Get required param, raises if missing/wrong type |
+| `_failures(df, mask, message)` | Create failure result from boolean mask |
+| `_check_columns(df, columns)` | Check columns exist, returns error dict if not |
+| `self.params` | Dict of all parameters passed to the rule |
+| `self.rule_id` | Auto-generated ID like `COL:amount:positive` |
 
 ### Custom Rule with SQL Pushdown
 
@@ -494,9 +556,13 @@ class PositiveRule(BaseRule):
 | Method | Purpose | Execution Path |
 |--------|---------|----------------|
 | `validate(df)` | **Required**. Fallback | Polars (data loaded) |
-| `compile_predicate()` | Vectorized Polars | Polars (faster) |
+| `compile_predicate()` | Vectorized Polars + sampling | Polars (faster) |
 | `to_sql_agg(dialect)` | SQL pushdown | DuckDB/PostgreSQL/SQL Server |
 | `required_columns()` | Projection | Load fewer columns |
+
+> **Sample Collection**: `compile_predicate()` is required for `sample_failures()` to work.
+> Without it, rule results will have `samples=None` and `samples_reason="rule_unsupported"`.
+> The predicate's `expr` is used to filter the DataFrame for failing rows.
 
 ### Dialect-Specific SQL
 
@@ -524,24 +590,51 @@ def to_sql_agg(self, dialect="duckdb"):
     return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
 ```
 
+### Using a Custom Rule
+
+After defining your rule, use it like any built-in rule:
+
+```python
+import kontra
+
+# Validate a DataFrame
+result = kontra.validate(df, rules=[
+    {"name": "positive", "params": {"column": "amount"}},
+])
+
+# Or in YAML contracts:
+# rules:
+#   - name: positive
+#     params:
+#       column: amount
+
+# Check if SQL pushdown was used
+print(result.rules[0].source)  # "sql" for parquet/database, "polars" for DataFrames
+```
+
 ---
 
 ## Data Format Edge Cases
 
 ### CSV Files
 
-**Empty strings vs NULL**: In Polars CSV parsing:
-- `""` (quoted empty) is an **empty string**, not NULL
-- Trailing empty (no value) is **NULL**
+**Empty strings vs NULL**: CSV parsing differs between engines:
+
+| Row | Raw CSV | Polars (DataFrame) | DuckDB (file path) |
+|-----|---------|--------------------|--------------------|
+| 2 | `""` | Empty string | NULL |
+| 3 | `` (trailing) | NULL | NULL |
 
 ```csv
 id,name
 1,Alice
-2,""     # empty string ""
-3,       # NULL
+2,""     # Polars: empty string, DuckDB: NULL
+3,       # Both: NULL
 ```
 
-This differs from some other tools. Use `not_null` to catch NULLs; empty strings require `regex` or `allowed_values`.
+**Impact**: `kontra.profile(df)` vs `kontra.profile("file.csv")` may report different `null_rate` for columns with empty strings. This is inherent CSV ambiguity - quoted empty (`""`) has no universal interpretation.
+
+**Recommendation**: For consistent behavior, load CSV with Polars first: `kontra.profile(pl.read_csv("file.csv"))`
 
 **First row is always header**: CSV files are assumed to have a header row. If your CSV has no header, the first data row becomes column names.
 

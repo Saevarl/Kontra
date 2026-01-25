@@ -509,6 +509,136 @@ class TestCustomRuleSqlAgg:
         assert len(compiled["supported_specs"]) == 1
 
 
+class TestCustomAggIntegration:
+    """End-to-end integration tests for custom rules with to_sql_agg()."""
+
+    def test_custom_agg_validates_data_passes(self):
+        """Custom rule with to_sql_agg() validates data correctly (pass case)."""
+        import polars as pl
+        import kontra
+        from kontra.rules.base import BaseRule
+        from kontra.rules.registry import register_rule, RULE_REGISTRY
+
+        # Clean up if already registered
+        if "test_positive_int" in RULE_REGISTRY:
+            del RULE_REGISTRY["test_positive_int"]
+
+        @register_rule("test_positive_int")
+        class TestPositiveRule(BaseRule):
+            def __init__(self, name, params):
+                super().__init__(name, params)
+                self.column = params["column"]
+
+            def validate(self, df):
+                mask = df[self.column].is_null() | (df[self.column] <= 0)
+                return self._failures(df, mask, f"{self.column} non-positive")
+
+            def to_sql_agg(self, dialect="duckdb"):
+                col = f'"{self.column}"'
+                return f"SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)"
+
+        # All positive values - should pass
+        df = pl.DataFrame({"amount": [10, 20, 30, 40, 50]})
+
+        # Use dict format for rules
+        rule_specs = [{"name": "test_positive_int", "params": {"column": "amount"}}]
+
+        result = kontra.validate(df, rules=rule_specs, save=False)
+
+        assert result.passed
+        assert result.failed_count == 0
+
+        # Clean up
+        del RULE_REGISTRY["test_positive_int"]
+
+    def test_custom_agg_validates_data_fails(self):
+        """Custom rule with to_sql_agg() validates data correctly (fail case)."""
+        import polars as pl
+        import kontra
+        from kontra.rules.base import BaseRule
+        from kontra.rules.registry import register_rule, RULE_REGISTRY
+
+        # Clean up if already registered
+        if "test_positive_int2" in RULE_REGISTRY:
+            del RULE_REGISTRY["test_positive_int2"]
+
+        @register_rule("test_positive_int2")
+        class TestPositiveRule(BaseRule):
+            def __init__(self, name, params):
+                super().__init__(name, params)
+                self.column = params["column"]
+
+            def validate(self, df):
+                mask = df[self.column].is_null() | (df[self.column] <= 0)
+                return self._failures(df, mask, f"{self.column} non-positive")
+
+            def to_sql_agg(self, dialect="duckdb"):
+                col = f'"{self.column}"'
+                return f"SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)"
+
+        # Has negative and zero values - should fail
+        df = pl.DataFrame({"amount": [10, -5, 0, 40, 50]})
+
+        # Use dict format for rules
+        rule_specs = [{"name": "test_positive_int2", "params": {"column": "amount"}}]
+
+        result = kontra.validate(df, rules=rule_specs, save=False)
+
+        assert not result.passed
+        assert result.failed_count == 1
+        # Should have 2 failing rows (-5 and 0)
+        rule_result = result.rules[0]
+        assert rule_result.failed_count == 2
+
+        # Clean up
+        del RULE_REGISTRY["test_positive_int2"]
+
+    def test_custom_agg_uses_sql_pushdown_on_parquet(self, tmp_path):
+        """Custom rule with to_sql_agg() uses SQL pushdown for parquet files."""
+        import polars as pl
+        import kontra
+        from kontra.rules.base import BaseRule
+        from kontra.rules.registry import register_rule, RULE_REGISTRY
+
+        # Clean up if already registered
+        if "test_positive_int3" in RULE_REGISTRY:
+            del RULE_REGISTRY["test_positive_int3"]
+
+        @register_rule("test_positive_int3")
+        class TestPositiveRule(BaseRule):
+            def __init__(self, name, params):
+                super().__init__(name, params)
+                self.column = params["column"]
+
+            def validate(self, df):
+                mask = df[self.column].is_null() | (df[self.column] <= 0)
+                return self._failures(df, mask, f"{self.column} non-positive")
+
+            def to_sql_agg(self, dialect="duckdb"):
+                col = f'"{self.column}"'
+                return f"SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)"
+
+        # Write test data to parquet
+        df = pl.DataFrame({"amount": [10, -5, 0, 40, 50]})
+        parquet_path = tmp_path / "test_data.parquet"
+        df.write_parquet(parquet_path)
+
+        # Use dict format for rules
+        rule_specs = [{"name": "test_positive_int3", "params": {"column": "amount"}}]
+
+        result = kontra.validate(str(parquet_path), rules=rule_specs, save=False)
+
+        assert not result.passed
+        assert result.failed_count == 1
+        rule_result = result.rules[0]
+        assert rule_result.failed_count == 2
+        # Verify SQL pushdown was used
+        assert rule_result.source == "sql"
+
+        # Clean up
+        del RULE_REGISTRY["test_positive_int3"]
+
+
 class TestDatabaseExecutorCompile:
     """Tests for database executor compile() with custom_sql_check."""
 

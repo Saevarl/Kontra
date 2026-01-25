@@ -68,6 +68,15 @@ def parse_condition(expr: str) -> Tuple[str, str, Any]:
     if not expr or not isinstance(expr, str):
         raise ConditionParseError(f"Invalid condition expression: {expr!r}")
 
+    # Check for unsupported compound expressions (AND, OR)
+    # Case-insensitive check, but avoid matching inside quoted strings
+    expr_upper = expr.upper()
+    if " AND " in expr_upper or " OR " in expr_upper:
+        raise ConditionParseError(
+            f"Compound expressions (AND/OR) are not supported: {expr!r}. "
+            f"Use multiple rules or custom_sql_check for complex conditions."
+        )
+
     match = CONDITION_PATTERN.match(expr)
     if not match:
         raise ConditionParseError(

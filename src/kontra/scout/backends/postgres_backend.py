@@ -399,7 +399,14 @@ class PostgreSQLBackend:
                 cur.execute(sql)
                 row = cur.fetchone()
                 col_names = [desc[0] for desc in cur.description]
-                return dict(zip(col_names, row)) if row else {}
+                result = dict(zip(col_names, row)) if row else {}
+
+                # If TABLESAMPLE returned empty (all NULLs), fall back to full query
+                # This happens for small tables where 1% sampling returns 0 rows
+                if result and all(v is None for v in result.values()):
+                    return self.execute_stats_query(exprs)
+
+                return result
         except Exception:
             # Fall back to full query if TABLESAMPLE fails
             return self.execute_stats_query(exprs)

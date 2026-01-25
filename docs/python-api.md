@@ -198,11 +198,11 @@ if not result.passed:
             print(f"  Row {row['_row_index']}: {row}")
 ```
 
-By default, up to 5 samples per rule (50 total) are collected. Adjust with `sample` and `sample_budget` parameters:
+By default, no samples are collected (`sample=0`) for performance. Enable with `sample` and `sample_budget` parameters:
 
 ```python
+result = kontra.validate(..., sample=5)  # Collect up to 5 samples per rule
 result = kontra.validate(..., sample=10, sample_budget=100)  # More samples
-result = kontra.validate(..., sample=0)  # Disable sampling
 ```
 
 For token efficiency (e.g., when working with LLMs), limit which columns appear in samples:

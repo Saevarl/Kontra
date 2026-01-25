@@ -222,6 +222,65 @@ def is_database_connection(obj: Any) -> bool:
     return False
 
 
+def is_sqlalchemy_object(obj: Any) -> bool:
+    """
+    Check if an object is a SQLAlchemy Engine or Connection.
+
+    Args:
+        obj: Any Python object
+
+    Returns:
+        True if the object is a SQLAlchemy engine or connection
+    """
+    module = type(obj).__module__
+    return module.startswith("sqlalchemy")
+
+
+def unwrap_sqlalchemy_connection(obj: Any) -> Any:
+    """
+    Extract the raw DBAPI connection from a SQLAlchemy Engine or Connection.
+
+    SQLAlchemy objects don't have a .cursor() method, but we can get the
+    underlying DBAPI connection which does.
+
+    Args:
+        obj: A SQLAlchemy Engine or Connection object
+
+    Returns:
+        The raw DBAPI connection object
+
+    Raises:
+        ValueError: If the object cannot be unwrapped
+    """
+    # If it's not SQLAlchemy, return as-is
+    if not is_sqlalchemy_object(obj):
+        return obj
+
+    # SQLAlchemy 2.x Engine - use raw_connection()
+    if hasattr(obj, "raw_connection"):
+        return obj.raw_connection()
+
+    # SQLAlchemy 2.x Connection - get underlying connection
+    if hasattr(obj, "connection"):
+        dbapi_conn = obj.connection
+        # In SQLAlchemy 2.x, this might be another wrapper
+        if hasattr(dbapi_conn, "dbapi_connection"):
+            return dbapi_conn.dbapi_connection
+        return dbapi_conn
+
+    # SQLAlchemy 1.x Engine
+    if hasattr(obj, "connect"):
+        sa_conn = obj.connect()
+        if hasattr(sa_conn, "connection"):
+            return sa_conn.connection
+        return sa_conn
+
+    raise ValueError(
+        f"Cannot extract DBAPI connection from SQLAlchemy object: {type(obj).__name__}\n"
+        "Try passing engine.raw_connection() instead."
+    )
+
+
 def parse_table_reference(table: str) -> Tuple[Optional[str], Optional[str], str]:
     """
     Parse a table reference into (database, schema, table) components.

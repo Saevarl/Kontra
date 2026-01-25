@@ -101,6 +101,21 @@ class AllowedValuesRule(BaseRule):
             columns={column},
         )
 
+    def to_sql_spec(self) -> Optional[Dict[str, Any]]:
+        """Generate SQL pushdown specification."""
+        column = self.params.get("column")
+        values = self.params.get("values")
+
+        if not column or values is None:
+            return None
+
+        return {
+            "kind": "allowed_values",
+            "rule_id": self.rule_id,
+            "column": column,
+            "values": list(values),
+        }
+
     def to_sql_filter(self, dialect: str = "postgres") -> str | None:
         column = self.params["column"]
         values: Sequence[Any] = self.params["values"]

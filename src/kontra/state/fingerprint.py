@@ -10,8 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+
+def _json_default(obj: Any) -> Any:
+    """JSON encoder for non-serializable types (dates, etc.)."""
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 if TYPE_CHECKING:
     from kontra.config.models import Contract
@@ -53,7 +61,7 @@ def fingerprint_contract(
     }
 
     # Sort rules for determinism
-    for rule in sorted(contract.rules, key=lambda r: (r.name, json.dumps(r.params, sort_keys=True))):
+    for rule in sorted(contract.rules, key=lambda r: (r.name, json.dumps(r.params, sort_keys=True, default=_json_default))):
         canonical["rules"].append({
             "name": rule.name,
             "params": rule.params,
@@ -63,7 +71,7 @@ def fingerprint_contract(
         canonical["datasource"] = contract.datasource
 
     # Generate stable JSON string
-    json_str = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    json_str = json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=_json_default)
     return _stable_hash(json_str)
 
 

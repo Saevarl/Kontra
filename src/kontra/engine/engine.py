@@ -880,15 +880,24 @@ class ValidationEngine:
                 sql_results_by_id = {r["rule_id"]: r for r in sql_results_raw}
                 handled_ids_sql = set(sql_results_by_id.keys())
 
-                # Introspect
+                # Get row count and cols from execute result (avoids separate introspect call)
                 t0 = now_ms()
-                info = executor.introspect(handle, csv_mode=self.csv_mode)
-                push_introspect_ms = now_ms() - t0
-                sql_row_count = info.get("row_count")
-                available_cols = info.get("available_cols") or []
+                sql_row_count = duck_out.get("row_count")
+                available_cols = duck_out.get("available_cols") or []
+
+                # Fallback to introspect if execute didn't return these
+                if sql_row_count is None or not available_cols:
+                    info = executor.introspect(handle, csv_mode=self.csv_mode)
+                    push_introspect_ms = now_ms() - t0
+                    sql_row_count = info.get("row_count") if sql_row_count is None else sql_row_count
+                    available_cols = info.get("available_cols") or available_cols
+                    staging = info.get("staging") or duck_out.get("staging")
+                else:
+                    push_introspect_ms = now_ms() - t0
+                    staging = duck_out.get("staging")
 
                 # Reuse staged Parquet (if the executor staged CSV → Parquet)
-                staging = info.get("staging") or duck_out.get("staging")
+                staging = staging or duck_out.get("staging")
                 if staging and staging.get("path"):
                     _staged_override_uri = staging["path"]
                     self._staging_tmpdir = staging.get("tmpdir")

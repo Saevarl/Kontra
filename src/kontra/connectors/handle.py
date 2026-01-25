@@ -80,10 +80,18 @@ class DatasetHandle:
             - Kontra does NOT close the connection (owned=False). User manages lifecycle.
             - SQL pushdown and preplan still work using the provided connection.
             - The `dialect` is auto-detected from the connection type.
+            - SQLAlchemy engines/connections are automatically unwrapped to raw DBAPI.
         """
-        from kontra.connectors.detection import detect_connection_dialect
+        from kontra.connectors.detection import (
+            detect_connection_dialect,
+            unwrap_sqlalchemy_connection,
+        )
 
+        # Detect dialect before unwrapping (SQLAlchemy has better dialect info)
         dialect = detect_connection_dialect(conn)
+
+        # Unwrap SQLAlchemy to raw DBAPI connection (has .cursor() method)
+        raw_conn = unwrap_sqlalchemy_connection(conn)
 
         return DatasetHandle(
             uri=f"byoc://{dialect}/{table}",
@@ -92,7 +100,7 @@ class DatasetHandle:
             format=dialect,
             fs_opts={},
             db_params=None,
-            external_conn=conn,
+            external_conn=raw_conn,
             dialect=dialect,
             table_ref=table,
             owned=False,  # User owns the connection, not Kontra
@@ -136,8 +144,8 @@ class DatasetHandle:
         # Very light format inference (enough for materializer selection)
         if lower.endswith(".parquet"):
             fmt = "parquet"
-        elif lower.endswith(".csv"):
-            fmt = "csv"
+        elif lower.endswith(".csv") or lower.endswith(".tsv"):
+            fmt = "csv"  # TSV is CSV with tab separator (auto-detected by Polars)
         else:
             fmt = "unknown"
 

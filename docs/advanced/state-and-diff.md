@@ -197,25 +197,6 @@ Annotations are stored in a normalized schema:
 - `kontra_annotations` table (PostgreSQL, SQL Server)
 - `<run_id>.ann.jsonl` files (local, S3)
 
-## Profile Diff
-
-Compare data profiles over time:
-
-```bash
-kontra profile data.parquet --save-profile  # save profile
-# ... later ...
-kontra profile-diff data.parquet            # compare to previous
-```
-
-```python
-# Python API
-profile = kontra.profile(df, save=True)
-diff = kontra.profile_diff("data.parquet")
-
-for change in diff.changes:
-    print(f"{change.column}.{change.field}: {change.before} -> {change.after}")
-```
-
 ## Disabling State
 
 ```bash

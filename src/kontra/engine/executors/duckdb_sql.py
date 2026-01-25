@@ -35,6 +35,7 @@ from kontra.engine.sql_utils import (
     agg_compare,
     agg_conditional_not_null,
     agg_conditional_range,
+    agg_allowed_values,
     exists_not_null,
     results_from_row,
     SQL_OP_MAP,
@@ -265,7 +266,7 @@ class DuckDBSqlExecutor(SqlExecutor):
 
     name = "duckdb"
 
-    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex", "compare", "conditional_not_null", "conditional_range", "custom_agg"}
+    SUPPORTED_RULES = {"not_null", "min_rows", "max_rows", "freshness", "range", "regex", "compare", "conditional_not_null", "conditional_range", "custom_agg", "allowed_values"}
 
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
@@ -340,6 +341,14 @@ class DuckDBSqlExecutor(SqlExecutor):
                 pattern = spec.get("pattern")
                 if isinstance(col, str) and col and isinstance(pattern, str) and pattern:
                     aggregate_selects.append(agg_regex(col, pattern, rid, DIALECT))
+                    aggregate_specs.append(spec)
+                    supported_specs.append(spec)
+
+            elif kind == "allowed_values":
+                col = spec.get("column")
+                values = spec.get("values")
+                if isinstance(col, str) and col and values is not None:
+                    aggregate_selects.append(agg_allowed_values(col, values, rid, DIALECT))
                     aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
@@ -469,9 +478,22 @@ class DuckDBSqlExecutor(SqlExecutor):
                     agg_results = results_from_row(cols, row, is_exists=False, rule_kinds=rule_kinds)
                     results.extend(agg_results)
 
+            # Get row count and column names (avoid separate introspect call)
+            row_count = None
+            available_cols = []
+            try:
+                nrow = con.execute(f"SELECT COUNT(*) FROM {esc_ident(view)}").fetchone()
+                row_count = int(nrow[0]) if nrow and nrow[0] is not None else None
+                cur = con.execute(f"SELECT * FROM {esc_ident(view)} LIMIT 0")
+                available_cols = [d[0] for d in cur.description] if cur.description else []
+            except Exception:
+                pass  # Non-fatal - introspect can still be called
+
             return {
                 "results": results,
                 "staging": {"path": staged_path, "tmpdir": tmpdir},
+                "row_count": row_count,
+                "available_cols": available_cols,
             }
         except Exception:
             if tmpdir is not None:

@@ -136,7 +136,7 @@ def validate(
     env: Optional[str] = None,
     stats: str = "none",
     dry_run: bool = False,
-    sample: int = 5,
+    sample: int = 0,
     sample_budget: int = 50,
     sample_columns: Optional[Union[List[str], str]] = None,
     storage_options: Optional[Dict[str, Any]] = None,
@@ -168,7 +168,7 @@ def validate(
         dry_run: If True, validate contract/rules syntax without executing
             against data. Returns DryRunResult with .valid, .rules_count,
             .columns_needed. Use to check contracts before running.
-        sample: Per-rule sample cap for failing rows (default: 5, 0 to disable)
+        sample: Per-rule sample cap for failing rows (default: 0 disabled, set to 5 to enable)
         sample_budget: Global sample cap across all rules (default: 50)
         sample_columns: Columns to include in samples for token efficiency.
             - None (default): All columns
