@@ -36,24 +36,73 @@ from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 import json
 import os
-import polars as pl
 
+# Heavy imports are lazy-loaded for faster `import kontra`
+# polars, ValidationEngine, ScoutProfiler are imported when first needed
 if TYPE_CHECKING:
     import pandas as pd
+    import polars as pl
+    from kontra.engine.engine import ValidationEngine
+    from kontra.scout.profiler import ScoutProfiler
 
-# Core engine (for advanced usage)
-from kontra.engine.engine import ValidationEngine
-
-# Scout profiler (for advanced usage)
-from kontra.scout.profiler import ScoutProfiler
-
-# Scout types
+# Scout types (lightweight - just dataclasses)
 from kontra.scout.types import DatasetProfile, ColumnProfile, ProfileDiff
 
-# Logging
+# Logging (lightweight)
 from kontra.logging import get_logger, log_exception
 
 _logger = get_logger(__name__)
+
+
+# =============================================================================
+# Lazy Loading Support
+# =============================================================================
+
+# Cache for lazily loaded modules/classes
+_lazy_cache: Dict[str, Any] = {}
+
+
+def __getattr__(name: str) -> Any:
+    """
+    Lazy load heavy dependencies on first access.
+
+    This allows `import kontra` to be fast while still supporting:
+    - kontra.ValidationEngine (for advanced usage)
+    - kontra.ScoutProfiler (for advanced usage)
+    """
+    if name == "ValidationEngine":
+        if "ValidationEngine" not in _lazy_cache:
+            from kontra.engine.engine import ValidationEngine
+            _lazy_cache["ValidationEngine"] = ValidationEngine
+        return _lazy_cache["ValidationEngine"]
+
+    if name == "ScoutProfiler":
+        if "ScoutProfiler" not in _lazy_cache:
+            from kontra.scout.profiler import ScoutProfiler
+            _lazy_cache["ScoutProfiler"] = ScoutProfiler
+        return _lazy_cache["ScoutProfiler"]
+
+    if name == "pl":
+        # Support kontra.pl for users who expect polars to be accessible
+        if "pl" not in _lazy_cache:
+            import polars as pl
+            _lazy_cache["pl"] = pl
+        return _lazy_cache["pl"]
+
+    # Transformation probes (import polars)
+    if name == "compare":
+        if "compare" not in _lazy_cache:
+            from kontra.probes import compare
+            _lazy_cache["compare"] = compare
+        return _lazy_cache["compare"]
+
+    if name == "profile_relationship":
+        if "profile_relationship" not in _lazy_cache:
+            from kontra.probes import profile_relationship
+            _lazy_cache["profile_relationship"] = profile_relationship
+        return _lazy_cache["profile_relationship"]
+
+    raise AttributeError(f"module 'kontra' has no attribute '{name}'")
 
 
 def _is_pandas_dataframe(obj: Any) -> bool:
@@ -92,11 +141,11 @@ from kontra.api.results import (
     SuggestedRule,
 )
 
-# Probe types
+# Probe types (lightweight - just dataclasses)
 from kontra.api.compare import CompareResult, RelationshipProfile
 
-# Transformation probes
-from kontra.probes import compare, profile_relationship
+# Transformation probes - lazy loaded via __getattr__ (they import polars)
+# Users access via: kontra.compare(), kontra.profile_relationship()
 
 # Rules helpers
 from kontra.api.rules import rules
@@ -122,7 +171,7 @@ from kontra.config.settings import (
 
 
 def validate(
-    data: Union[str, pl.DataFrame, "pd.DataFrame", List[Dict[str, Any]], Dict[str, Any], Any],
+    data: Union[str, "pl.DataFrame", "pd.DataFrame", List[Dict[str, Any]], Dict[str, Any], Any],
     contract: Optional[str] = None,
     *,
     table: Optional[str] = None,
@@ -236,6 +285,7 @@ def validate(
     """
     from kontra.errors import InvalidDataError, InvalidPathError
     from kontra.connectors.detection import is_database_connection, is_cursor_object
+    from kontra.engine.paths import detect_execution_path
 
     # ==========================================================================
     # Input validation - catch invalid data types early with clear errors
@@ -251,8 +301,8 @@ def validate(
     # ==========================================================================
     if dry_run:
         from kontra.config.loader import ContractLoader
-        from kontra.rules.factory import RuleFactory
-        from kontra.rules.execution_plan import RuleExecutionPlan
+        from kontra.rule_defs.factory import RuleFactory
+        from kontra.rule_defs.execution_plan import RuleExecutionPlan
 
         errors: List[str] = []
         contract_name: Optional[str] = None
@@ -278,7 +328,7 @@ def validate(
         if rules is not None:
             # Convert inline rules to RuleSpec format (or pass through BaseRule instances)
             from kontra.config.models import RuleSpec
-            from kontra.rules.base import BaseRule as BaseRuleType
+            from kontra.rule_defs.base import BaseRule as BaseRuleType
             for i, r in enumerate(rules):
                 try:
                     if isinstance(r, BaseRuleType):
@@ -369,6 +419,13 @@ def validate(
         if pushdown == "auto" and cfg.pushdown:
             pushdown = cfg.pushdown
 
+    # Detect execution path early (enables lazy loading optimization in engine)
+    execution_path = detect_execution_path(data, table=table)
+
+    # Lazy import heavy dependencies (only loaded when validate() is called)
+    import polars as pl
+    from kontra.engine.engine import ValidationEngine
+
     # Build engine kwargs
     engine_kwargs = {
         "contract_path": contract,
@@ -381,6 +438,7 @@ def validate(
         "stats_mode": stats,
         "inline_rules": rules,
         "storage_options": storage_options,
+        "execution_path": execution_path,
         **kwargs,
     }
 
@@ -490,7 +548,7 @@ def validate(
 
 
 def profile(
-    data: Union[str, pl.DataFrame, List[Dict[str, Any]], Dict[str, Any]],
+    data: Union[str, "pl.DataFrame", List[Dict[str, Any]], Dict[str, Any]],
     preset: str = "scan",
     *,
     columns: Optional[List[str]] = None,
@@ -533,7 +591,8 @@ def profile(
         profile = kontra.profile("data.parquet", preset="interrogate")
     """
     import warnings
-    from kontra.scout.profiler import _DEPRECATED_PRESETS
+    import polars as pl
+    from kontra.scout.profiler import ScoutProfiler, _DEPRECATED_PRESETS
 
     # Warn on deprecated preset names
     if preset in _DEPRECATED_PRESETS:
@@ -741,7 +800,7 @@ def get_history(
 
 
 def scout(
-    data: Union[str, pl.DataFrame],
+    data: Union[str, "pl.DataFrame"],
     preset: str = "standard",
     *,
     columns: Optional[List[str]] = None,
@@ -764,7 +823,7 @@ def scout(
 
 
 def suggest_rules(
-    data: Union[str, DatasetProfile, pl.DataFrame],
+    data: Union[str, DatasetProfile, "pl.DataFrame"],
     min_confidence: float = 0.5,
 ) -> Suggestions:
     """
@@ -780,6 +839,7 @@ def suggest_rules(
         Suggestions with .to_yaml(), .save(), .filter()
     """
     import warnings
+    import polars as pl
     warnings.warn(
         "kontra.suggest_rules() is deprecated, use kontra.profile() then kontra.draft() instead",
         DeprecationWarning,
@@ -798,7 +858,7 @@ def suggest_rules(
 
 
 def explain(
-    data: Union[str, pl.DataFrame],
+    data: Union[str, "pl.DataFrame"],
     contract: str,
     **kwargs,
 ) -> Dict[str, Any]:
@@ -821,8 +881,8 @@ def explain(
     # For now, return basic plan info
     # TODO: Implement full explain with SQL preview
     from kontra.config.loader import ContractLoader
-    from kontra.rules.factory import RuleFactory
-    from kontra.rules.execution_plan import RuleExecutionPlan
+    from kontra.rule_defs.factory import RuleFactory
+    from kontra.rule_defs.execution_plan import RuleExecutionPlan
 
     contract_obj = ContractLoader.from_path(contract)
     rules = RuleFactory(contract_obj.rules).build_rules()
@@ -1646,7 +1706,7 @@ def list_rules() -> List[Dict[str, Any]]:
         for rule in rules:
             print(f"{rule['name']}: {rule['description']}")
     """
-    from kontra.rules.registry import RULE_REGISTRY
+    from kontra.rule_defs.registry import RULE_REGISTRY
 
     # Rule metadata - manually maintained for quality descriptions
     # This is better than parsing docstrings which may be inconsistent
@@ -1793,7 +1853,7 @@ def health() -> Dict[str, Any]:
         else:
             print(f"Issue: {health['status']}")
     """
-    from kontra.rules.registry import RULE_REGISTRY
+    from kontra.rule_defs.registry import RULE_REGISTRY
     from kontra.config.settings import find_config_file
     from pathlib import Path
 

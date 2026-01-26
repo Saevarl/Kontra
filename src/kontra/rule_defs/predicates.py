@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Set
-import polars as pl
+from typing import TYPE_CHECKING, Set
+
+if TYPE_CHECKING:
+    import polars as pl
+
 
 @dataclass(frozen=True)
 class Predicate:
@@ -20,6 +23,6 @@ class Predicate:
         Column names referenced by `expr` (used for column pruning).
     """
     rule_id: str
-    expr: pl.Expr
+    expr: "pl.Expr"
     message: str
     columns: Set[str]

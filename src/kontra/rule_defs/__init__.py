@@ -10,11 +10,11 @@ Public API:
 Built-in rules are auto-registered when kontra.engine is imported.
 """
 
-from kontra.rules.base import BaseRule
-from kontra.rules.factory import RuleFactory
-from kontra.rules.execution_plan import RuleExecutionPlan, CompiledPlan
-from kontra.rules.predicates import Predicate
-from kontra.rules.registry import (
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.factory import RuleFactory
+from kontra.rule_defs.execution_plan import RuleExecutionPlan, CompiledPlan
+from kontra.rule_defs.predicates import Predicate
+from kontra.rule_defs.registry import (
     register_rule,
     get_rule,
     get_all_rule_names,

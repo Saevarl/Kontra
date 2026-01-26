@@ -29,11 +29,11 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, TYPE_CHECKING, Union
 
-import polars as pl
-
 if TYPE_CHECKING:
+    import polars as pl
     from kontra.state.backends.base import StateBackend
     from kontra.state.types import ValidationState
+
 import pyarrow as pa
 import pyarrow.fs as pafs  # <-- Added
 import pyarrow.parquet as pq
@@ -41,13 +41,21 @@ import pyarrow.parquet as pq
 from kontra.config.loader import ContractLoader
 from kontra.config.models import Contract
 from kontra.connectors.handle import DatasetHandle
-from kontra.engine.backends.polars_backend import PolarsBackend
-from kontra.engine.executors.registry import pick_executor, register_default_executors
-from kontra.engine.materializers.registry import pick_materializer, register_default_materializers
+from kontra.engine.executors.registry import (
+    pick_executor,
+    register_default_executors,
+    register_executors_for_path,
+)
+from kontra.engine.materializers.registry import (
+    pick_materializer,
+    register_default_materializers,
+    register_materializers_for_path,
+)
+from kontra.engine.paths import ExecutionPath, get_database_type
 from kontra.engine.stats import RunTimers, basic_summary, columns_touched, now_ms, profile_for
 from kontra.reporters.rich_reporter import report_failure, report_success
-from kontra.rules.execution_plan import RuleExecutionPlan
-from kontra.rules.factory import RuleFactory
+from kontra.rule_defs.execution_plan import RuleExecutionPlan
+from kontra.rule_defs.factory import RuleFactory
 from kontra.logging import get_logger, log_exception
 
 _logger = get_logger(__name__)
@@ -55,32 +63,102 @@ _logger = get_logger(__name__)
 # Preplan (metadata-only) + static predicate extraction
 from kontra.preplan.planner import preplan_single_parquet
 from kontra.preplan.types import PrePlan
-from kontra.rules.static_predicates import extract_static_predicates
+from kontra.rule_defs.static_predicates import extract_static_predicates
 
-# Built-ins (side-effect registration)
-import kontra.rules.builtin.allowed_values  # noqa: F401
-import kontra.rules.builtin.disallowed_values  # noqa: F401
-import kontra.rules.builtin.custom_sql_check  # noqa: F401
-import kontra.rules.builtin.dtype  # noqa: F401
-import kontra.rules.builtin.freshness  # noqa: F401
-import kontra.rules.builtin.max_rows  # noqa: F401
-import kontra.rules.builtin.min_rows  # noqa: F401
-import kontra.rules.builtin.not_null  # noqa: F401
-import kontra.rules.builtin.range  # noqa: F401
-import kontra.rules.builtin.length  # noqa: F401
-import kontra.rules.builtin.regex  # noqa: F401
-import kontra.rules.builtin.contains  # noqa: F401
-import kontra.rules.builtin.starts_with  # noqa: F401
-import kontra.rules.builtin.ends_with  # noqa: F401
-import kontra.rules.builtin.unique  # noqa: F401
-import kontra.rules.builtin.compare  # noqa: F401
-import kontra.rules.builtin.conditional_not_null  # noqa: F401
-import kontra.rules.builtin.conditional_range  # noqa: F401
+# Built-ins registered lazily - see _ensure_builtin_rules_registered()
+_builtin_rules_registered = False
+
+
+def _ensure_builtin_rules_registered() -> None:
+    """
+    Lazy import builtin rules to register them.
+
+    This defers loading polars until we actually need to build rules.
+    Called by ValidationEngine when loading contracts.
+
+    Raises:
+        ImportError: If polars is not installed (rules depend on it).
+    """
+    global _builtin_rules_registered
+    if _builtin_rules_registered:
+        return
+
+    try:
+        import kontra.rule_defs.builtin.allowed_values  # noqa: F401
+        import kontra.rule_defs.builtin.disallowed_values  # noqa: F401
+        import kontra.rule_defs.builtin.custom_sql_check  # noqa: F401
+        import kontra.rule_defs.builtin.dtype  # noqa: F401
+        import kontra.rule_defs.builtin.freshness  # noqa: F401
+        import kontra.rule_defs.builtin.max_rows  # noqa: F401
+        import kontra.rule_defs.builtin.min_rows  # noqa: F401
+        import kontra.rule_defs.builtin.not_null  # noqa: F401
+        import kontra.rule_defs.builtin.range  # noqa: F401
+        import kontra.rule_defs.builtin.length  # noqa: F401
+        import kontra.rule_defs.builtin.regex  # noqa: F401
+        import kontra.rule_defs.builtin.contains  # noqa: F401
+        import kontra.rule_defs.builtin.starts_with  # noqa: F401
+        import kontra.rule_defs.builtin.ends_with  # noqa: F401
+        import kontra.rule_defs.builtin.unique  # noqa: F401
+        import kontra.rule_defs.builtin.compare  # noqa: F401
+        import kontra.rule_defs.builtin.conditional_not_null  # noqa: F401
+        import kontra.rule_defs.builtin.conditional_range  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "Failed to load builtin rules. This usually means polars is not installed. "
+            "Install with: pip install polars"
+        ) from e
+
+    _builtin_rules_registered = True
 
 
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+# Lazy loading cache for heavy imports
+_lazy_polars = None
+_lazy_polars_backend = None
+
+
+def _get_polars():
+    """
+    Lazy load polars module.
+
+    Raises:
+        ImportError: If polars is not installed.
+    """
+    global _lazy_polars
+    if _lazy_polars is None:
+        try:
+            import polars
+            _lazy_polars = polars
+        except ImportError as e:
+            raise ImportError(
+                "Polars is required for validation but not installed. "
+                "Install with: pip install polars"
+            ) from e
+    return _lazy_polars
+
+
+def _get_polars_backend():
+    """
+    Lazy load PolarsBackend class.
+
+    Raises:
+        ImportError: If polars is not installed (PolarsBackend depends on it).
+    """
+    global _lazy_polars_backend
+    if _lazy_polars_backend is None:
+        try:
+            from kontra.engine.backends.polars_backend import PolarsBackend
+            _lazy_polars_backend = PolarsBackend
+        except ImportError as e:
+            raise ImportError(
+                "Polars backend could not be loaded. "
+                "Ensure polars is installed: pip install polars"
+            ) from e
+    return _lazy_polars_backend
+
 
 def _resolve_datasource_uri(reference: str) -> str:
     """
@@ -189,15 +267,20 @@ def _create_azure_filesystem(handle: DatasetHandle) -> pafs.FileSystem:
     """
     Create a PyArrow AzureFileSystem from handle's fs_opts (populated from env vars).
     Supports account key and SAS token authentication.
+
+    Priority: account_key > sas_token (only one auth method should be used)
     """
     opts = handle.fs_opts or {}
 
     kwargs: Dict[str, Any] = {}
     if opts.get("azure_account_name"):
         kwargs["account_name"] = opts["azure_account_name"]
+
+    # Use only ONE auth method - account_key takes priority over sas_token
+    # PyArrow can crash or behave unexpectedly when both are provided
     if opts.get("azure_account_key"):
         kwargs["account_key"] = opts["azure_account_key"]
-    if opts.get("azure_sas_token"):
+    elif opts.get("azure_sas_token"):
         # PyArrow requires SAS token WITH the leading '?'
         sas = opts["azure_sas_token"]
         if not sas.startswith("?"):
@@ -263,7 +346,7 @@ class ValidationEngine:
         self,
         contract_path: Optional[str] = None,
         data_path: Optional[str] = None,
-        dataframe: Optional[Union[pl.DataFrame, "pd.DataFrame"]] = None,
+        dataframe: Optional[Union["pl.DataFrame", "pd.DataFrame"]] = None,
         handle: Optional[DatasetHandle] = None,  # BYOC: pre-built handle
         emit_report: bool = True,
         stats_mode: Literal["none", "summary", "profile"] = "none",
@@ -282,6 +365,8 @@ class ValidationEngine:
         inline_rules: Optional[List[Dict[str, Any]]] = None,
         # Cloud storage credentials (S3, Azure, GCS)
         storage_options: Optional[Dict[str, Any]] = None,
+        # Execution path hint (for lazy loading optimization)
+        execution_path: Optional[ExecutionPath] = None,
     ):
         # Validate inputs
         if contract_path is None and inline_rules is None:
@@ -335,13 +420,56 @@ class ValidationEngine:
         self._last_state: Optional["ValidationState"] = None
 
         self.contract: Optional[Contract] = None
-        self.df: Optional[pl.DataFrame] = None
+        self.df: Optional["pl.DataFrame"] = None
         self._handle: Optional[DatasetHandle] = handle  # BYOC: pre-built handle
         self._rules: Optional[List] = None  # Built rules, for sample_failures()
         self._storage_options = storage_options  # Cloud storage credentials
+        self._execution_path = execution_path  # Hint for lazy loading optimization
 
-        register_default_materializers()
-        register_default_executors()
+        # Register materializers/executors based on execution path (lazy loading)
+        self._register_components_for_path()
+
+    def _register_components_for_path(self) -> None:
+        """
+        Register materializers and executors based on the execution path.
+
+        This enables lazy loading - we only import heavy dependencies when needed:
+        - Database path: only load the specific DB connector (psycopg2/pymssql)
+        - File/DataFrame path: load DuckDB and Polars (current behavior)
+
+        If no execution_path hint was provided, falls back to loading everything.
+        """
+        if self._execution_path is None:
+            # No hint provided - use legacy behavior (load everything)
+            register_default_materializers()
+            register_default_executors()
+            return
+
+        # Determine database type for database paths
+        database_type = None
+        if self._execution_path == "database":
+            # Get database type from data_path or handle
+            if self.data_path:
+                database_type = get_database_type(self.data_path)
+            elif self._handle and self._handle.scheme in ("postgres", "postgresql"):
+                database_type = "postgres"
+            elif self._handle and self._handle.scheme in ("mssql", "sqlserver"):
+                database_type = "sqlserver"
+            elif self._handle and self._handle.dialect:
+                # BYOC handle with dialect
+                if self._handle.dialect == "postgresql":
+                    database_type = "postgres"
+                elif self._handle.dialect == "sqlserver":
+                    database_type = "sqlserver"
+
+        # Register only what's needed for this path
+        try:
+            register_materializers_for_path(self._execution_path, database_type)
+            register_executors_for_path(self._execution_path, database_type)
+        except (ImportError, ValueError):
+            # If path-aware registration fails, fall back to default
+            register_default_materializers()
+            register_default_executors()
 
     # --------------------------------------------------------------------- #
 
@@ -522,6 +650,7 @@ class ValidationEngine:
         t0 = now_ms()
 
         # Convert pandas to polars if needed
+        pl = _get_polars()
         df = self._input_dataframe
         if not isinstance(df, pl.DataFrame):
             try:
@@ -538,6 +667,7 @@ class ValidationEngine:
 
         # Execute all rules via Polars
         t0 = now_ms()
+        PolarsBackend = _get_polars_backend()
         polars_exec = PolarsBackend(executor=plan.execute_compiled)
         exec_result = polars_exec.execute(self.df, compiled_full)
         polars_results = exec_result.get("results", [])
@@ -619,7 +749,7 @@ class ValidationEngine:
         inline_specs = []
         inline_built_rules = []  # Already-built BaseRule instances
         if self._inline_rules:
-            from kontra.rules.base import BaseRule as BaseRuleType
+            from kontra.rule_defs.base import BaseRule as BaseRuleType
             for rule in self._inline_rules:
                 if isinstance(rule, BaseRuleType):
                     # Already a rule instance - use directly
@@ -670,6 +800,8 @@ class ValidationEngine:
         timers.contract_load_ms = now_ms() - t0
 
         # 2) Rules & plan
+        # Ensure builtin rules are registered (lazy import to defer polars loading)
+        _ensure_builtin_rules_registered()
         t0 = now_ms()
         rules = RuleFactory(self.contract.rules).build_rules()
         # Merge with any pre-built rule instances passed directly
@@ -1013,12 +1145,15 @@ class ValidationEngine:
             polars_out = {"results": []}
             timers.data_load_ms = timers.execute_ms = 0
         else:
+            # Lazy load polars only when residual rules exist
+            pl = _get_polars()
+
             # Materialize minimal slice:
             # If preplan produced a row-group manifest, honor it — otherwise let the materializer decide.
             t0 = now_ms()
             if preplan_effective and _is_parquet(handle.uri) and preplan_row_groups:
                 cols = (required_cols_residual or None) if self.enable_projection else None
-                
+
                 # Reuse preplan filesystem if available, otherwise create from handle
                 residual_fs = preplan_fs
                 if residual_fs is None and _is_s3_uri(handle.uri):
@@ -1053,6 +1188,7 @@ class ValidationEngine:
 
             # Execute residual rules in Polars
             t0 = now_ms()
+            PolarsBackend = _get_polars_backend()
             polars_exec = PolarsBackend(executor=plan.execute_compiled)
             polars_art = polars_exec.compile(compiled_residual)
             polars_out = polars_exec.execute(self.df, polars_art)
@@ -1289,6 +1425,7 @@ class ValidationEngine:
             # so we'll just handle local files for now.
             if _is_s3_uri(s):
                 return []
+            pl = _get_polars()
             if s.endswith(".parquet"):
                 return list(pl.scan_parquet(source).collect_schema().names())
             if s.endswith(".csv"):

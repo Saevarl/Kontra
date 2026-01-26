@@ -22,9 +22,9 @@ from typing import Any, Dict, List, Optional, Set, Union
 
 import polars as pl
 
-from kontra.rules.base import BaseRule
-from kontra.rules.registry import register_rule
-from kontra.rules.predicates import Predicate
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.registry import register_rule
+from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
 
 

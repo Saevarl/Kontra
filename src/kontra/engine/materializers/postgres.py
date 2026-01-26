@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.postgres import PostgresConnectionParams, get_connection
@@ -93,7 +94,7 @@ class PostgresMaterializer(BaseMaterializer):
                 )
                 return [row[0] for row in cur.fetchall()]
 
-    def to_polars(self, columns: Optional[List[str]]) -> pl.DataFrame:
+    def to_polars(self, columns: Optional[List[str]]) -> "pl.DataFrame":
         """
         Load table data as a Polars DataFrame with optional column projection.
 
@@ -105,7 +106,18 @@ class PostgresMaterializer(BaseMaterializer):
 
         Returns:
             Polars DataFrame with the requested columns.
+
+        Raises:
+            ImportError: If polars is not installed.
         """
+        try:
+            import polars as pl  # Lazy import - only needed when residual rules exist
+        except ImportError as e:
+            raise ImportError(
+                "Polars is required to materialize data for validation but is not installed. "
+                "Install with: pip install polars"
+            ) from e
+
         t0 = time.perf_counter()
 
         # Build column list for SELECT

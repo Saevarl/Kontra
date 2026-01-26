@@ -1,6 +1,6 @@
 # src/contra/rules/registry.py
 from typing import Dict, Type
-from kontra.rules.base import BaseRule
+from kontra.rule_defs.base import BaseRule
 
 RULE_REGISTRY: Dict[str, Type[BaseRule]] = {}
 

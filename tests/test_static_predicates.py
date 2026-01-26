@@ -3,14 +3,14 @@
 
 import pytest
 
-from kontra.rules.static_predicates import (
+from kontra.rule_defs.static_predicates import (
     extract_static_predicates_from_rules,
     extract_static_predicates,
     _normalize,
     _from_rule_hook,
     _conservative_builtin_mapping,
 )
-from kontra.rules.registry import get_rule
+from kontra.rule_defs.registry import get_rule
 
 
 def make_rule(name: str, params: dict):

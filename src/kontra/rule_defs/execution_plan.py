@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Dict, Any, Optional, Set
+from typing import TYPE_CHECKING, Iterable, List, Dict, Any, Optional, Set
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
-from kontra.rules.base import BaseRule
-from kontra.rules.predicates import Predicate
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.predicates import Predicate
 from kontra.logging import get_logger, log_exception
 
 _logger = get_logger(__name__)
@@ -121,7 +122,7 @@ class RuleExecutionPlan:
             sql_rules=sql_rules,
         )
 
-    def execute_compiled(self, df: pl.DataFrame, compiled: CompiledPlan) -> List[Dict[str, Any]]:
+    def execute_compiled(self, df: "pl.DataFrame", compiled: CompiledPlan) -> List[Dict[str, Any]]:
         """
         Execute the compiled plan using Polars:
           - vectorized pass for predicates
@@ -218,7 +219,7 @@ class RuleExecutionPlan:
             for r in self.rules
         }
 
-    def execute(self, df: pl.DataFrame) -> List[Dict[str, Any]]:
+    def execute(self, df: "pl.DataFrame") -> List[Dict[str, Any]]:
         """Compile and execute in one step (Polars-only path)."""
         compiled = self.compile()
         return self.execute_compiled(df, compiled)
@@ -348,7 +349,22 @@ def _extract_columns_from_rules(rules: Iterable[BaseRule]) -> Set[str]:
 
 
 def _validate_predicate(pred: Predicate) -> None:
-    """Type/shape checks for a Predicate returned by a rule."""
+    """
+    Type/shape checks for a Predicate returned by a rule.
+
+    Raises:
+        TypeError: If predicate structure is invalid.
+        ValueError: If predicate values are invalid.
+        ImportError: If polars is not installed.
+    """
+    try:
+        import polars as pl  # Lazy import - only needed when validating predicates
+    except ImportError as e:
+        raise ImportError(
+            "Polars is required to compile validation rules but is not installed. "
+            "Install with: pip install polars"
+        ) from e
+
     if not isinstance(pred, Predicate):
         raise TypeError("compile_predicate() must return a Predicate instance")
     if not isinstance(pred.expr, pl.Expr):

@@ -4,8 +4,8 @@
 import pytest
 import polars as pl
 
-from kontra.rules.builtin.conditional_not_null import ConditionalNotNullRule
-from kontra.rules.condition_parser import parse_condition, condition_to_sql, ConditionParseError
+from kontra.rule_defs.builtin.conditional_not_null import ConditionalNotNullRule
+from kontra.rule_defs.condition_parser import parse_condition, condition_to_sql, ConditionParseError
 
 
 class TestConditionParser:

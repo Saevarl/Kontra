@@ -4,7 +4,7 @@
 import pytest
 import polars as pl
 
-from kontra.rules.builtin.allowed_values import AllowedValuesRule
+from kontra.rule_defs.builtin.allowed_values import AllowedValuesRule
 from kontra.engine.executors.duckdb_sql import DuckDBSqlExecutor
 from kontra.engine.executors.postgres_sql import PostgresSqlExecutor
 from kontra.engine.executors.sqlserver_sql import SqlServerSqlExecutor

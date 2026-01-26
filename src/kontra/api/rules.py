@@ -311,7 +311,7 @@ def freshness(
         raise ValueError(f"freshness() max_age must be a string, got {type(max_age).__name__}")
 
     # Validate max_age is parseable
-    from kontra.rules.builtin.freshness import parse_duration
+    from kontra.rule_defs.builtin.freshness import parse_duration
     try:
         parse_duration(max_age)
     except ValueError as e:

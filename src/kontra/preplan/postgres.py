@@ -168,7 +168,8 @@ def preplan_postgres(
         manifest_row_groups=[],  # Not applicable for PostgreSQL
         rule_decisions=rule_decisions,
         stats={
-            "row_estimate": row_estimate,
+            "total_rows": row_estimate,  # Use total_rows for consistency with engine
+            "row_estimate": row_estimate,  # Keep for backwards compatibility
             "columns_with_stats": len([k for k in pg_stats if k != "__table__"]),
         },
     )

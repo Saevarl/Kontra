@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Tuple
 
-from kontra.rules.base import BaseRule
+from kontra.rule_defs.base import BaseRule
 
 # (rule_id, column, op, value)  -- op ∈ ALLOWED_OPS
 PredicateT = Tuple[str, str, str, Any]

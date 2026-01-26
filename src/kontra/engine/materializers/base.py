@@ -1,9 +1,10 @@
 # src/kontra/engine/materializers/base.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.connectors.handle import DatasetHandle
 
@@ -33,7 +34,7 @@ class BaseMaterializer:
         """Return column names without materializing data (best effort)."""
         raise NotImplementedError
 
-    def to_polars(self, columns: Optional[List[str]]) -> pl.DataFrame:
+    def to_polars(self, columns: Optional[List[str]]) -> "pl.DataFrame":
         """Materialize directly as a Polars DataFrame."""
         raise NotImplementedError
 

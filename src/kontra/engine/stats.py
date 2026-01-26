@@ -12,9 +12,11 @@ Design goals
 """
 
 from dataclasses import dataclass
-from typing import Iterable, Dict, Any, List, Optional
+from typing import TYPE_CHECKING, Iterable, Dict, Any, List, Optional
 import time
-import polars as pl
+
+if TYPE_CHECKING:
+    import polars as pl
 
 
 # ----------------------------- Timers -----------------------------------------
@@ -53,7 +55,7 @@ def now_ms() -> int:
 
 
 def basic_summary(
-    df: Optional[pl.DataFrame],
+    df: Optional["pl.DataFrame"],
     *,
     available_cols: Optional[List[str]] = None,
     nrows_override: Optional[int] = None,
@@ -145,12 +147,23 @@ def build_coverage(
 # ------------------------------ Profiling -------------------------------------
 
 
-def profile_for(df: pl.DataFrame, cols: List[str]) -> Dict[str, Dict[str, Any]]:
+def profile_for(df: "pl.DataFrame", cols: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     Lightweight, single-pass column profile for touched columns only.
+
+    Raises:
+        ImportError: If polars is not installed.
     """
     if not cols:
         return {}
+
+    try:
+        import polars as pl  # Lazy import - profiling is optional
+    except ImportError as e:
+        raise ImportError(
+            "Polars is required for profiling but is not installed. "
+            "Install with: pip install polars"
+        ) from e
 
     exprs: List[pl.Expr] = []
     for c in cols:

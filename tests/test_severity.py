@@ -10,7 +10,7 @@ import yaml
 
 from kontra.state.types import Severity, RuleState, StateSummary, ValidationState
 from kontra.config.models import RuleSpec, Contract
-from kontra.rules.factory import RuleFactory
+from kontra.rule_defs.factory import RuleFactory
 from kontra.engine.engine import ValidationEngine
 
 

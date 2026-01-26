@@ -27,28 +27,28 @@ def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) 
     """
     from kontra.config.loader import ContractLoader
     from kontra.connectors.handle import DatasetHandle
-    from kontra.rules.factory import RuleFactory
-    from kontra.rules.registry import get_all_rule_names
+    from kontra.rule_defs.factory import RuleFactory
+    from kontra.rule_defs.registry import get_all_rule_names
 
     # Import built-in rules to populate registry
-    import kontra.rules.builtin.allowed_values  # noqa: F401
-    import kontra.rules.builtin.disallowed_values  # noqa: F401
-    import kontra.rules.builtin.compare  # noqa: F401
-    import kontra.rules.builtin.conditional_not_null  # noqa: F401
-    import kontra.rules.builtin.conditional_range  # noqa: F401
-    import kontra.rules.builtin.contains  # noqa: F401
-    import kontra.rules.builtin.custom_sql_check  # noqa: F401
-    import kontra.rules.builtin.dtype  # noqa: F401
-    import kontra.rules.builtin.ends_with  # noqa: F401
-    import kontra.rules.builtin.freshness  # noqa: F401
-    import kontra.rules.builtin.length  # noqa: F401
-    import kontra.rules.builtin.max_rows  # noqa: F401
-    import kontra.rules.builtin.min_rows  # noqa: F401
-    import kontra.rules.builtin.not_null  # noqa: F401
-    import kontra.rules.builtin.range  # noqa: F401
-    import kontra.rules.builtin.regex  # noqa: F401
-    import kontra.rules.builtin.starts_with  # noqa: F401
-    import kontra.rules.builtin.unique  # noqa: F401
+    import kontra.rule_defs.builtin.allowed_values  # noqa: F401
+    import kontra.rule_defs.builtin.disallowed_values  # noqa: F401
+    import kontra.rule_defs.builtin.compare  # noqa: F401
+    import kontra.rule_defs.builtin.conditional_not_null  # noqa: F401
+    import kontra.rule_defs.builtin.conditional_range  # noqa: F401
+    import kontra.rule_defs.builtin.contains  # noqa: F401
+    import kontra.rule_defs.builtin.custom_sql_check  # noqa: F401
+    import kontra.rule_defs.builtin.dtype  # noqa: F401
+    import kontra.rule_defs.builtin.ends_with  # noqa: F401
+    import kontra.rule_defs.builtin.freshness  # noqa: F401
+    import kontra.rule_defs.builtin.length  # noqa: F401
+    import kontra.rule_defs.builtin.max_rows  # noqa: F401
+    import kontra.rule_defs.builtin.min_rows  # noqa: F401
+    import kontra.rule_defs.builtin.not_null  # noqa: F401
+    import kontra.rule_defs.builtin.range  # noqa: F401
+    import kontra.rule_defs.builtin.regex  # noqa: F401
+    import kontra.rule_defs.builtin.starts_with  # noqa: F401
+    import kontra.rule_defs.builtin.unique  # noqa: F401
 
     checks_passed = 0
     checks_failed = 0

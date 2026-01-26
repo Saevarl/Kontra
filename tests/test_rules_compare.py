@@ -4,7 +4,7 @@
 import pytest
 import polars as pl
 
-from kontra.rules.builtin.compare import CompareRule, SUPPORTED_OPS
+from kontra.rule_defs.builtin.compare import CompareRule, SUPPORTED_OPS
 
 
 class TestCompareRule:

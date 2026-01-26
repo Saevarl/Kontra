@@ -1,7 +1,10 @@
 # src/contra/rules/base.py
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Set
-import polars as pl
+from typing import TYPE_CHECKING, Any, Dict, Set
+
+if TYPE_CHECKING:
+    import polars as pl
+
 
 class BaseRule(ABC):
     """
@@ -29,7 +32,7 @@ class BaseRule(ABC):
         return str(self)
 
     @abstractmethod
-    def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+    def validate(self, df: "pl.DataFrame") -> Dict[str, Any]:
         """Executes validation on a Polars DataFrame and returns a result dict."""
         ...
 
@@ -80,7 +83,7 @@ class BaseRule(ABC):
         """
         return self.params.get(key, default)
 
-    def _failures(self, df: pl.DataFrame, mask: pl.Series, message: str) -> Dict[str, Any]:
+    def _failures(self, df: "pl.DataFrame", mask: "pl.Series", message: str) -> Dict[str, Any]:
         """Utility to summarize failing rows."""
         failed_count = mask.sum()
         return {
@@ -90,7 +93,7 @@ class BaseRule(ABC):
             "message": message if failed_count > 0 else "Passed",
         }
 
-    def _check_columns(self, df: pl.DataFrame, columns: Set[str]) -> Dict[str, Any] | None:
+    def _check_columns(self, df: "pl.DataFrame", columns: Set[str]) -> Dict[str, Any] | None:
         """
         Check if required columns exist in the DataFrame.
 

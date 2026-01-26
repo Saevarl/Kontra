@@ -14,7 +14,7 @@ from kontra.engine.sql_validator import (
     transpile_sql,
     to_count_query,
 )
-from kontra.rules.builtin.custom_sql_check import CustomSQLCheck
+from kontra.rule_defs.builtin.custom_sql_check import CustomSQLCheck
 
 
 class TestSqlValidator:
@@ -406,10 +406,10 @@ class TestCustomRuleSqlAgg:
     def test_custom_agg_spec_generation(self):
         """Custom rule with to_sql_agg() generates proper spec."""
         import polars as pl
-        from kontra.rules.base import BaseRule
-        from kontra.rules.predicates import Predicate
-        from kontra.rules.registry import register_rule, RULE_REGISTRY
-        from kontra.rules.execution_plan import _maybe_rule_sql_spec
+        from kontra.rule_defs.base import BaseRule
+        from kontra.rule_defs.predicates import Predicate
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
+        from kontra.rule_defs.execution_plan import _maybe_rule_sql_spec
 
         # Clean up if already registered
         if "test_positive" in RULE_REGISTRY:
@@ -430,7 +430,7 @@ class TestCustomRuleSqlAgg:
                 return f"SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)"
 
         # Build rule and check spec
-        from kontra.rules.factory import RuleFactory
+        from kontra.rule_defs.factory import RuleFactory
         from kontra.config.models import RuleSpec
 
         spec = RuleSpec(name="test_positive", params={"column": "amount"})
@@ -516,8 +516,8 @@ class TestCustomAggIntegration:
         """Custom rule with to_sql_agg() validates data correctly (pass case)."""
         import polars as pl
         import kontra
-        from kontra.rules.base import BaseRule
-        from kontra.rules.registry import register_rule, RULE_REGISTRY
+        from kontra.rule_defs.base import BaseRule
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
 
         # Clean up if already registered
         if "test_positive_int" in RULE_REGISTRY:
@@ -555,8 +555,8 @@ class TestCustomAggIntegration:
         """Custom rule with to_sql_agg() validates data correctly (fail case)."""
         import polars as pl
         import kontra
-        from kontra.rules.base import BaseRule
-        from kontra.rules.registry import register_rule, RULE_REGISTRY
+        from kontra.rule_defs.base import BaseRule
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
 
         # Clean up if already registered
         if "test_positive_int2" in RULE_REGISTRY:
@@ -597,8 +597,8 @@ class TestCustomAggIntegration:
         """Custom rule with to_sql_agg() uses SQL pushdown for parquet files."""
         import polars as pl
         import kontra
-        from kontra.rules.base import BaseRule
-        from kontra.rules.registry import register_rule, RULE_REGISTRY
+        from kontra.rule_defs.base import BaseRule
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
 
         # Clean up if already registered
         if "test_positive_int3" in RULE_REGISTRY:

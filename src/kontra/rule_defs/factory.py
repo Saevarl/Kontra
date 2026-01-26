@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import List, Dict, Any, Optional
 
-from kontra.rules.base import BaseRule
-from kontra.rules.registry import get_rule, get_all_rule_names
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.registry import get_rule, get_all_rule_names
 from kontra.config.models import RuleSpec
 from kontra.errors import DuplicateRuleIdError
 

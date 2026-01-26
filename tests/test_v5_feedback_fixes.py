@@ -12,10 +12,10 @@ import os
 
 import kontra
 from kontra import rules
-from kontra.rules.base import BaseRule
+from kontra.rule_defs.base import BaseRule
 from kontra.config.loader import ContractLoader
 from kontra.config.models import RuleSpec
-from kontra.rules.factory import RuleFactory
+from kontra.rule_defs.factory import RuleFactory
 
 
 class TestMissingColumnValidationFailure:

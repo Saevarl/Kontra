@@ -36,7 +36,7 @@ class TestNotNullFailureMode:
 
     def test_not_null_failure_mode(self):
         """not_null rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.not_null import NotNullRule
+        from kontra.rule_defs.builtin.not_null import NotNullRule
 
         df = pl.DataFrame({
             "id": [1, 2, None, 4, None],
@@ -58,7 +58,7 @@ class TestNotNullFailureMode:
 
     def test_not_null_no_failure_mode_on_pass(self):
         """not_null rule does not return failure_mode on pass."""
-        from kontra.rules.builtin.not_null import NotNullRule
+        from kontra.rule_defs.builtin.not_null import NotNullRule
 
         df = pl.DataFrame({
             "id": [1, 2, 3, 4, 5],
@@ -76,7 +76,7 @@ class TestUniqueFailureMode:
 
     def test_unique_failure_mode(self):
         """unique rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.unique import UniqueRule
+        from kontra.rule_defs.builtin.unique import UniqueRule
 
         df = pl.DataFrame({
             "id": [1, 2, 2, 3, 3, 3],
@@ -99,7 +99,7 @@ class TestUniqueFailureMode:
 
     def test_unique_no_failure_mode_on_pass(self):
         """unique rule does not return failure_mode on pass."""
-        from kontra.rules.builtin.unique import UniqueRule
+        from kontra.rule_defs.builtin.unique import UniqueRule
 
         df = pl.DataFrame({
             "id": [1, 2, 3, 4, 5],
@@ -116,7 +116,7 @@ class TestRangeFailureMode:
 
     def test_range_failure_mode_below_min(self):
         """range rule returns details for values below min."""
-        from kontra.rules.builtin.range import RangeRule
+        from kontra.rule_defs.builtin.range import RangeRule
 
         df = pl.DataFrame({
             "age": [5, 10, 15, 25, 30],
@@ -137,7 +137,7 @@ class TestRangeFailureMode:
 
     def test_range_failure_mode_above_max(self):
         """range rule returns details for values above max."""
-        from kontra.rules.builtin.range import RangeRule
+        from kontra.rule_defs.builtin.range import RangeRule
 
         df = pl.DataFrame({
             "age": [20, 30, 70, 80, 90],
@@ -155,7 +155,7 @@ class TestAllowedValuesFailureMode:
 
     def test_allowed_values_failure_mode(self):
         """allowed_values rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.allowed_values import AllowedValuesRule
+        from kontra.rule_defs.builtin.allowed_values import AllowedValuesRule
 
         df = pl.DataFrame({
             "status": ["active", "inactive", "unknown", "deleted", "unknown"],
@@ -181,7 +181,7 @@ class TestAllowedValuesFailureMode:
 
     def test_allowed_values_with_null_in_allowed_list(self):
         """allowed_values accepts NULL when None is in allowed values list (BUG-007)."""
-        from kontra.rules.builtin.allowed_values import AllowedValuesRule
+        from kontra.rule_defs.builtin.allowed_values import AllowedValuesRule
 
         df = pl.DataFrame({
             "status": ["active", "inactive", None],
@@ -199,7 +199,7 @@ class TestAllowedValuesFailureMode:
 
     def test_allowed_values_rejects_null_when_not_in_list(self):
         """allowed_values rejects NULL when None is NOT in allowed values list."""
-        from kontra.rules.builtin.allowed_values import AllowedValuesRule
+        from kontra.rule_defs.builtin.allowed_values import AllowedValuesRule
 
         df = pl.DataFrame({
             "status": ["active", "inactive", None],
@@ -221,7 +221,7 @@ class TestDtypeFailureMode:
 
     def test_dtype_failure_mode(self):
         """dtype rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.dtype import DtypeRule
+        from kontra.rule_defs.builtin.dtype import DtypeRule
 
         df = pl.DataFrame({
             "id": ["1", "2", "3"],  # String, not int
@@ -243,7 +243,7 @@ class TestMinRowsFailureMode:
 
     def test_min_rows_failure_mode(self):
         """min_rows rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.min_rows import MinRowsRule
+        from kontra.rule_defs.builtin.min_rows import MinRowsRule
 
         df = pl.DataFrame({
             "id": [1, 2, 3],
@@ -266,7 +266,7 @@ class TestMaxRowsFailureMode:
 
     def test_max_rows_failure_mode(self):
         """max_rows rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.max_rows import MaxRowsRule
+        from kontra.rule_defs.builtin.max_rows import MaxRowsRule
 
         df = pl.DataFrame({
             "id": list(range(100)),
@@ -289,7 +289,7 @@ class TestRegexFailureMode:
 
     def test_regex_failure_mode(self):
         """regex rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.regex import RegexRule
+        from kontra.rule_defs.builtin.regex import RegexRule
 
         df = pl.DataFrame({
             "email": ["valid@email.com", "invalid", "also@valid.org", "bad"],
@@ -313,7 +313,7 @@ class TestFreshnessFailureMode:
 
     def test_freshness_failure_mode(self):
         """freshness rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.freshness import FreshnessRule
+        from kontra.rule_defs.builtin.freshness import FreshnessRule
 
         # Data from 2 days ago (stale if max_age is 1 day)
         old_ts = datetime.now(timezone.utc) - timedelta(days=2)
@@ -340,7 +340,7 @@ class TestCustomSqlCheckFailureMode:
 
     def test_custom_sql_check_failure_mode(self):
         """custom_sql_check rule returns failure_mode and details on failure."""
-        from kontra.rules.builtin.custom_sql_check import CustomSQLCheck
+        from kontra.rule_defs.builtin.custom_sql_check import CustomSQLCheck
 
         df = pl.DataFrame({
             "price": [10, -5, 20, -3, 30],
@@ -466,7 +466,7 @@ class TestUniqueNullHandling:
 
     def test_unique_nulls_not_treated_as_duplicates(self):
         """NULLs should not be treated as duplicates (SQL semantics)."""
-        from kontra.rules.builtin.unique import UniqueRule
+        from kontra.rule_defs.builtin.unique import UniqueRule
 
         df = pl.DataFrame({"v": [None, None, None]})
         rule = UniqueRule("unique", {"column": "v"})
@@ -478,7 +478,7 @@ class TestUniqueNullHandling:
 
     def test_unique_still_catches_real_duplicates(self):
         """Real duplicate values should still be caught."""
-        from kontra.rules.builtin.unique import UniqueRule
+        from kontra.rule_defs.builtin.unique import UniqueRule
 
         df = pl.DataFrame({"v": ["a", "a", "b", None, None]})
         rule = UniqueRule("unique", {"column": "v"})
@@ -504,7 +504,7 @@ class TestFreshnessErrorMessages:
 
     def test_freshness_non_datetime_column_gives_clear_error(self):
         """freshness rule should give clear error for non-datetime column."""
-        from kontra.rules.builtin.freshness import FreshnessRule
+        from kontra.rule_defs.builtin.freshness import FreshnessRule
 
         df = pl.DataFrame({"value": [1, 2, 3]})  # Integer column
         rule = FreshnessRule("freshness", {"column": "value", "max_age": "24h"})
@@ -518,7 +518,7 @@ class TestFreshnessErrorMessages:
 
     def test_freshness_string_column_that_cant_be_parsed(self):
         """freshness rule handles unparseable string column gracefully."""
-        from kontra.rules.builtin.freshness import FreshnessRule
+        from kontra.rule_defs.builtin.freshness import FreshnessRule
 
         df = pl.DataFrame({"value": ["not", "a", "date"]})
         rule = FreshnessRule("freshness", {"column": "value", "max_age": "24h"})
@@ -623,7 +623,7 @@ class TestRangeValidationFix:
 
     def test_range_rule_class_no_bounds_raises_error(self):
         """RangeRule class should also raise error at construction."""
-        from kontra.rules.builtin.range import RangeRule
+        from kontra.rule_defs.builtin.range import RangeRule
         from kontra.errors import RuleParameterError
 
         with pytest.raises(RuleParameterError):
@@ -635,7 +635,7 @@ class TestDtypeValidationFix:
 
     def test_dtype_unknown_type_raises_error(self):
         """dtype rule with unknown type should raise error at construction."""
-        from kontra.rules.builtin.dtype import DtypeRule
+        from kontra.rule_defs.builtin.dtype import DtypeRule
         from kontra.errors import RuleParameterError
 
         with pytest.raises(RuleParameterError) as exc_info:

@@ -120,6 +120,9 @@ def register_default_materializers() -> None:
     """
     Eagerly import built-in materializers so their @register_materializer
     decorators run and populate the registry.
+
+    NOTE: This is the legacy function that loads ALL materializers.
+    For lazy loading, use register_materializers_for_path() instead.
     """
     # Local imports to trigger decorator side-effects
     from . import duckdb  # noqa: F401
@@ -136,3 +139,47 @@ def register_default_materializers() -> None:
         from . import sqlserver  # noqa: F401
     except ImportError:
         pass  # pymssql not installed, skip sqlserver materializer
+
+
+def register_materializers_for_path(
+    execution_path: str,
+    database_type: str | None = None,
+) -> None:
+    """
+    Register only the materializers needed for a specific execution path.
+
+    This enables lazy loading - we only import heavy dependencies when needed.
+
+    Args:
+        execution_path: "database", "file", or "dataframe"
+        database_type: "postgres" or "sqlserver" (required for database path)
+    """
+    if execution_path == "database":
+        # Database path: only load the specific DB materializer
+        if database_type == "postgres":
+            try:
+                from . import postgres  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "PostgreSQL support requires psycopg. "
+                    "Install with: pip install 'psycopg[binary]'"
+                )
+        elif database_type == "sqlserver":
+            try:
+                from . import sqlserver  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "SQL Server support requires pymssql. "
+                    "Install with: pip install pymssql"
+                )
+        else:
+            raise ValueError(f"Unknown database_type: {database_type}")
+
+    elif execution_path in ("file", "dataframe"):
+        # File/DataFrame path: load DuckDB and Polars materializers
+        from . import duckdb  # noqa: F401
+        from . import polars_connector  # noqa: F401
+
+    else:
+        # Unknown path - fall back to loading everything
+        register_default_materializers()

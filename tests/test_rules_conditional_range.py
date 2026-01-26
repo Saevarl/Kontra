@@ -336,7 +336,7 @@ class TestConditionalRangeDetails:
 
     def test_failure_details_structure(self):
         """Failure details contain expected fields."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         df = pl.DataFrame({
             "type": ["x", "x", "x", "y"],
             "value": [5.0, None, 60.0, 100.0],  # 3 failures when type=='x'
@@ -356,7 +356,7 @@ class TestConditionalRangeDetails:
 
     def test_failure_details_below_min_count(self):
         """Details include below_min_count when applicable."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         df = pl.DataFrame({
             "type": ["x", "x"],
             "value": [5.0, 3.0],  # Both below min=10
@@ -370,7 +370,7 @@ class TestConditionalRangeDetails:
 
     def test_failure_details_above_max_count(self):
         """Details include above_max_count when applicable."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         df = pl.DataFrame({
             "type": ["x", "x"],
             "value": [60.0, 100.0],  # Both above max=50
@@ -384,7 +384,7 @@ class TestConditionalRangeDetails:
 
     def test_failure_details_null_count(self):
         """Details include null_count_when_condition when applicable."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         df = pl.DataFrame({
             "type": ["x", "x", "x"],
             "value": [None, None, 25.0],  # 2 nulls when type=='x'
@@ -398,7 +398,7 @@ class TestConditionalRangeDetails:
 
     def test_failure_details_sample_positions(self):
         """Details include sample_positions for small failure sets."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         df = pl.DataFrame({
             "type": ["x", "y", "x", "x"],
             "value": [5.0, 100.0, 60.0, 25.0],  # Rows 0, 2 fail
@@ -440,7 +440,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_basic(self):
         """to_sql_filter produces valid SQL fragment."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "discount",
             "when": "status == 'active'",
@@ -458,7 +458,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_min_only(self):
         """SQL filter for min-only bound."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "value",
             "when": "type == 'x'",
@@ -470,7 +470,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_max_only(self):
         """SQL filter for max-only bound."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "value",
             "when": "type == 'x'",
@@ -481,7 +481,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_not_equal_operator(self):
         """SQL filter handles != operator."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "value",
             "when": "type != 'x'",
@@ -492,7 +492,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_numeric_condition(self):
         """SQL filter handles numeric condition values."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "discount",
             "when": "amount > 100",
@@ -503,7 +503,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_boolean_condition(self):
         """SQL filter handles boolean condition values."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "discount",
             "when": "is_premium == true",
@@ -514,7 +514,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_null_is_condition(self):
         """SQL filter handles 'column == null' condition."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "value",
             "when": "status == null",
@@ -525,7 +525,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_null_not_condition(self):
         """SQL filter handles 'column != null' condition."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "value",
             "when": "status != null",
@@ -536,7 +536,7 @@ class TestConditionalRangeSqlFilter:
 
     def test_sql_filter_null_comparison_returns_none(self):
         """SQL filter returns None for invalid null comparisons like '> null'."""
-        from kontra.rules.builtin.conditional_range import ConditionalRangeRule
+        from kontra.rule_defs.builtin.conditional_range import ConditionalRangeRule
         rule = ConditionalRangeRule("conditional_range", {
             "column": "value",
             "when": "status > null",  # Can't compare with > to null
