@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kontra"
-version = "0.5.3"
+version = "0.5.4"
 description = "Developer-first data quality engine"
 readme = "README.md"
 authors = [{ name = "Saevarlb" }]
