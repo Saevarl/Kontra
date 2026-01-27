@@ -8,6 +8,9 @@ from kontra.state.types import FailureMode
 
 @register_rule("min_rows")
 class MinRowsRule(BaseRule):
+    rule_scope = "dataset"
+    supports_tally = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Validate threshold at construction time

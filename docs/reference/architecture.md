@@ -299,9 +299,9 @@ Kontra makes explicit what it does and does not guarantee:
 1. Create rule class in `src/kontra/rules/builtin/`:
 
 ```python
-from kontra.rules.base import BaseRule
-from kontra.rules.registry import register_rule
-from kontra.rules.predicates import Predicate
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.registry import register_rule
+from kontra.rule_defs.predicates import Predicate
 
 @register_rule("my_rule")
 class MyRule(BaseRule):
@@ -331,7 +331,7 @@ class MyRule(BaseRule):
 
 2. Import in `engine.py`:
 ```python
-import kontra.rules.builtin.my_rule  # noqa: F401
+import kontra.rule_defs.builtin.my_rule  # noqa: F401
 ```
 
 3. Add SQL support in executors (optional).

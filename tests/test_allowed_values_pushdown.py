@@ -102,8 +102,8 @@ class TestAllowedValuesSqlAgg:
 class TestDuckDBCompileAllowedValues:
     """Tests for DuckDB executor compile() with allowed_values."""
 
-    def test_compile_allowed_values_basic(self):
-        """compile() handles allowed_values specs."""
+    def test_compile_allowed_values_default_uses_exists(self):
+        """compile() routes allowed_values to EXISTS by default (tally=False)."""
         executor = DuckDBSqlExecutor()
         specs = [
             {
@@ -115,13 +115,34 @@ class TestDuckDBCompileAllowedValues:
         ]
         compiled = executor.compile(specs)
 
+        # Default tally=False routes to EXISTS
+        assert len(compiled["exists_specs"]) == 1
+        assert len(compiled["aggregate_selects"]) == 0
+        assert len(compiled["supported_specs"]) == 1
+
+    def test_compile_allowed_values_with_tally_uses_aggregate(self):
+        """compile() routes allowed_values to aggregate when tally=True."""
+        executor = DuckDBSqlExecutor()
+        specs = [
+            {
+                "kind": "allowed_values",
+                "rule_id": "COL:status:allowed_values",
+                "column": "status",
+                "values": ["active", "inactive", "pending"],
+                "tally": True,
+            }
+        ]
+        compiled = executor.compile(specs)
+
+        # tally=True routes to aggregate
+        assert len(compiled["exists_specs"]) == 0
         assert len(compiled["aggregate_selects"]) == 1
         assert "COL:status:allowed_values" in compiled["aggregate_selects"][0]
         assert len(compiled["supported_specs"]) == 1
         assert len(compiled["aggregate_specs"]) == 1
 
     def test_compile_allowed_values_multiple(self):
-        """compile() handles multiple allowed_values specs."""
+        """compile() handles multiple allowed_values specs with mixed tally."""
         executor = DuckDBSqlExecutor()
         specs = [
             {
@@ -129,17 +150,20 @@ class TestDuckDBCompileAllowedValues:
                 "rule_id": "COL:status:allowed_values",
                 "column": "status",
                 "values": ["active", "inactive"],
+                # Default tally=False -> EXISTS
             },
             {
                 "kind": "allowed_values",
                 "rule_id": "COL:type:allowed_values",
                 "column": "type",
                 "values": ["A", "B", "C"],
+                "tally": True,  # tally=True -> aggregate
             },
         ]
         compiled = executor.compile(specs)
 
-        assert len(compiled["aggregate_selects"]) == 2
+        assert len(compiled["exists_specs"]) == 1
+        assert len(compiled["aggregate_selects"]) == 1
         assert len(compiled["supported_specs"]) == 2
 
     def test_compile_mixed_rules_with_allowed_values(self):
@@ -157,10 +181,10 @@ class TestDuckDBCompileAllowedValues:
         ]
         compiled = executor.compile(specs)
 
-        # not_null goes to exists_specs
-        assert len(compiled["exists_specs"]) == 1
-        # min_rows + allowed_values go to aggregate_selects
-        assert len(compiled["aggregate_selects"]) == 2
+        # not_null and allowed_values (default tally=False) go to exists_specs
+        assert len(compiled["exists_specs"]) == 2
+        # min_rows (dataset rule, no tally) goes to aggregate_selects
+        assert len(compiled["aggregate_selects"]) == 1
         # All three are supported
         assert len(compiled["supported_specs"]) == 3
 
@@ -177,6 +201,7 @@ class TestDuckDBCompileAllowedValues:
         ]
         compiled = executor.compile(specs)
 
+        assert len(compiled["exists_specs"]) == 0
         assert len(compiled["aggregate_selects"]) == 0
         assert len(compiled["supported_specs"]) == 0
 
@@ -200,8 +225,8 @@ class TestDuckDBCompileAllowedValues:
 class TestPostgresCompileAllowedValues:
     """Tests for Postgres executor compile() with allowed_values."""
 
-    def test_postgres_compile_allowed_values(self):
-        """PostgreSQL executor compiles allowed_values specs."""
+    def test_postgres_compile_allowed_values_default_uses_exists(self):
+        """PostgreSQL executor routes allowed_values to EXISTS by default (tally=False)."""
         executor = PostgresSqlExecutor()
         specs = [
             {
@@ -213,6 +238,27 @@ class TestPostgresCompileAllowedValues:
         ]
         compiled = executor.compile(specs)
 
+        # Default tally=False routes to EXISTS
+        assert len(compiled["exists_specs"]) == 1
+        assert len(compiled["aggregate_selects"]) == 0
+        assert len(compiled["supported_specs"]) == 1
+
+    def test_postgres_compile_allowed_values_with_tally(self):
+        """PostgreSQL executor routes allowed_values to aggregate when tally=True."""
+        executor = PostgresSqlExecutor()
+        specs = [
+            {
+                "kind": "allowed_values",
+                "rule_id": "COL:status:allowed_values",
+                "column": "status",
+                "values": ["active", "inactive"],
+                "tally": True,
+            }
+        ]
+        compiled = executor.compile(specs)
+
+        # tally=True routes to aggregate
+        assert len(compiled["exists_specs"]) == 0
         assert len(compiled["aggregate_selects"]) == 1
         assert "COL:status:allowed_values" in compiled["aggregate_selects"][0]
         assert len(compiled["supported_specs"]) == 1

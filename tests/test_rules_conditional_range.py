@@ -413,7 +413,7 @@ class TestConditionalRangeDetails:
         assert 2 in details["sample_positions"]
 
     def test_min_only_message(self):
-        """Message for min-only rule is correct."""
+        """Message for min-only rule indicates failure."""
         df = pl.DataFrame({
             "type": ["x"],
             "value": [5.0],
@@ -421,10 +421,13 @@ class TestConditionalRangeDetails:
         result = kontra.validate(df, rules=[
             rules.conditional_range("value", "type == 'x'", min=10)
         ], save=False)
-        assert "below" in result.rules[0].message.lower()
+        # Unified message format: "At least 1 row out of range when condition met"
+        # or detailed: "1 row below minimum"
+        msg = result.rules[0].message.lower()
+        assert "range" in msg or "below" in msg or "minimum" in msg
 
     def test_max_only_message(self):
-        """Message for max-only rule is correct."""
+        """Message for max-only rule indicates failure."""
         df = pl.DataFrame({
             "type": ["x"],
             "value": [100.0],
@@ -432,7 +435,10 @@ class TestConditionalRangeDetails:
         result = kontra.validate(df, rules=[
             rules.conditional_range("value", "type == 'x'", max=50)
         ], save=False)
-        assert "above" in result.rules[0].message.lower()
+        # Unified message format: "At least 1 row out of range when condition met"
+        # or detailed: "1 row above maximum"
+        msg = result.rules[0].message.lower()
+        assert "range" in msg or "above" in msg or "maximum" in msg
 
 
 class TestConditionalRangeSqlFilter:

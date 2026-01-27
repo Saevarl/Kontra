@@ -322,7 +322,34 @@ rules.custom_sql_check("SELECT * FROM {table} WHERE balance < 0")
 # All rules accept optional parameters
 rules.not_null("email", severity="warning")  # "blocking" | "warning" | "info"
 rules.range("score", min=0, max=100, id="score_range")  # custom rule ID
+rules.not_null("email", tally=True)  # exact count vs early termination
 ```
+
+### Tally Mode
+
+By default, rules stop at the first violation found (fast, returns `failed_count=1`). Set `tally=True` to get exact violation counts:
+
+```python
+# Fast (default): early termination, failed_count=1 means "at least 1"
+rules.not_null("email")
+
+# Exact count: full scan, failed_count is exact
+rules.not_null("email", tally=True)
+```
+
+Global override via `kontra.validate()`:
+
+```python
+# Force exact counts for all rules
+result = kontra.validate("data.parquet", rules=[...], tally=True)
+
+# Force early termination for all rules
+result = kontra.validate("data.parquet", rules=[...], tally=False)
+```
+
+Per-rule `tally` settings override the global flag.
+
+Supported on column and cross-column rules. Dataset rules (`min_rows`, `max_rows`, `freshness`) and `dtype` always return exact counts.
 
 ### Rule Context in Contracts
 

@@ -31,17 +31,38 @@ def _normalize_result(item: Dict[str, Any]) -> Dict[str, Any]:
     passed = bool(item.get("passed", False))
     msg = str(item.get("message", ""))
 
-    # Always compute from 'passed', ignore incoming 'severity' to keep outputs consistent.
-    severity = "INFO" if passed else "ERROR"
+    # Use actual severity from contract/rule, default to blocking if not specified
+    severity = item.get("severity", "blocking")
+    # Normalize to lowercase to match contract format
+    if isinstance(severity, str):
+        severity = severity.lower()
+        # Map legacy values
+        if severity == "error":
+            severity = "blocking"
+        elif severity == "info" and passed:
+            severity = "info"  # Keep info for passed rules if explicitly set
+        elif severity not in ("blocking", "warning", "info"):
+            severity = "blocking"  # Default unknown values to blocking
 
-    return {
+    # Get tally mode to indicate if count is exact or approximate
+    tally = item.get("tally", True)
+
+    result = {
         "rule_id": str(item.get("rule_id", "")),
         "passed": passed,
         "message": msg,
         "failed_count": int(item.get("failed_count", 0)),
+        "failed_count_exact": tally,  # False = count is a lower bound
         "severity": severity,
         "actions_executed": list(item.get("actions_executed", [])),
     }
+
+    # Include context if present
+    context = item.get("context")
+    if context:
+        result["context"] = context
+
+    return result
 
 
 

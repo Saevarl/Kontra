@@ -63,6 +63,8 @@ class CompareRule(BaseRule):
       You can't meaningfully compare NULL values.
     """
 
+    rule_scope = "cross_column"
+
     def __init__(self, name: str, params: Dict[str, Any]):
         super().__init__(name, params)
         # Validate parameters at construction time

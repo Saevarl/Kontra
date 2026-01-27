@@ -127,13 +127,35 @@ def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) 
         typer.secho(f"  ✓ All {len(rules)} rules valid", fg=typer.colors.GREEN)
         checks_passed += 1
 
+        # Check for tally/exists implementation warnings
+        warnings = []
+        for r in rules:
+            rule_tally = getattr(r, "tally", None)
+            has_sql_agg = callable(getattr(r, "to_sql_agg", None))
+            has_sql_exists = callable(getattr(r, "to_sql_exists", None))
+
+            # Warn if tally=False but no to_sql_exists (will use COUNT, no early termination)
+            if rule_tally is False and has_sql_agg and not has_sql_exists:
+                warnings.append(
+                    f"Rule '{r.rule_id}' has tally=False but no to_sql_exists() - "
+                    f"will use COUNT (no early termination benefit)"
+                )
+
+        if warnings:
+            typer.secho(f"  ⚠ {len(warnings)} tally warning(s):", fg=typer.colors.YELLOW)
+            for w in warnings:
+                typer.echo(f"    - {w}")
+
         # Show rule breakdown
         if verbose:
             typer.echo("\n  Rules:")
             for r in rules:
                 cols = getattr(r, "params", {}).get("column", "")
                 col_info = f" ({cols})" if cols else ""
-                typer.echo(f"    - {r.name}{col_info}")
+                tally_info = ""
+                if hasattr(r, "tally") and r.tally is not None:
+                    tally_info = f" [tally={r.tally}]"
+                typer.echo(f"    - {r.name}{col_info}{tally_info}")
 
     except Exception as e:
         typer.secho(f"  ✗ Rule validation failed: {e}", fg=typer.colors.RED)
@@ -193,6 +215,11 @@ def register(app: typer.Typer) -> None:
             None,
             "--pushdown",
             help="SQL pushdown (default: from config or 'auto').",
+        ),
+        tally: Optional[bool] = typer.Option(
+            None,
+            "--tally/--no-tally",
+            help="Global tally override. --tally = count all violations (exact), --no-tally = early-stop (fast).",
         ),
         projection: Optional[Literal["on", "off"]] = typer.Option(
             None,
@@ -381,6 +408,7 @@ def register(app: typer.Typer) -> None:
                 # Independent controls
                 preplan=effective_preplan,
                 pushdown=effective_pushdown,
+                tally=tally,
                 enable_projection=enable_projection,
                 csv_mode=effective_csv_mode,
                 # Diagnostics

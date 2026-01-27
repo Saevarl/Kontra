@@ -38,6 +38,9 @@ class DtypeRule(BaseRule):
     - Message is deterministic: "<col> expected <expected>, found <ActualDtype>".
     """
 
+    rule_scope = "schema"
+    supports_tally = False
+
     # Valid type names (for error message)
     _VALID_TYPES = [
         # Exact types

@@ -9,10 +9,10 @@ Kontra uses three execution tiers, each with different characteristics:
 | Tier | Speed | What It Returns | When Used |
 |------|-------|-----------------|-----------|
 | **Metadata (Preplan)** | Instant | Binary: 0 or ≥1 | Parquet stats, pg_stats |
-| **SQL Pushdown** | Fast | Varies by rule* | DuckDB, PostgreSQL, SQL Server |
+| **SQL Pushdown** | Fast | 1 or exact* | DuckDB, PostgreSQL, SQL Server |
 | **Polars** | Varies | Exact count | Fallback |
 
-*`not_null` uses EXISTS (returns 1 on failure for speed). Other rules return exact counts.
+*By default, SQL uses EXISTS queries (returns 1 on failure for speed). Set `tally: true` per-rule for exact counts.
 
 ### How Tiers Are Selected
 
@@ -69,6 +69,12 @@ kontra validate contract.yml --pushdown off
 # Disable column projection
 kontra validate contract.yml --projection off
 
+# Force exact counts (slower, but precise)
+kontra validate contract.yml --tally
+
+# Force early termination (fast, returns 1 for any failure)
+kontra validate contract.yml --no-tally
+
 # Show execution stats
 kontra validate contract.yml --stats summary
 ```
@@ -82,6 +88,7 @@ result = kontra.validate(
     preplan="auto",      # "on" | "off" | "auto"
     pushdown="auto",     # "on" | "off" | "auto"
     projection=True,     # column pruning
+    tally=None,          # True=exact counts, False=early stop, None=per-rule
 )
 ```
 
@@ -163,22 +170,40 @@ Enable pushdown to avoid loading data:
 kontra validate contract.yml --pushdown on
 ```
 
-### Many Rules
+### Many Rules and Tally Mode
 
-SQL pushdown uses two phases:
+SQL pushdown uses two query types based on the `tally` setting:
 
-**Phase 1: EXISTS for `not_null`** (fast, early termination)
+**Phase 1: EXISTS queries** (default, `tally: false`)
 ```sql
+-- Fast: stops at first violation, returns 1 if any failure
 SELECT
-  EXISTS(SELECT 1 FROM table WHERE user_id IS NULL) AS "not_null_user_id"
+  EXISTS(SELECT 1 FROM table WHERE user_id IS NULL) AS "not_null_user_id",
+  EXISTS(SELECT 1 FROM table WHERE status NOT IN (...)) AS "allowed_values_status"
 ```
 
-**Phase 2: Aggregates for other rules** (one query)
+**Phase 2: Aggregate queries** (`tally: true`)
 ```sql
+-- Slower: full scan, returns exact counts
 SELECT
+  SUM(CASE WHEN user_id IS NULL THEN 1 ELSE 0 END) AS "not_null_user_id",
   COUNT(*) - COUNT(DISTINCT email) AS "unique_email",
   SUM(CASE WHEN status NOT IN (...) THEN 1 ELSE 0 END) AS "allowed_values_status"
 FROM table;
+```
+
+Use `tally: false` (default) for fast validation. Use `tally: true` when you need exact violation counts.
+
+```yaml
+rules:
+  # Fast: stops at first null (failed_count=1 means "at least 1")
+  - name: not_null
+    params: { column: user_id }
+
+  # Exact: counts all nulls
+  - name: not_null
+    params: { column: email }
+    tally: true
 ```
 
 ### CSV Files

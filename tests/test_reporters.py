@@ -136,20 +136,22 @@ class TestJSONReporter:
         assert "message" in result
         assert "failed_count" in result
         assert "severity" in result
-        assert result["severity"] == "INFO"
+        # Default severity is "blocking" when not specified
+        assert result["severity"] == "blocking"
 
-    def test_build_payload_failed_result_severity(self):
-        """build_payload sets ERROR severity for failed results."""
+    def test_build_payload_preserves_severity(self):
+        """build_payload preserves actual severity from contract."""
         payload = build_payload(
             dataset_name="test.parquet",
             summary={"passed": False},
             results=[
-                {"rule_id": "r1", "passed": False, "failed_count": 5},
+                {"rule_id": "r1", "passed": False, "failed_count": 5, "severity": "warning"},
             ],
         )
 
         result = payload["results"][0]
-        assert result["severity"] == "ERROR"
+        # Should preserve the actual severity from the rule
+        assert result["severity"] == "warning"
 
     def test_render_json_valid_json(self):
         """render_json produces valid JSON string."""

@@ -273,14 +273,15 @@ class TestUniqueEquivalence:
     For user_ids [0-99, 0, 1, 2]: 103 total - 100 distinct = 3 extra rows
     """
 
-    RULE = {"name": "unique", "params": {"column": "user_id"}}
+    # Use tally=True to get exact counts from SQL (default tally=False uses EXISTS)
+    RULE = {"name": "unique", "params": {"column": "user_id"}, "tally": True}
     RULE_ID = "COL:user_id:unique"
     # SQL semantics: COUNT(*) - COUNT(DISTINCT col)
     # 103 total rows - 100 distinct values = 3 extra rows
     EXPECTED_VIOLATIONS = 3
 
     def test_polars_consistency(self, tier_test_data, write_contract):
-        """SQL pushdown and Polars should report same duplicate count."""
+        """SQL pushdown and Polars should report same duplicate count (with tally=True)."""
         cpath = write_contract(dataset=tier_test_data, rules=[self.RULE])
 
         sql_result = run_with_tier(cpath, "sql")
@@ -289,7 +290,7 @@ class TestUniqueEquivalence:
         sql_count = get_violation_count(sql_result, self.RULE_ID)
         polars_count = get_violation_count(polars_result, self.RULE_ID)
 
-        # Both should be identical with SQL semantics
+        # Both should be identical with SQL semantics (requires tally=True)
         assert sql_count == polars_count == self.EXPECTED_VIOLATIONS, (
             f"unique mismatch: SQL={sql_count}, Polars={polars_count}, expected={self.EXPECTED_VIOLATIONS}"
         )
@@ -303,12 +304,13 @@ class TestUniqueEquivalence:
 class TestRangeEquivalence:
     """range should report identical out-of-bounds counts across all tiers."""
 
-    RULE = {"name": "range", "params": {"column": "age", "min": 0, "max": 150}}
+    # Use tally=True to get exact counts from SQL (default tally=False uses EXISTS)
+    RULE = {"name": "range", "params": {"column": "age", "min": 0, "max": 150}, "tally": True}
     RULE_ID = "COL:age:range"
     EXPECTED_VIOLATIONS = 4  # 4 ages > 150 in tier_test_data
 
     def test_sql_vs_polars(self, tier_test_data, write_contract):
-        """SQL and Polars should report same out-of-range count."""
+        """SQL and Polars should report same out-of-range count (with tally=True)."""
         cpath = write_contract(dataset=tier_test_data, rules=[self.RULE])
 
         sql_result = run_with_tier(cpath, "sql")
@@ -351,12 +353,13 @@ class TestRangeEquivalence:
 class TestAllowedValuesEquivalence:
     """allowed_values should report identical invalid value counts."""
 
-    RULE = {"name": "allowed_values", "params": {"column": "status", "values": ["active", "inactive", "pending"]}}
+    # Use tally=True to get exact counts from SQL (default tally=False uses EXISTS)
+    RULE = {"name": "allowed_values", "params": {"column": "status", "values": ["active", "inactive", "pending"]}, "tally": True}
     RULE_ID = "COL:status:allowed_values"
     EXPECTED_VIOLATIONS = 6  # 6 'invalid' statuses in tier_test_data
 
     def test_sql_vs_polars(self, tier_test_data, write_contract):
-        """SQL and Polars should report same invalid value count."""
+        """SQL and Polars should report same invalid value count (with tally=True)."""
         cpath = write_contract(dataset=tier_test_data, rules=[self.RULE])
 
         sql_result = run_with_tier(cpath, "sql")
@@ -446,13 +449,14 @@ class TestRegexEquivalence:
     """regex should report identical pattern match failures."""
 
     # Simple pattern that should work across SQL dialects
-    RULE = {"name": "regex", "params": {"column": "email", "pattern": ".*@.*"}}
+    # Use tally=True to get exact counts from SQL (default tally=False uses EXISTS)
+    RULE = {"name": "regex", "params": {"column": "email", "pattern": ".*@.*"}, "tally": True}
     RULE_ID = "COL:email:regex"
     # 5 NULLs + 2 malformed = 7 failures (NULLs fail regex)
     EXPECTED_VIOLATIONS = 7
 
     def test_sql_vs_polars(self, tier_test_data, write_contract):
-        """SQL and Polars should report same regex failure count."""
+        """SQL and Polars should report same regex failure count (with tally=True)."""
         cpath = write_contract(dataset=tier_test_data, rules=[self.RULE])
 
         sql_result = run_with_tier(cpath, "sql")
@@ -505,8 +509,9 @@ class TestFloatPrecision:
     """Verify float comparisons are consistent across tiers."""
 
     def test_range_with_float_boundaries(self, edge_case_data, write_contract):
-        """Range checks on floats should be consistent."""
-        rule = {"name": "range", "params": {"column": "float_col", "min": 0.0, "max": 100.0}}
+        """Range checks on floats should be consistent (with tally=True)."""
+        # Use tally=True to get exact counts from SQL (default uses EXISTS)
+        rule = {"name": "range", "params": {"column": "float_col", "min": 0.0, "max": 100.0}, "tally": True}
         cpath = write_contract(dataset=edge_case_data, rules=[rule])
 
         sql_result = run_with_tier(cpath, "sql")
@@ -524,8 +529,9 @@ class TestIntegerBoundaries:
     """Verify integer boundary values are handled consistently."""
 
     def test_range_with_int_boundaries(self, edge_case_data, write_contract):
-        """Range checks at integer boundaries should be consistent."""
-        rule = {"name": "range", "params": {"column": "boundary_int", "min": -100, "max": 100}}
+        """Range checks at integer boundaries should be consistent (with tally=True)."""
+        # Use tally=True to get exact counts from SQL (default uses EXISTS)
+        rule = {"name": "range", "params": {"column": "boundary_int", "min": -100, "max": 100}, "tally": True}
         cpath = write_contract(dataset=edge_case_data, rules=[rule])
 
         sql_result = run_with_tier(cpath, "sql")
@@ -547,20 +553,22 @@ class TestIntegerBoundaries:
 class TestMultiRuleEquivalence:
     """Verify multiple rules execute consistently across tier combinations."""
 
+    # Use tally=True on all rules to get exact counts for comparison
+    # not_null is kept at default (tally=False) to test EXISTS behavior separately
     RULES = [
-        {"name": "not_null", "params": {"column": "email"}},
-        {"name": "unique", "params": {"column": "user_id"}},
-        {"name": "range", "params": {"column": "age", "min": 0, "max": 150}},
-        {"name": "allowed_values", "params": {"column": "status", "values": ["active", "inactive", "pending"]}},
+        {"name": "not_null", "params": {"column": "email"}},  # Uses EXISTS by default
+        {"name": "unique", "params": {"column": "user_id"}, "tally": True},
+        {"name": "range", "params": {"column": "age", "min": 0, "max": 150}, "tally": True},
+        {"name": "allowed_values", "params": {"column": "status", "values": ["active", "inactive", "pending"]}, "tally": True},
     ]
 
     def test_all_rules_consistent(self, tier_test_data, write_contract):
         """All rules should report consistent violations regardless of tier mix.
 
         Note: SQL uses EXISTS for not_null (returns failed_count=1 for any failure).
-        Other rules return exact counts. We check:
+        Other rules use tally=True to get exact counts. We check:
         - not_null: pass/fail equivalence
-        - Other rules: exact count equivalence
+        - Other rules: exact count equivalence (with tally=True)
         """
         cpath = write_contract(dataset=tier_test_data, rules=self.RULES)
 

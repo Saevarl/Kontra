@@ -353,6 +353,7 @@ class ValidationEngine:
         # Independent toggles
         preplan: Literal["on", "off", "auto"] = "auto",
         pushdown: Literal["on", "off", "auto"] = "auto",
+        tally: Optional[bool] = None,  # Global tally override (None = use per-rule)
         enable_projection: bool = True,
         csv_mode: Literal["auto", "duckdb", "parquet"] = "auto",
         # Diagnostics
@@ -409,6 +410,7 @@ class ValidationEngine:
 
         self.preplan = preplan
         self.pushdown = pushdown
+        self.tally = tally  # Global tally override (None = use per-rule settings)
         self.enable_projection = bool(enable_projection)
         self.csv_mode = csv_mode
         self.show_plan = show_plan
@@ -638,6 +640,8 @@ class ValidationEngine:
         plan: "RuleExecutionPlan",
         compiled_full,
         rule_severity_map: Dict[str, str],
+        rule_tally_map: Dict[str, bool],
+        rule_context_map: Dict[str, Dict[str, Any]],
     ) -> Dict[str, Any]:
         """
         Execute validation directly on a user-provided DataFrame.
@@ -669,7 +673,7 @@ class ValidationEngine:
         t0 = now_ms()
         PolarsBackend = _get_polars_backend()
         polars_exec = PolarsBackend(executor=plan.execute_compiled)
-        exec_result = polars_exec.execute(self.df, compiled_full)
+        exec_result = polars_exec.execute(self.df, compiled_full, rule_tally_map)
         polars_results = exec_result.get("results", [])
         timers.polars_ms = now_ms() - t0
 
@@ -678,6 +682,11 @@ class ValidationEngine:
         for res in polars_results:
             res["execution_source"] = "polars"
             res["severity"] = rule_severity_map.get(res["rule_id"], "blocking")
+            res["tally"] = rule_tally_map.get(res["rule_id"], False)
+            # Inject context if present
+            ctx = rule_context_map.get(res["rule_id"])
+            if ctx:
+                res["context"] = ctx
             all_results.append(res)
 
         # Sort deterministically
@@ -761,6 +770,7 @@ class ValidationEngine:
                         id=rule.get("id"),
                         params=rule.get("params", {}),
                         severity=rule.get("severity", "blocking"),
+                        tally=rule.get("tally"),  # None = use global default
                         context=rule.get("context", {}),
                     )
                     inline_specs.append(spec)
@@ -815,11 +825,28 @@ class ValidationEngine:
         # Build rule_id -> severity mapping for injecting into preplan/SQL results
         rule_severity_map = {r.rule_id: r.severity for r in rules}
 
+        # Build rule_id -> effective tally mapping
+        # Precedence: per-rule setting > global setting > default (True for backwards compat)
+        def _effective_tally(rule) -> bool:
+            # If rule has explicit tally setting, use it
+            if rule.tally is not None:
+                return rule.tally
+            # Otherwise, use global setting if set, else default to True (exact counts)
+            # Default True maintains backwards compatibility - users can opt into fast mode
+            if self.tally is not None:
+                return self.tally
+            return True
+
+        rule_tally_map = {r.rule_id: _effective_tally(r) for r in rules}
+
+        # Build rule_id -> context mapping for injecting into results
+        rule_context_map = {r.rule_id: r.context for r in rules if r.context}
+
         # ------------------------------------------------------------------ #
         # DataFrame mode: If user provided a DataFrame, use Polars-only path
         # ------------------------------------------------------------------ #
         if self._input_dataframe is not None:
-            return self._run_dataframe_mode(timers, rules, plan, compiled_full, rule_severity_map)
+            return self._run_dataframe_mode(timers, rules, plan, compiled_full, rule_severity_map, rule_tally_map, rule_context_map)
 
         # Dataset handle (used across phases)
         # BYOC: if a pre-built handle was provided, use it directly
@@ -890,8 +917,15 @@ class ValidationEngine:
                 preplan_analyze_ms = now_ms() - t0
 
                 # Register metadata-based rule decisions (pass/fail), unknowns remain
-                pass_meta = fail_meta = unknown = 0
+                # Skip rules with tally=True - preplan only returns binary (0/1), not exact counts
+                pass_meta = fail_meta = unknown = skipped_tally = 0
                 for rid, decision in pre.rule_decisions.items():
+                    # If rule needs exact counts (tally=True), skip preplan for this rule
+                    if rule_tally_map.get(rid, False):
+                        skipped_tally += 1
+                        unknown += 1
+                        continue
+
                     if decision == "pass_meta":
                         meta_results_by_id[rid] = {
                             "rule_id": rid,
@@ -900,6 +934,7 @@ class ValidationEngine:
                             "message": "Proven by metadata (Parquet stats)",
                             "execution_source": "metadata",
                             "severity": rule_severity_map.get(rid, "blocking"),
+                            "tally": rule_tally_map.get(rid, False),
                         }
                         handled_ids_meta.add(rid)
                         pass_meta += 1
@@ -911,6 +946,7 @@ class ValidationEngine:
                             "message": "Failed: violation proven by Parquet metadata (null values detected)",
                             "execution_source": "metadata",
                             "severity": rule_severity_map.get(rid, "blocking"),
+                            "tally": rule_tally_map.get(rid, False),
                         }
                         handled_ids_meta.add(rid)
                         fail_meta += 1
@@ -988,8 +1024,14 @@ class ValidationEngine:
                     )
                     preplan_analyze_ms = now_ms() - t0
 
+                    # Skip rules with tally=True - preplan only returns binary (0/1), not exact counts
                     pass_meta = fail_meta = unknown = 0
                     for rid, decision in pre.rule_decisions.items():
+                        # If rule needs exact counts (tally=True), skip preplan for this rule
+                        if rule_tally_map.get(rid, False):
+                            unknown += 1
+                            continue
+
                         if decision == "pass_meta":
                             meta_results_by_id[rid] = {
                                 "rule_id": rid,
@@ -998,6 +1040,7 @@ class ValidationEngine:
                                 "message": "Proven by metadata (pg_stats)",
                                 "execution_source": "metadata",
                                 "severity": rule_severity_map.get(rid, "blocking"),
+                                "tally": rule_tally_map.get(rid, False),
                             }
                             handled_ids_meta.add(rid)
                             pass_meta += 1
@@ -1029,8 +1072,14 @@ class ValidationEngine:
                     )
                     preplan_analyze_ms = now_ms() - t0
 
+                    # Skip rules with tally=True - preplan only returns binary (0/1), not exact counts
                     pass_meta = fail_meta = unknown = 0
                     for rid, decision in pre.rule_decisions.items():
+                        # If rule needs exact counts (tally=True), skip preplan for this rule
+                        if rule_tally_map.get(rid, False):
+                            unknown += 1
+                            continue
+
                         if decision == "pass_meta":
                             meta_results_by_id[rid] = {
                                 "rule_id": rid,
@@ -1039,6 +1088,7 @@ class ValidationEngine:
                                 "message": "Proven by metadata (SQL Server constraints)",
                                 "execution_source": "metadata",
                                 "severity": rule_severity_map.get(rid, "blocking"),
+                                "tally": rule_tally_map.get(rid, False),
                             }
                             handled_ids_meta.add(rid)
                             pass_meta += 1
@@ -1080,10 +1130,20 @@ class ValidationEngine:
 
         if executor:
             try:
+                # Inject effective tally into SQL specs (global override takes precedence)
+                sql_specs_for_compile = []
+                for s in compiled_full.sql_rules:
+                    if s.get("rule_id") not in handled_ids_meta:
+                        spec = dict(s)  # Copy to avoid mutating original
+                        rid = spec.get("rule_id")
+                        # Use effective tally from rule_tally_map (includes global override)
+                        spec["tally"] = rule_tally_map.get(rid, False)
+                        sql_specs_for_compile.append(spec)
+
                 # Compile
                 t0 = now_ms()
                 executor_name = getattr(executor, "name", "sql")
-                sql_plan_str = executor.compile([s for s in compiled_full.sql_rules if s.get("rule_id") not in handled_ids_meta])
+                sql_plan_str = executor.compile(sql_specs_for_compile)
                 push_compile_ms = now_ms() - t0
                 if self.show_plan and sql_plan_str:
                     print(f"\n-- {executor_name.upper()} SQL PLAN --\n{sql_plan_str}\n")
@@ -1093,10 +1153,11 @@ class ValidationEngine:
                 duck_out = executor.execute(handle, sql_plan_str, csv_mode=self.csv_mode)
                 push_execute_ms = now_ms() - t0
 
-                # Inject severity into SQL results
+                # Inject severity and tally into SQL results
                 sql_results_raw = duck_out.get("results", [])
                 for r in sql_results_raw:
                     r["severity"] = rule_severity_map.get(r.get("rule_id"), "blocking")
+                    r["tally"] = rule_tally_map.get(r.get("rule_id"), False)
                 sql_results_by_id = {r["rule_id"]: r for r in sql_results_raw}
                 handled_ids_sql = set(sql_results_by_id.keys())
 
@@ -1191,14 +1252,25 @@ class ValidationEngine:
             PolarsBackend = _get_polars_backend()
             polars_exec = PolarsBackend(executor=plan.execute_compiled)
             polars_art = polars_exec.compile(compiled_residual)
-            polars_out = polars_exec.execute(self.df, polars_art)
+            polars_out = polars_exec.execute(self.df, polars_art, rule_tally_map)
             timers.execute_ms = now_ms() - t0
 
         # ------------------------------------------------------------------ #
         # 7) Merge results — deterministic order: preplan → SQL → Polars
         results: List[Dict[str, Any]] = list(meta_results_by_id.values())
         results += [r for r in sql_results_by_id.values() if r["rule_id"] not in meta_results_by_id]
-        results += [r for r in polars_out["results"] if r["rule_id"] not in meta_results_by_id and r["rule_id"] not in sql_results_by_id]
+        # Inject severity and tally into Polars results
+        for r in polars_out["results"]:
+            if r["rule_id"] not in meta_results_by_id and r["rule_id"] not in sql_results_by_id:
+                r["severity"] = rule_severity_map.get(r["rule_id"], "blocking")
+                r["tally"] = rule_tally_map.get(r["rule_id"], False)
+                results.append(r)
+
+        # Inject context into all results
+        for r in results:
+            ctx = rule_context_map.get(r["rule_id"])
+            if ctx:
+                r["context"] = ctx
 
         # 8) Summary
         summary = plan.summary(results)
@@ -1347,7 +1419,8 @@ class ValidationEngine:
 
             severity_info = f" ({blocking} blocking"
             if warning > 0:
-                severity_info += f", {warning} warnings"
+                warning_word = "warning" if warning == 1 else "warnings"
+                severity_info += f", {warning} {warning_word}"
             if info > 0:
                 severity_info += f", {info} info"
             severity_info += ")"
@@ -1375,10 +1448,14 @@ class ValidationEngine:
             else:
                 msg = r.get("message", "Failed")
                 failed_count = r.get("failed_count", 0)
+                is_tally = r.get("tally", True)
                 # Include failure count if available
                 detail = f": {msg}"
                 if failed_count > 0:
-                    detail = f": {failed_count:,} failures"
+                    failure_word = "failure" if failed_count == 1 else "failures"
+                    # Add ≥ prefix for approximate counts (tally=False)
+                    prefix = "" if is_tally else "≥"
+                    detail = f": {prefix}{failed_count:,} {failure_word}"
 
                 # Use different icon for warning/info
                 icon = "❌" if severity == "blocking" else ("⚠️" if severity == "warning" else "ℹ️")

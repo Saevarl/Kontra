@@ -121,6 +121,17 @@ class TestRulesHelpers:
         assert rule["name"] == "regex"
         assert rule["params"]["pattern"] == r"^[\w.-]+@[\w.-]+\.\w+$"
 
+    def test_regex_invalid_pattern_raises(self):
+        """rules.regex() with invalid pattern raises at rule construction time."""
+        # Invalid regex: unclosed bracket
+        rule_dict = rules.regex("email", "[invalid(regex")
+
+        # The helper just returns a dict - validation happens when rule is built
+        # Error is raised during rule construction (wrapped in RuntimeError by factory)
+        df = pl.DataFrame({"email": ["test@example.com"]})
+        with pytest.raises(RuntimeError, match="Invalid regex pattern"):
+            kontra.validate(df, rules=[rule_dict], save=False)
+
     def test_min_rows(self):
         """rules.min_rows() returns correct dict."""
         rule = rules.min_rows(100)
@@ -467,6 +478,32 @@ class TestValidationResult:
         result = kontra.validate(str(csv_path), rules=[rules.not_null("id")], save=False)
 
         assert result.total_rows == 5
+
+    def test_bool_returns_true_when_passed(self, sample_df):
+        """bool(result) returns True when validation passes."""
+        result = kontra.validate(sample_df, rules=[rules.not_null("id")], save=False)
+
+        assert result.passed is True
+        assert bool(result) is True
+        # Should work in if statements
+        if result:
+            passed = True
+        else:
+            passed = False
+        assert passed is True
+
+    def test_bool_returns_false_when_failed(self, df_with_nulls):
+        """bool(result) returns False when validation fails."""
+        result = kontra.validate(df_with_nulls, rules=[rules.not_null("id")], save=False)
+
+        assert result.passed is False
+        assert bool(result) is False
+        # Should work in if statements
+        if result:
+            passed = True
+        else:
+            passed = False
+        assert passed is False
 
 
 # =============================================================================

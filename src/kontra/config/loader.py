@@ -114,6 +114,7 @@ class ContractLoader:
                 id=r.get("id"),
                 params=params,
                 severity=r.get("severity", "blocking"),
+                tally=r.get("tally"),  # None = use global default, True/False = explicit
                 context=context,
             ))
 

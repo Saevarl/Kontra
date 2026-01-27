@@ -87,6 +87,10 @@ No NULL values in column.
 | `column` | string | Yes | |
 | `include_nan` | boolean | No | false |
 
+**Note on `include_nan`:** The `include_nan=true` option works reliably when validating DataFrames directly. For file-based validation (Parquet, CSV) with SQL pushdown, DuckDB does not distinguish NaN from NULL in its SQL execution. To ensure NaN values are detected in file validation, either:
+- Validate a DataFrame directly: `kontra.validate(df, ...)`
+- Use `pushdown="off"` to force Polars execution: `kontra.validate("file.parquet", pushdown="off", ...)`
+
 ---
 
 ### unique
@@ -494,6 +498,55 @@ All rules accept an optional `severity` parameter:
 
 ---
 
+## Tally Mode
+
+By default, Kontra returns exact violation counts by scanning all data (`tally=true`). For performance-critical pipelines, you can use `tally: false` to enable early termination—Kontra stops at the first violation and reports `failed_count: 1`.
+
+```yaml
+rules:
+  # Exact count (default): full scan, failed_count=N is exact
+  - name: not_null
+    params: { column: user_id }
+
+  # Fast mode: stops at first violation, failed_count=1 means "at least 1"
+  - name: not_null
+    params: { column: email }
+    tally: false
+```
+
+| tally | Query Type | failed_count | Speed |
+|-------|------------|--------------|-------|
+| `true` (default) | COUNT | Exact | Normal |
+| `false` | EXISTS | 1 (means ≥1) | Faster* |
+
+*On PostgreSQL, early termination is 7-40x faster. On DuckDB/Parquet, speedup is modest (~1-2x).
+
+**Messages reflect the mode:**
+- `tally: true`: "847 null values found in email"
+- `tally: false`: "At least 1 null value found in email"
+
+**Global override with CLI:**
+```bash
+kontra validate contract.yml --no-tally   # All rules use early termination (fast)
+kontra validate contract.yml --tally      # All rules use exact counts (default)
+```
+
+Per-rule settings override the global flag.
+
+**Which rules support tally?**
+
+| Category | Rules | Supports tally |
+|----------|-------|----------------|
+| Column | `not_null`, `unique`, `allowed_values`, `disallowed_values`, `range`, `length`, `regex`, `contains`, `starts_with`, `ends_with` | Yes |
+| Cross-column | `compare`, `conditional_not_null`, `conditional_range` | Yes |
+| Dataset | `min_rows`, `max_rows`, `freshness` | No* |
+| Schema | `dtype` | No* |
+| Custom | `custom_sql_check` | No* |
+
+*These rules always return exact counts or are binary by nature.
+
+---
+
 ## NULL Semantics
 
 | Rule | NULL Behavior |
@@ -551,8 +604,8 @@ Preplan returns binary (0 or ≥1), not exact counts. Use `--preplan off` for ex
 ### Basic Custom Rule (Polars Only)
 
 ```python
-from kontra.rules.base import BaseRule
-from kontra.rules.registry import register_rule
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.registry import register_rule
 
 @register_rule("my_rule")
 class MyRule(BaseRule):
@@ -573,8 +626,8 @@ Custom rules must be **imported before** `kontra.validate()` is called. The `@re
 
 ```python
 # my_rules.py
-from kontra.rules.base import BaseRule
-from kontra.rules.registry import register_rule
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.registry import register_rule
 
 @register_rule("positive")
 class PositiveRule(BaseRule):
@@ -632,9 +685,9 @@ Add `to_sql_agg()` to enable SQL pushdown without modifying executors:
 
 ```python
 import polars as pl
-from kontra.rules.base import BaseRule
-from kontra.rules.predicates import Predicate
-from kontra.rules.registry import register_rule
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.predicates import Predicate
+from kontra.rule_defs.registry import register_rule
 
 @register_rule("positive")
 class PositiveRule(BaseRule):
@@ -672,7 +725,8 @@ class PositiveRule(BaseRule):
 |--------|---------|----------------|
 | `validate(df)` | **Required**. Fallback | Polars (data loaded) |
 | `compile_predicate()` | Vectorized Polars + sampling | Polars (faster) |
-| `to_sql_agg(dialect)` | SQL pushdown | DuckDB/PostgreSQL/SQL Server |
+| `to_sql_agg(dialect)` | SQL pushdown (exact counts) | DuckDB/PostgreSQL/SQL Server |
+| `to_sql_exists(dialect)` | SQL early termination (tally=False) | DuckDB/PostgreSQL/SQL Server |
 | `required_columns()` | Projection | Load fewer columns |
 
 > **Sample Collection**: `compile_predicate()` is required for `sample_failures()` to work.
@@ -704,6 +758,33 @@ def to_sql_agg(self, dialect="duckdb"):
     col = f'"{self.column}"'
     return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
 ```
+
+### Early Termination for Custom Rules (tally=False)
+
+By default, custom rules always return exact counts because only `to_sql_agg()` is implemented. To enable early termination (EXISTS queries) for `tally=False`, implement `to_sql_exists()`:
+
+```python
+@register_rule("positive")
+class PositiveRule(BaseRule):
+    # ... __init__, validate, compile_predicate, required_columns ...
+
+    def to_sql_agg(self, dialect="duckdb"):
+        """SQL aggregate for exact counts (tally=True)."""
+        col = f'"{self.column}"'
+        return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
+
+    def to_sql_exists(self, dialect="duckdb"):
+        """WHERE condition for EXISTS query (tally=False). Optional."""
+        col = f'"{self.column}"'
+        return f'{col} IS NULL OR {col} <= 0'
+```
+
+| Method | Returns | Used When |
+|--------|---------|-----------|
+| `to_sql_agg()` | COUNT expression | `tally=True` (exact counts) |
+| `to_sql_exists()` | WHERE condition | `tally=False` (early termination) |
+
+When `tally=False` but `to_sql_exists()` is not implemented, Kontra falls back to `to_sql_agg()` and returns exact counts. Use `--dry-run` to see warnings about missing implementations.
 
 ### Using a Custom Rule
 

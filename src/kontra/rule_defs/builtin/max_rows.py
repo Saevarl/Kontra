@@ -8,6 +8,9 @@ from kontra.state.types import FailureMode
 
 @register_rule("max_rows")
 class MaxRowsRule(BaseRule):
+    rule_scope = "dataset"
+    supports_tally = False
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         # Accept both 'value' and 'threshold' for backwards compatibility
         max_count = int(self.params.get("value", self.params.get("threshold", 0)))

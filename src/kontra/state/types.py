@@ -628,7 +628,8 @@ class ValidationState:
                     parts.append(f"[{rule.severity}]")
                 if rule.failed_count > 0:
                     count_str = f"{rule.failed_count:,}" if rule.failed_count < 1000000 else f"{rule.failed_count/1000000:.1f}M"
-                    parts.append(f"{count_str} failures")
+                    failure_word = "failure" if rule.failed_count == 1 else "failures"
+                    parts.append(f"{count_str} {failure_word}")
                 if rule.failure_mode:
                     parts.append(rule.failure_mode)
                 if rule.message:

@@ -81,7 +81,19 @@ class RuleFactory:
 
                 rule_instance.rule_id = rule_id
                 rule_instance.severity = spec.severity
+                rule_instance.tally = spec.tally  # None = use global default
                 rule_instance.context = spec.context or {}
+
+                # Warn if tally is set on a rule that doesn't support it
+                if spec.tally is not None and not rule_instance.supports_tally:
+                    import warnings
+                    warnings.warn(
+                        f"Rule '{rule_name}' (scope: {rule_instance.rule_scope}) does not support tally; "
+                        f"tally={spec.tally} will be ignored",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+
                 rules.append(rule_instance)
             except (ValueError, DuplicateRuleIdError):
                 raise  # Re-raise validation errors as-is

@@ -1,18 +1,30 @@
-# src/contra/rules/base.py
+# src/kontra/rule_defs/base.py
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Set
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Set
 
 if TYPE_CHECKING:
     import polars as pl
 
 
+# Rule scope types
+RuleScope = Literal["column", "cross_column", "dataset", "schema", "custom"]
+
+
 class BaseRule(ABC):
     """
     Abstract base class for all validation rules.
+
+    Class attributes (override in subclasses):
+        rule_scope: Category of rule ("column", "cross_column", "dataset", "schema", "custom")
+        supports_tally: Whether this rule can count all violations vs early-stop
     """
 
     name: str
     params: Dict[str, Any]
+
+    # Rule classification - override in subclasses
+    rule_scope: RuleScope = "column"
+    supports_tally: bool = True
 
     def __init__(self, name: str, params: Dict[str, Any]):
         self.name = name
@@ -21,6 +33,9 @@ class BaseRule(ABC):
         self.rule_id: str = name
         # severity is set by the factory (from contract spec)
         self.severity: str = "blocking"
+        # tally is set by the factory (from contract spec or global default)
+        # None = use global default, True = count all, False = early stop
+        self.tally: Optional[bool] = None
         # context is set by the factory (from contract spec)
         # Consumer-defined metadata, ignored by validation
         self.context: Dict[str, Any] = {}

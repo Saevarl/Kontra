@@ -37,9 +37,10 @@ def _build_rule(
     params: Dict[str, Any],
     severity: str,
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build a rule dict, optionally with custom id and context."""
+    """Build a rule dict, optionally with custom id, tally, and context."""
     rule: Dict[str, Any] = {
         "name": name,
         "params": params,
@@ -47,6 +48,8 @@ def _build_rule(
     }
     if id is not None:
         rule["id"] = id
+    if tally is not None:
+        rule["tally"] = tally
     if context is not None:
         rule["context"] = context
     return rule
@@ -57,6 +60,7 @@ def not_null(
     severity: str = "blocking",
     include_nan: bool = False,
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -67,6 +71,7 @@ def not_null(
         severity: "blocking" | "warning" | "info"
         include_nan: If True, also treat NaN as null (default: False)
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Note:
@@ -81,13 +86,14 @@ def not_null(
     if include_nan:
         params["include_nan"] = True
 
-    return _build_rule("not_null", params, severity, id, context)
+    return _build_rule("not_null", params, severity, id, tally, context)
 
 
 def unique(
     column: str,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -97,13 +103,14 @@ def unique(
         column: Column name to check
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Returns:
         Rule dict for use with kontra.validate()
     """
     _validate_column(column, "unique")
-    return _build_rule("unique", {"column": column}, severity, id, context)
+    return _build_rule("unique", {"column": column}, severity, id, tally, context)
 
 
 def dtype(
@@ -123,11 +130,14 @@ def dtype(
         id: Custom rule ID (use when applying multiple rules to same column)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
+    Note:
+        dtype is a schema-level rule and does not support tally (binary pass/fail).
+
     Returns:
         Rule dict for use with kontra.validate()
     """
     _validate_column(column, "dtype")
-    return _build_rule("dtype", {"column": column, "type": type}, severity, id, context)
+    return _build_rule("dtype", {"column": column, "type": type}, severity, id, None, context)
 
 
 def range(
@@ -136,6 +146,7 @@ def range(
     max: Optional[Union[int, float]] = None,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -147,6 +158,7 @@ def range(
         max: Maximum allowed value (inclusive)
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Returns:
@@ -171,7 +183,7 @@ def range(
     if max is not None:
         params["max"] = max
 
-    return _build_rule("range", params, severity, id, context)
+    return _build_rule("range", params, severity, id, tally, context)
 
 
 def allowed_values(
@@ -179,6 +191,7 @@ def allowed_values(
     values: List[Any],
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -189,13 +202,14 @@ def allowed_values(
         values: List of allowed values
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Returns:
         Rule dict for use with kontra.validate()
     """
     _validate_column(column, "allowed_values")
-    return _build_rule("allowed_values", {"column": column, "values": values}, severity, id, context)
+    return _build_rule("allowed_values", {"column": column, "values": values}, severity, id, tally, context)
 
 
 def regex(
@@ -203,6 +217,7 @@ def regex(
     pattern: str,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -213,13 +228,14 @@ def regex(
         pattern: Regular expression pattern
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Returns:
         Rule dict for use with kontra.validate()
     """
     _validate_column(column, "regex")
-    return _build_rule("regex", {"column": column, "pattern": pattern}, severity, id, context)
+    return _build_rule("regex", {"column": column, "pattern": pattern}, severity, id, tally, context)
 
 
 def min_rows(
@@ -237,6 +253,9 @@ def min_rows(
         id: Custom rule ID (use when applying multiple rules)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
+    Note:
+        min_rows is a dataset-level rule and does not support tally (binary pass/fail).
+
     Returns:
         Rule dict for use with kontra.validate()
 
@@ -248,7 +267,7 @@ def min_rows(
     if threshold < 0:
         raise ValueError(f"min_rows threshold must be non-negative, got {threshold}")
 
-    return _build_rule("min_rows", {"threshold": threshold}, severity, id, context)
+    return _build_rule("min_rows", {"threshold": threshold}, severity, id, None, context)
 
 
 def max_rows(
@@ -266,6 +285,9 @@ def max_rows(
         id: Custom rule ID (use when applying multiple rules)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
+    Note:
+        max_rows is a dataset-level rule and does not support tally (binary pass/fail).
+
     Returns:
         Rule dict for use with kontra.validate()
 
@@ -276,7 +298,7 @@ def max_rows(
         raise ValueError(f"max_rows() threshold must be an integer, got {type(threshold).__name__}")
     if threshold < 0:
         raise ValueError(f"max_rows threshold must be non-negative, got {threshold}")
-    return _build_rule("max_rows", {"threshold": threshold}, severity, id, context)
+    return _build_rule("max_rows", {"threshold": threshold}, severity, id, None, context)
 
 
 def freshness(
@@ -295,6 +317,9 @@ def freshness(
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
+
+    Note:
+        freshness is a dataset-level rule and does not support tally (binary pass/fail).
 
     Returns:
         Rule dict for use with kontra.validate()
@@ -317,7 +342,7 @@ def freshness(
     except ValueError as e:
         raise ValueError(f"freshness() invalid max_age: {e}") from None
 
-    return _build_rule("freshness", {"column": column, "max_age": max_age}, severity, id, context)
+    return _build_rule("freshness", {"column": column, "max_age": max_age}, severity, id, None, context)
 
 
 def custom_sql_check(
@@ -337,10 +362,13 @@ def custom_sql_check(
         id: Custom rule ID (use when applying multiple custom checks)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
+    Note:
+        custom_sql_check does not support tally (user controls the SQL).
+
     Returns:
         Rule dict for use with kontra.validate()
     """
-    return _build_rule("custom_sql_check", {"sql": sql, "threshold": threshold}, severity, id, context)
+    return _build_rule("custom_sql_check", {"sql": sql, "threshold": threshold}, severity, id, None, context)
 
 
 def compare(
@@ -349,6 +377,7 @@ def compare(
     op: str,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -360,6 +389,7 @@ def compare(
         op: Comparison operator: ">", ">=", "<", "<=", "==", "!="
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple compare rules)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Note:
@@ -375,7 +405,7 @@ def compare(
     """
     _validate_column(left, "compare (left)")
     _validate_column(right, "compare (right)")
-    return _build_rule("compare", {"left": left, "right": right, "op": op}, severity, id, context)
+    return _build_rule("compare", {"left": left, "right": right, "op": op}, severity, id, tally, context)
 
 
 def conditional_not_null(
@@ -383,6 +413,7 @@ def conditional_not_null(
     when: str,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -393,6 +424,7 @@ def conditional_not_null(
         when: Condition expression (e.g., "status == 'shipped'")
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Condition syntax:
@@ -409,7 +441,7 @@ def conditional_not_null(
         rules.conditional_not_null("shipping_date", "status == 'shipped'")
     """
     _validate_column(column, "conditional_not_null")
-    return _build_rule("conditional_not_null", {"column": column, "when": when}, severity, id, context)
+    return _build_rule("conditional_not_null", {"column": column, "when": when}, severity, id, tally, context)
 
 
 def conditional_range(
@@ -419,6 +451,7 @@ def conditional_range(
     max: Optional[Union[int, float]] = None,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -431,6 +464,7 @@ def conditional_range(
         max: Maximum allowed value (inclusive)
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     At least one of `min` or `max` must be provided.
@@ -458,7 +492,7 @@ def conditional_range(
         params["min"] = min
     if max is not None:
         params["max"] = max
-    return _build_rule("conditional_range", params, severity, id, context)
+    return _build_rule("conditional_range", params, severity, id, tally, context)
 
 
 def disallowed_values(
@@ -466,6 +500,7 @@ def disallowed_values(
     values: List[Any],
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -478,6 +513,7 @@ def disallowed_values(
         values: List of disallowed values
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Note:
@@ -490,7 +526,7 @@ def disallowed_values(
         rules.disallowed_values("status", ["deleted", "banned", "spam"])
     """
     _validate_column(column, "disallowed_values")
-    return _build_rule("disallowed_values", {"column": column, "values": values}, severity, id, context)
+    return _build_rule("disallowed_values", {"column": column, "values": values}, severity, id, tally, context)
 
 
 def length(
@@ -499,6 +535,7 @@ def length(
     max: Optional[int] = None,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -510,6 +547,7 @@ def length(
         max: Maximum length (inclusive)
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     At least one of `min` or `max` must be provided.
@@ -540,7 +578,7 @@ def length(
     if max is not None:
         params["max"] = max
 
-    return _build_rule("length", params, severity, id, context)
+    return _build_rule("length", params, severity, id, tally, context)
 
 
 def contains(
@@ -548,6 +586,7 @@ def contains(
     substring: str,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -561,6 +600,7 @@ def contains(
         substring: Substring that must be present
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Note:
@@ -575,7 +615,7 @@ def contains(
     _validate_column(column, "contains")
     if not substring:
         raise ValueError("contains rule: substring cannot be empty")
-    return _build_rule("contains", {"column": column, "substring": substring}, severity, id, context)
+    return _build_rule("contains", {"column": column, "substring": substring}, severity, id, tally, context)
 
 
 def starts_with(
@@ -583,6 +623,7 @@ def starts_with(
     prefix: str,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -595,6 +636,7 @@ def starts_with(
         prefix: Prefix that must be present at the start
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Note:
@@ -609,7 +651,7 @@ def starts_with(
     _validate_column(column, "starts_with")
     if not prefix:
         raise ValueError("starts_with rule: prefix cannot be empty")
-    return _build_rule("starts_with", {"column": column, "prefix": prefix}, severity, id, context)
+    return _build_rule("starts_with", {"column": column, "prefix": prefix}, severity, id, tally, context)
 
 
 def ends_with(
@@ -617,6 +659,7 @@ def ends_with(
     suffix: str,
     severity: str = "blocking",
     id: Optional[str] = None,
+    tally: Optional[bool] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -629,6 +672,7 @@ def ends_with(
         suffix: Suffix that must be present at the end
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
+        tally: Count all violations (True) or early-stop (False/None)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
 
     Note:
@@ -643,7 +687,7 @@ def ends_with(
     _validate_column(column, "ends_with")
     if not suffix:
         raise ValueError("ends_with rule: suffix cannot be empty")
-    return _build_rule("ends_with", {"column": column, "suffix": suffix}, severity, id, context)
+    return _build_rule("ends_with", {"column": column, "suffix": suffix}, severity, id, tally, context)
 
 
 # Module-level access for `from kontra import rules` then `rules.not_null(...)`

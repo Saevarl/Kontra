@@ -225,13 +225,17 @@ class DatasetProfile:
         if self.sampled:
             lines.append(f"(sampled: {self.sample_size:,} rows)")
 
+        # Check if this is a metadata-only preset (scout/lite)
+        is_metadata_only = self.preset in ("scout", "lite")
+
         lines.append("")
         lines.append("COLUMNS:")
         for col in self.columns[:20]:  # Limit to 20 columns
             parts = [f"  {col.name} ({col.dtype})"]
             if col.null_count > 0:
                 parts.append(f"nulls={col.null_count:,} ({col.null_rate:.1%})")
-            if col.distinct_count is not None:
+            # Only show distinct_count if actually computed (not 0 in metadata-only mode)
+            if col.distinct_count > 0 or not is_metadata_only:
                 parts.append(f"distinct={col.distinct_count:,}")
             if col.numeric:
                 if col.numeric.min is not None and col.numeric.max is not None:

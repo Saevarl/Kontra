@@ -17,6 +17,10 @@ class RuleSpec(BaseModel):
         default="blocking",
         description="Rule severity: blocking (fails pipeline), warning (warns but continues), info (logs only)."
     )
+    tally: Optional[bool] = Field(
+        default=None,
+        description="Count all violations (True) or early-stop at first (False/None). None = use global default."
+    )
     context: Dict[str, Any] = Field(
         default_factory=dict,
         description="Consumer-defined context (owner, tags, fix_hint, etc.). Stored but not used by Kontra."

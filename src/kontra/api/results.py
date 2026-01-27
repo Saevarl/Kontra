@@ -249,11 +249,12 @@ class RuleResult:
         rule_id: Unique identifier (e.g., "COL:user_id:not_null")
         name: Rule type name (e.g., "not_null")
         passed: Whether the rule passed
-        failed_count: Number of failing rows
+        failed_count: Number of failing rows (exact if tally=True, ≥1 if tally=False)
         violation_rate: Fraction of rows that failed (0.0-1.0), or None if passed
         message: Human-readable result message
         severity: "blocking" | "warning" | "info"
         source: Measurement source ("metadata", "sql", "polars")
+        tally: Whether failed_count is exact (True) or a lower bound (False)
         column: Column name if applicable
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
         annotations: List of annotations on this rule (opt-in, loaded via get_run_with_annotations)
@@ -273,6 +274,7 @@ class RuleResult:
     message: str
     severity: str = "blocking"
     source: str = "polars"
+    tally: bool = False  # True = exact count, False = early stop (failed_count may be ≥1)
     column: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
     context: Optional[Dict[str, Any]] = None
@@ -317,7 +319,8 @@ class RuleResult:
     def __repr__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
         if self.failed_count > 0:
-            return f"RuleResult({self.rule_id}) {status} - {self.failed_count:,} failures"
+            failure_word = "failure" if self.failed_count == 1 else "failures"
+            return f"RuleResult({self.rule_id}) {status} - {self.failed_count:,} {failure_word}"
         return f"RuleResult({self.rule_id}) {status}"
 
     @classmethod
@@ -345,6 +348,7 @@ class RuleResult:
             message=d.get("message", ""),
             severity=d.get("severity", "blocking"),
             source=d.get("execution_source", d.get("source", "polars")),
+            tally=d.get("tally", False),
             column=column,
             details=d.get("details"),
             context=d.get("context"),
@@ -365,6 +369,7 @@ class RuleResult:
             "name": self.name,
             "passed": self.passed,
             "failed_count": self.failed_count,
+            "tally": self.tally,
             "message": self.message,
             "severity": self.severity,
             "source": self.source,
@@ -406,7 +411,11 @@ class RuleResult:
         parts = [f"{self.rule_id}: {status}"]
 
         if self.failed_count > 0:
-            parts.append(f"({self.failed_count:,} failures)")
+            if self.tally:
+                parts.append(f"({self.failed_count:,} failures)")
+            else:
+                # Early-stop mode: count is a lower bound
+                parts.append(f"(≥{self.failed_count:,} failures)")
 
         # Include violation_rate for failed rules (LLM juice)
         if self.violation_rate is not None:
@@ -415,6 +424,11 @@ class RuleResult:
         # Include severity weight if configured (LLM juice)
         if self.severity_weight is not None:
             parts.append(f"[w={self.severity_weight}]")
+
+        # Include context metadata (owner, sla, tags, etc.)
+        if self.context:
+            ctx_parts = [f"{k}={v}" for k, v in self.context.items()]
+            parts.append(f"ctx=[{', '.join(ctx_parts)}]")
 
         # Add samples if available
         if self.samples:
@@ -545,6 +559,15 @@ class ValidationResult:
                 if len(self.blocking_failures) > 3:
                     parts.append(f"    ... and {len(self.blocking_failures) - 3} more")
         return "\n".join(parts)
+
+    def __bool__(self) -> bool:
+        """Return True if validation passed, False otherwise.
+
+        Enables intuitive boolean checks:
+            if result:
+                print("Validation passed")
+        """
+        return self.passed
 
     @property
     def blocking_failures(self) -> List[RuleResult]:

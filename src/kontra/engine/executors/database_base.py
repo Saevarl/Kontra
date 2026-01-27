@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from kontra.connectors.handle import DatasetHandle
 from kontra.engine.sql_utils import (
     esc_ident,
+    # Aggregate functions (exact counts)
+    agg_not_null,
     agg_unique,
     agg_min_rows,
     agg_max_rows,
@@ -36,7 +38,22 @@ from kontra.engine.sql_utils import (
     agg_compare,
     agg_conditional_not_null,
     agg_conditional_range,
+    # EXISTS functions (early termination)
     exists_not_null,
+    exists_unique,
+    exists_allowed_values,
+    exists_disallowed_values,
+    exists_range,
+    exists_length,
+    exists_regex,
+    exists_contains,
+    exists_starts_with,
+    exists_ends_with,
+    exists_compare,
+    exists_conditional_not_null,
+    exists_conditional_range,
+    exists_custom,
+    # Utilities
     results_from_row,
     Dialect,
 )
@@ -144,15 +161,21 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
 
     def compile(self, sql_specs: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Compile rule specs into three-phase execution plan.
+        Compile rule specs into three-phase execution plan with tally-aware routing.
 
-        Phase 1: EXISTS checks for not_null rules (fast, early-terminate)
-        Phase 2: Aggregate query for most rules (batched into single query)
+        Phase 1: EXISTS checks (fast, early-terminate) - used when tally=False
+        Phase 2: Aggregate query (exact counts) - used when tally=True
         Phase 3: Custom SQL queries (each executed individually)
+
+        Tally routing:
+        - tally=True: Use aggregate (exact count)
+        - tally=False/None: Use EXISTS (early stop) if available, else aggregate
+
+        Dataset rules (min_rows, max_rows, freshness) always use aggregate.
 
         Returns:
             {
-                "exists_specs": [...],      # Phase 1: not_null rules
+                "exists_specs": [...],      # Phase 1: early-stop rules
                 "aggregate_selects": [...], # Phase 2: aggregate expressions
                 "aggregate_specs": [...],   # Phase 2: specs for aggregates
                 "custom_sql_specs": [...],  # Phase 3: custom SQL queries
@@ -176,6 +199,10 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
             if kind not in self.SUPPORTED_RULES:
                 continue
 
+            # Get tally setting: True = exact count, False/None = early stop
+            tally = spec.get("tally", False)
+            use_exists = not tally  # Early stop when tally is False or None
+
             if kind == "custom_sql_check":
                 # Validate SQL is safe using sqlglot before accepting
                 user_sql = spec.get("sql")
@@ -197,23 +224,32 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
             if kind == "not_null":
                 col = spec.get("column")
                 if isinstance(col, str) and col:
-                    exists_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_not_null(col, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "unique":
                 col = spec.get("column")
                 if isinstance(col, str) and col:
-                    aggregate_selects.append(agg_unique(col, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_unique(col, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "min_rows":
+                # Dataset rule - always aggregate (tally not applicable)
                 threshold = spec.get("threshold", 0)
                 aggregate_selects.append(agg_min_rows(int(threshold), rule_id, self.DIALECT))
                 aggregate_specs.append(spec)
                 supported_specs.append(spec)
 
             elif kind == "max_rows":
+                # Dataset rule - always aggregate (tally not applicable)
                 threshold = spec.get("threshold", 0)
                 aggregate_selects.append(agg_max_rows(int(threshold), rule_id, self.DIALECT))
                 aggregate_specs.append(spec)
@@ -223,19 +259,26 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                 col = spec.get("column")
                 values = spec.get("values", [])
                 if isinstance(col, str) and col and values:
-                    aggregate_selects.append(agg_allowed_values(col, values, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_allowed_values(col, values, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "disallowed_values":
                 col = spec.get("column")
                 values = spec.get("values", [])
                 if isinstance(col, str) and col and values:
-                    aggregate_selects.append(agg_disallowed_values(col, values, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_disallowed_values(col, values, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "freshness":
+                # Dataset rule - always aggregate (tally not applicable)
                 col = spec.get("column")
                 max_age_seconds = spec.get("max_age_seconds")
                 if isinstance(col, str) and col and isinstance(max_age_seconds, int):
@@ -248,8 +291,11 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                 min_val = spec.get("min")
                 max_val = spec.get("max")
                 if isinstance(col, str) and col and (min_val is not None or max_val is not None):
-                    aggregate_selects.append(agg_range(col, min_val, max_val, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_range(col, min_val, max_val, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "length":
@@ -257,40 +303,55 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                 min_len = spec.get("min")
                 max_len = spec.get("max")
                 if isinstance(col, str) and col and (min_len is not None or max_len is not None):
-                    aggregate_selects.append(agg_length(col, min_len, max_len, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_length(col, min_len, max_len, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "regex":
                 col = spec.get("column")
                 pattern = spec.get("pattern")
                 if isinstance(col, str) and col and isinstance(pattern, str) and pattern:
-                    aggregate_selects.append(agg_regex(col, pattern, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_regex(col, pattern, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "contains":
                 col = spec.get("column")
                 substring = spec.get("substring")
                 if isinstance(col, str) and col and isinstance(substring, str) and substring:
-                    aggregate_selects.append(agg_contains(col, substring, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_contains(col, substring, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "starts_with":
                 col = spec.get("column")
                 prefix = spec.get("prefix")
                 if isinstance(col, str) and col and isinstance(prefix, str) and prefix:
-                    aggregate_selects.append(agg_starts_with(col, prefix, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_starts_with(col, prefix, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "ends_with":
                 col = spec.get("column")
                 suffix = spec.get("suffix")
                 if isinstance(col, str) and col and isinstance(suffix, str) and suffix:
-                    aggregate_selects.append(agg_ends_with(col, suffix, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_ends_with(col, suffix, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "compare":
@@ -300,8 +361,11 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                 if (isinstance(left, str) and left and
                     isinstance(right, str) and right and
                     isinstance(op, str) and op):
-                    aggregate_selects.append(agg_compare(left, right, op, rule_id, self.DIALECT))
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(agg_compare(left, right, op, rule_id, self.DIALECT))
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "conditional_not_null":
@@ -312,10 +376,13 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                 if (isinstance(col, str) and col and
                     isinstance(when_column, str) and when_column and
                     isinstance(when_op, str) and when_op):
-                    aggregate_selects.append(
-                        agg_conditional_not_null(col, when_column, when_op, when_value, rule_id, self.DIALECT)
-                    )
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(
+                            agg_conditional_not_null(col, when_column, when_op, when_value, rule_id, self.DIALECT)
+                        )
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "conditional_range":
@@ -329,22 +396,37 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                     isinstance(when_column, str) and when_column and
                     isinstance(when_op, str) and when_op and
                     (min_val is not None or max_val is not None)):
-                    aggregate_selects.append(
-                        agg_conditional_range(col, when_column, when_op, when_value, min_val, max_val, rule_id, self.DIALECT)
-                    )
-                    aggregate_specs.append(spec)
+                    if use_exists:
+                        exists_specs.append(spec)
+                    else:
+                        aggregate_selects.append(
+                            agg_conditional_range(col, when_column, when_op, when_value, min_val, max_val, rule_id, self.DIALECT)
+                        )
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
             elif kind == "custom_agg":
-                # Custom rule with to_sql_agg() - use the pre-generated SQL
+                # Custom rule with to_sql_agg() and optional to_sql_exists()
                 sql_agg = spec.get("sql_agg", {})
+                sql_exists = spec.get("sql_exists", {})
+
                 # Try exact dialect match first, then fallback for sqlserver/mssql naming
                 agg_expr = sql_agg.get(self.DIALECT)
                 if not agg_expr and self.DIALECT == "sqlserver":
                     agg_expr = sql_agg.get("mssql")  # Fallback: mssql -> sqlserver
+
+                exists_expr = sql_exists.get(self.DIALECT)
+                if not exists_expr and self.DIALECT == "sqlserver":
+                    exists_expr = sql_exists.get("mssql")  # Fallback: mssql -> sqlserver
+
                 if agg_expr:
-                    aggregate_selects.append(f'{agg_expr} AS "{rule_id}"')
-                    aggregate_specs.append(spec)
+                    # If user provided to_sql_exists() and tally=False, use EXISTS
+                    if use_exists and exists_expr:
+                        exists_specs.append(spec)
+                    else:
+                        # Fall back to aggregate (COUNT) query
+                        aggregate_selects.append(f'{agg_expr} AS "{rule_id}"')
+                        aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
         return {
@@ -364,7 +446,7 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
         """
         Execute the compiled plan in three phases.
 
-        Phase 1: EXISTS checks for not_null (fast, can early-terminate)
+        Phase 1: EXISTS checks (fast, early-terminate for tally=False)
         Phase 2: Aggregate query for most rules (batched)
         Phase 3: Custom SQL queries (each executed individually)
 
@@ -393,25 +475,64 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
         with self._get_connection_ctx(handle) as conn:
             cursor = self._get_cursor(conn)
             try:
-                # Phase 1: EXISTS checks for not_null rules
+                # Phase 1: EXISTS checks (early termination for tally=False)
                 if exists_specs:
-                    exists_exprs = [
-                        exists_not_null(
-                            spec["column"],
-                            spec["rule_id"],
-                            table,
-                            self.DIALECT
-                        )
-                        for spec in exists_specs
-                    ]
-                    exists_sql = self._assemble_exists_query(exists_exprs)
-                    cursor.execute(exists_sql)
-                    row = cursor.fetchone()
-                    columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                    exists_exprs = []
+                    for spec in exists_specs:
+                        kind = spec.get("kind")
+                        rid = spec.get("rule_id")
 
-                    if row and columns:
-                        exists_results = results_from_row(columns, row, is_exists=True, rule_kinds=rule_kinds)
-                        results.extend(exists_results)
+                        if kind == "not_null":
+                            exists_exprs.append(exists_not_null(spec["column"], rid, table, self.DIALECT))
+                        elif kind == "unique":
+                            exists_exprs.append(exists_unique(spec["column"], rid, table, self.DIALECT))
+                        elif kind == "allowed_values":
+                            exists_exprs.append(exists_allowed_values(spec["column"], spec["values"], table, rid, self.DIALECT))
+                        elif kind == "disallowed_values":
+                            exists_exprs.append(exists_disallowed_values(spec["column"], spec["values"], table, rid, self.DIALECT))
+                        elif kind == "range":
+                            exists_exprs.append(exists_range(spec["column"], spec.get("min"), spec.get("max"), table, rid, self.DIALECT))
+                        elif kind == "length":
+                            exists_exprs.append(exists_length(spec["column"], spec.get("min"), spec.get("max"), table, rid, self.DIALECT))
+                        elif kind == "regex":
+                            exists_exprs.append(exists_regex(spec["column"], spec["pattern"], table, rid, self.DIALECT))
+                        elif kind == "contains":
+                            exists_exprs.append(exists_contains(spec["column"], spec["substring"], table, rid, self.DIALECT))
+                        elif kind == "starts_with":
+                            exists_exprs.append(exists_starts_with(spec["column"], spec["prefix"], table, rid, self.DIALECT))
+                        elif kind == "ends_with":
+                            exists_exprs.append(exists_ends_with(spec["column"], spec["suffix"], table, rid, self.DIALECT))
+                        elif kind == "compare":
+                            exists_exprs.append(exists_compare(spec["left"], spec["right"], spec["op"], table, rid, self.DIALECT))
+                        elif kind == "conditional_not_null":
+                            exists_exprs.append(exists_conditional_not_null(
+                                spec["column"], spec["when_column"], spec["when_op"],
+                                spec.get("when_value"), table, rid, self.DIALECT
+                            ))
+                        elif kind == "conditional_range":
+                            exists_exprs.append(exists_conditional_range(
+                                spec["column"], spec["when_column"], spec["when_op"],
+                                spec.get("when_value"), spec.get("min"), spec.get("max"),
+                                table, rid, self.DIALECT
+                            ))
+                        elif kind == "custom_agg":
+                            # Custom rule with to_sql_exists() - user-provided WHERE condition
+                            sql_exists = spec.get("sql_exists", {})
+                            exists_condition = sql_exists.get(self.DIALECT)
+                            if not exists_condition and self.DIALECT == "sqlserver":
+                                exists_condition = sql_exists.get("mssql")
+                            if exists_condition:
+                                exists_exprs.append(exists_custom(exists_condition, table, rid, self.DIALECT))
+
+                    if exists_exprs:
+                        exists_sql = self._assemble_exists_query(exists_exprs)
+                        cursor.execute(exists_sql)
+                        row = cursor.fetchone()
+                        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+
+                        if row and columns:
+                            exists_results = results_from_row(columns, row, is_exists=True, rule_kinds=rule_kinds)
+                            results.extend(exists_results)
 
                 # Phase 2: Aggregate query for remaining rules
                 if aggregate_selects:

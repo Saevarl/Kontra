@@ -100,6 +100,9 @@ def write_contract(tmp_path):
                 content += "    params: { " + ", ".join(
                     f"{k}: {repr(v) if isinstance(v, str) else v}" for k, v in r["params"].items()
                 ) + " }\n"
+            # Include tally field if specified
+            if "tally" in r and r["tally"] is not None:
+                content += f"    tally: {'true' if r['tally'] else 'false'}\n"
         out = tmp_path / "contract.yml"
         out.write_text(content)
         return str(out)

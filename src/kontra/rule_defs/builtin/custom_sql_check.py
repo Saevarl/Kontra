@@ -32,6 +32,9 @@ class CustomSQLCheck(BaseRule):
         loading data into DuckDB.
     """
 
+    rule_scope = "custom"
+    supports_tally = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._validation_result: Optional[Any] = None  # Cache validation result

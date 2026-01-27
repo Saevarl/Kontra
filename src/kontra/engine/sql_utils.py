@@ -213,6 +213,442 @@ def exists_not_null(
         )
 
 
+def exists_unique(
+    col: str, rule_id: str, table: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    EXISTS expression for unique rule - stops at first duplicate found.
+    Returns 1 if any duplicate exists, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    # Subquery finds groups with COUNT > 1
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS ("
+            f"SELECT 1 FROM {table} WHERE {c} IS NOT NULL "
+            f"GROUP BY {c} HAVING COUNT(*) > 1"
+            f") THEN 1 ELSE 0 END) AS {r}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NOT NULL "
+            f"GROUP BY {c} HAVING COUNT(*) > 1 LIMIT 1) AS {r}"
+        )
+
+
+def exists_allowed_values(
+    col: str, values: List[Any], table: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    EXISTS expression for allowed_values rule - stops at first disallowed value.
+    Returns 1 if any value not in allowed set exists, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    val_list = ", ".join(
+        lit_str(str(v), dialect) if isinstance(v, str) else str(v)
+        for v in values
+    )
+
+    if dialect == "sqlserver":
+        cast_col = f"CAST({c} AS NVARCHAR(MAX))"
+        return (
+            f"(SELECT CASE WHEN EXISTS ("
+            f"SELECT 1 FROM {table} WHERE {c} IS NOT NULL AND {cast_col} NOT IN ({val_list})"
+            f") THEN 1 ELSE 0 END) AS {r}"
+        )
+    elif dialect == "postgres":
+        cast_col = f"{c}::text"
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NOT NULL AND {cast_col} NOT IN ({val_list}) LIMIT 1) AS {r}"
+        )
+    else:  # duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NOT NULL AND {c} NOT IN ({val_list}) LIMIT 1) AS {r}"
+        )
+
+
+def exists_disallowed_values(
+    col: str, values: List[Any], table: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    EXISTS expression for disallowed_values rule - stops at first disallowed value.
+    Returns 1 if any value in disallowed set exists, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    if not values:
+        # No disallowed values = always passes
+        return f"0 AS {r}"
+
+    val_list = ", ".join(
+        lit_str(str(v), dialect) if isinstance(v, str) else str(v)
+        for v in values
+        if v is not None
+    )
+
+    if dialect == "sqlserver":
+        cast_col = f"CAST({c} AS NVARCHAR(MAX))"
+        return (
+            f"(SELECT CASE WHEN EXISTS ("
+            f"SELECT 1 FROM {table} WHERE {c} IS NOT NULL AND {cast_col} IN ({val_list})"
+            f") THEN 1 ELSE 0 END) AS {r}"
+        )
+    elif dialect == "postgres":
+        cast_col = f"{c}::text"
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NOT NULL AND {cast_col} IN ({val_list}) LIMIT 1) AS {r}"
+        )
+    else:  # duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NOT NULL AND {c} IN ({val_list}) LIMIT 1) AS {r}"
+        )
+
+
+def exists_range(
+    col: str,
+    min_val: Optional[Any],
+    max_val: Optional[Any],
+    table: str,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    EXISTS expression for range rule - stops at first out-of-range value.
+    Returns 1 if any value outside [min, max] or NULL exists, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    conditions = [f"{c} IS NULL"]
+    if min_val is not None:
+        conditions.append(f"{c} < {min_val}")
+    if max_val is not None:
+        conditions.append(f"{c} > {max_val}")
+
+    violation = " OR ".join(conditions)
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {violation}) "
+            f"THEN 1 ELSE 0 END) AS {r}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {violation} LIMIT 1) AS {r}"
+        )
+
+
+def exists_length(
+    col: str,
+    min_len: Optional[int],
+    max_len: Optional[int],
+    table: str,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    EXISTS expression for length rule - stops at first invalid length.
+    Returns 1 if any value with invalid length exists, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    # SQL Server uses LEN(), others use LENGTH()
+    if dialect == "sqlserver":
+        len_func = f"LEN({c})"
+    else:
+        len_func = f"LENGTH({c})"
+
+    conditions = [f"{c} IS NULL"]
+    if min_len is not None:
+        conditions.append(f"{len_func} < {int(min_len)}")
+    if max_len is not None:
+        conditions.append(f"{len_func} > {int(max_len)}")
+
+    violation = " OR ".join(conditions)
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {violation}) "
+            f"THEN 1 ELSE 0 END) AS {r}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {violation} LIMIT 1) AS {r}"
+        )
+
+
+def exists_regex(
+    col: str, pattern: str, table: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    EXISTS expression for regex rule - stops at first non-matching value.
+    Returns 1 if any value doesn't match pattern or is NULL, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+    escaped_pattern = pattern.replace("'", "''")
+
+    if dialect == "sqlserver":
+        # SQL Server uses PATINDEX with LIKE-style patterns
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR PATINDEX('%{escaped_pattern}%', CAST({c} AS NVARCHAR(MAX))) = 0) "
+            f"THEN 1 ELSE 0 END) AS {r}"
+        )
+    elif dialect == "postgres":
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR NOT ({c}::text ~ '{escaped_pattern}') LIMIT 1) AS {r}"
+        )
+    else:  # duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR NOT regexp_matches(CAST({c} AS VARCHAR), '{escaped_pattern}') LIMIT 1) AS {r}"
+        )
+
+
+def exists_contains(
+    col: str, substring: str, table: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    EXISTS expression for contains rule - stops at first non-containing value.
+    Returns 1 if any value doesn't contain substring or is NULL, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    escaped = escape_like_pattern(substring)
+    pattern = f"%{escaped}%"
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR {c} NOT LIKE '{pattern}' ESCAPE '\\') THEN 1 ELSE 0 END) AS {r}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR {c} NOT LIKE '{pattern}' ESCAPE '\\' LIMIT 1) AS {r}"
+        )
+
+
+def exists_starts_with(
+    col: str, prefix: str, table: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    EXISTS expression for starts_with rule - stops at first non-matching value.
+    Returns 1 if any value doesn't start with prefix or is NULL, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    escaped = escape_like_pattern(prefix)
+    pattern = f"{escaped}%"
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR {c} NOT LIKE '{pattern}' ESCAPE '\\') THEN 1 ELSE 0 END) AS {r}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR {c} NOT LIKE '{pattern}' ESCAPE '\\' LIMIT 1) AS {r}"
+        )
+
+
+def exists_ends_with(
+    col: str, suffix: str, table: str, rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """
+    EXISTS expression for ends_with rule - stops at first non-matching value.
+    Returns 1 if any value doesn't end with suffix or is NULL, 0 otherwise.
+    """
+    c = esc_ident(col, dialect)
+    r = esc_ident(rule_id, dialect)
+
+    escaped = escape_like_pattern(suffix)
+    pattern = f"%{escaped}"
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR {c} NOT LIKE '{pattern}' ESCAPE '\\') THEN 1 ELSE 0 END) AS {r}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {c} IS NULL "
+            f"OR {c} NOT LIKE '{pattern}' ESCAPE '\\' LIMIT 1) AS {r}"
+        )
+
+
+def exists_compare(
+    left: str,
+    right: str,
+    op: str,
+    table: str,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    EXISTS expression for compare rule - stops at first comparison failure.
+    Returns 1 if any comparison fails or either column is NULL, 0 otherwise.
+    """
+    l = esc_ident(left, dialect)
+    r_col = esc_ident(right, dialect)
+    r_id = esc_ident(rule_id, dialect)
+    sql_op = SQL_OP_MAP.get(op, op)
+
+    violation = f"{l} IS NULL OR {r_col} IS NULL OR NOT ({l} {sql_op} {r_col})"
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {violation}) "
+            f"THEN 1 ELSE 0 END) AS {r_id}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {violation} LIMIT 1) AS {r_id}"
+        )
+
+
+def exists_conditional_not_null(
+    column: str,
+    when_column: str,
+    when_op: str,
+    when_value: Any,
+    table: str,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    EXISTS expression for conditional_not_null rule - stops at first violation.
+    Returns 1 if any row has column NULL when condition is TRUE, 0 otherwise.
+    """
+    col = esc_ident(column, dialect)
+    when_col = esc_ident(when_column, dialect)
+    r_id = esc_ident(rule_id, dialect)
+    sql_op = SQL_OP_MAP.get(when_op, when_op)
+
+    # Handle NULL value in condition
+    if when_value is None:
+        if when_op == "==":
+            condition = f"{when_col} IS NULL"
+        elif when_op == "!=":
+            condition = f"{when_col} IS NOT NULL"
+        else:
+            condition = "1=0"
+    else:
+        val = lit_value(when_value, dialect)
+        condition = f"{when_col} {sql_op} {val}"
+
+    violation = f"({condition}) AND {col} IS NULL"
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {violation}) "
+            f"THEN 1 ELSE 0 END) AS {r_id}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {violation} LIMIT 1) AS {r_id}"
+        )
+
+
+def exists_conditional_range(
+    column: str,
+    when_column: str,
+    when_op: str,
+    when_value: Any,
+    min_val: Any,
+    max_val: Any,
+    table: str,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    EXISTS expression for conditional_range rule - stops at first violation.
+    Returns 1 if any row is outside range when condition is TRUE, 0 otherwise.
+    """
+    col = esc_ident(column, dialect)
+    when_col = esc_ident(when_column, dialect)
+    r_id = esc_ident(rule_id, dialect)
+    sql_op = SQL_OP_MAP.get(when_op, when_op)
+
+    # Handle NULL value in condition
+    if when_value is None:
+        if when_op == "==":
+            condition = f"{when_col} IS NULL"
+        elif when_op == "!=":
+            condition = f"{when_col} IS NOT NULL"
+        else:
+            condition = "1=0"
+    else:
+        val = lit_value(when_value, dialect)
+        condition = f"{when_col} {sql_op} {val}"
+
+    # Build range violation part
+    range_parts = [f"{col} IS NULL"]
+    if min_val is not None:
+        range_parts.append(f"{col} < {min_val}")
+    if max_val is not None:
+        range_parts.append(f"{col} > {max_val}")
+    range_violation = " OR ".join(range_parts)
+
+    violation = f"({condition}) AND ({range_violation})"
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {violation}) "
+            f"THEN 1 ELSE 0 END) AS {r_id}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {violation} LIMIT 1) AS {r_id}"
+        )
+
+
+def exists_custom(
+    where_condition: str,
+    table: str,
+    rule_id: str,
+    dialect: Dialect = "duckdb",
+) -> str:
+    """
+    EXISTS expression for custom rules - user provides the WHERE condition.
+    Returns 1 if any row matches the condition (violation exists), 0 otherwise.
+
+    Parameters
+    ----------
+    where_condition : str
+        The WHERE clause condition that identifies violations.
+        Example: '"score" <= 0' or '"status" NOT IN (''active'', ''inactive'')'
+    table : str
+        The table or view name (already escaped/formatted).
+    rule_id : str
+        Unique identifier for this rule (used as column alias).
+    dialect : str
+        SQL dialect ('duckdb', 'postgres', 'sqlserver', 'mssql').
+    """
+    r_id = esc_ident(rule_id, dialect)
+
+    if dialect == "sqlserver":
+        return (
+            f"(SELECT CASE WHEN EXISTS (SELECT 1 FROM {table} WHERE {where_condition}) "
+            f"THEN 1 ELSE 0 END) AS {r_id}"
+        )
+    else:  # postgres, duckdb
+        return (
+            f"EXISTS (SELECT 1 FROM {table} WHERE {where_condition} LIMIT 1) AS {r_id}"
+        )
+
+
 # =============================================================================
 # Result Parsing
 # =============================================================================
@@ -550,6 +986,103 @@ def agg_ends_with(
     )
 
 
+def _generate_rule_message(
+    rule_kind: Optional[str],
+    failed_count: int,
+    is_tally: bool,
+    rule_id: str,
+) -> str:
+    """
+    Generate a descriptive message for a rule result.
+
+    Args:
+        rule_kind: The type of rule (e.g., "not_null", "unique", "range")
+        failed_count: Number of violations (1 for EXISTS mode)
+        is_tally: True if exact count (COUNT mode), False if lower bound (EXISTS mode)
+        rule_id: The rule ID (used to extract column name if needed)
+    """
+    if failed_count == 0:
+        return "Passed"
+
+    # Extract column name from rule_id (format: COL:column:rule_kind or DATASET:rule_kind)
+    column = None
+    if rule_id.startswith("COL:"):
+        parts = rule_id.split(":")
+        if len(parts) >= 2:
+            column = parts[1]
+
+    # Count prefix: "At least 1" for EXISTS, exact count for tally
+    if is_tally:
+        count_str = str(failed_count)
+        row_str = "row" if failed_count == 1 else "rows"
+    else:
+        count_str = "At least 1"
+        row_str = "row"
+
+    # Generate rule-specific messages
+    if rule_kind == "not_null":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} null value{'' if not is_tally or failed_count == 1 else 's'} found{col_part}"
+
+    elif rule_kind == "unique":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} duplicate {row_str}{col_part}"
+
+    elif rule_kind == "allowed_values":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with disallowed value{col_part}"
+
+    elif rule_kind == "disallowed_values":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with disallowed value{col_part}"
+
+    elif rule_kind == "range":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} out of range{col_part}"
+
+    elif rule_kind == "length":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with invalid length{col_part}"
+
+    elif rule_kind == "regex":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} failed regex match{col_part}"
+
+    elif rule_kind == "contains":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} missing required substring{col_part}"
+
+    elif rule_kind == "starts_with":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with invalid prefix{col_part}"
+
+    elif rule_kind == "ends_with":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with invalid suffix{col_part}"
+
+    elif rule_kind == "compare":
+        return f"{count_str} {row_str} failed comparison"
+
+    elif rule_kind == "conditional_not_null":
+        return f"{count_str} {row_str} with null value when condition met"
+
+    elif rule_kind == "conditional_range":
+        return f"{count_str} {row_str} out of range when condition met"
+
+    elif rule_kind == "min_rows":
+        return f"Dataset has {failed_count} fewer rows than required minimum"
+
+    elif rule_kind == "max_rows":
+        return f"Dataset has {failed_count} more rows than allowed maximum"
+
+    elif rule_kind == "freshness":
+        return "Data is stale"
+
+    else:
+        # Generic fallback
+        return f"{count_str} {row_str} failed validation"
+
+
 def results_from_row(
     columns: List[str],
     values: tuple,
@@ -581,11 +1114,16 @@ def results_from_row(
 
         if is_exists:
             has_violation = bool(val) if val is not None else False
+            failed_count = 1 if has_violation else 0
+            message = _generate_rule_message(
+                rule_kind, failed_count, is_tally=False, rule_id=rule_id
+            )
             result = {
                 "rule_id": rule_id,
                 "passed": not has_violation,
-                "failed_count": 1 if has_violation else 0,
-                "message": "Passed" if not has_violation else "Failed",
+                "failed_count": failed_count,
+                "tally": False,
+                "message": message,
                 "severity": "ERROR",
                 "actions_executed": [],
                 "execution_source": "sql",
@@ -595,11 +1133,15 @@ def results_from_row(
             out.append(result)
         else:
             failed_count = int(val) if val is not None else 0
+            message = _generate_rule_message(
+                rule_kind, failed_count, is_tally=True, rule_id=rule_id
+            )
             result = {
                 "rule_id": rule_id,
                 "passed": failed_count == 0,
                 "failed_count": failed_count,
-                "message": "Passed" if failed_count == 0 else "Failed",
+                "tally": True,
+                "message": message,
                 "severity": "ERROR",
                 "actions_executed": [],
                 "execution_source": "sql",

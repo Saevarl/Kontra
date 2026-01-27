@@ -14,6 +14,112 @@ from kontra.logging import get_logger, log_exception
 _logger = get_logger(__name__)
 
 
+def _extract_rule_kind(rule_id: str) -> Optional[str]:
+    """
+    Extract rule kind from rule_id.
+
+    Rule ID formats:
+      - COL:column:rule_kind -> rule_kind
+      - DATASET:rule_kind -> rule_kind
+      - Custom IDs -> None (fall back to predicate message)
+    """
+    if rule_id.startswith("COL:"):
+        parts = rule_id.split(":")
+        if len(parts) >= 3:
+            return parts[2]
+    elif rule_id.startswith("DATASET:"):
+        parts = rule_id.split(":")
+        if len(parts) >= 2:
+            return parts[1]
+    return None
+
+
+def _generate_polars_message(
+    rule_id: str,
+    failed_count: int,
+    is_tally: bool,
+    predicate_message: str,
+) -> str:
+    """
+    Generate a tally-aware message for Polars execution.
+
+    For consistency with SQL execution, uses the same message format.
+    Falls back to predicate message for unknown rule kinds.
+    """
+    if failed_count == 0:
+        return "Passed"
+
+    rule_kind = _extract_rule_kind(rule_id)
+
+    # Extract column name from rule_id
+    column = None
+    if rule_id.startswith("COL:"):
+        parts = rule_id.split(":")
+        if len(parts) >= 2:
+            column = parts[1]
+
+    # Count prefix: "At least 1" for early termination, exact count for tally
+    if is_tally:
+        count_str = str(failed_count)
+        row_str = "row" if failed_count == 1 else "rows"
+    else:
+        count_str = "At least 1"
+        row_str = "row"
+
+    # Generate rule-specific messages (same format as SQL path)
+    if rule_kind == "not_null":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} null value{'' if not is_tally or failed_count == 1 else 's'} found{col_part}"
+
+    elif rule_kind == "unique":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} duplicate {row_str}{col_part}"
+
+    elif rule_kind in ("allowed_values", "disallowed_values"):
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with disallowed value{col_part}"
+
+    elif rule_kind == "range":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} out of range{col_part}"
+
+    elif rule_kind == "length":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with invalid length{col_part}"
+
+    elif rule_kind == "regex":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} failed regex match{col_part}"
+
+    elif rule_kind == "contains":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} missing required substring{col_part}"
+
+    elif rule_kind == "starts_with":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with invalid prefix{col_part}"
+
+    elif rule_kind == "ends_with":
+        col_part = f" in {column}" if column else ""
+        return f"{count_str} {row_str} with invalid suffix{col_part}"
+
+    elif rule_kind == "compare":
+        return f"{count_str} {row_str} failed comparison"
+
+    elif rule_kind == "conditional_not_null":
+        return f"{count_str} {row_str} with null value when condition met"
+
+    elif rule_kind == "conditional_range":
+        return f"{count_str} {row_str} out of range when condition met"
+
+    else:
+        # For unknown rule kinds or custom IDs, use predicate message with count prefix
+        if is_tally:
+            return predicate_message
+        else:
+            return f"At least 1 violation: {predicate_message}"
+
+
 # --------------------------------------------------------------------------- #
 # Planning Artifact
 # --------------------------------------------------------------------------- #
@@ -122,15 +228,33 @@ class RuleExecutionPlan:
             sql_rules=sql_rules,
         )
 
-    def execute_compiled(self, df: "pl.DataFrame", compiled: CompiledPlan) -> List[Dict[str, Any]]:
+    def execute_compiled(
+        self,
+        df: "pl.DataFrame",
+        compiled: CompiledPlan,
+        rule_tally_map: Optional[Dict[str, bool]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Execute the compiled plan using Polars:
           - vectorized pass for predicates
           - individual validation for fallback rules
+
+        Parameters
+        ----------
+        df : pl.DataFrame
+            The DataFrame to validate.
+        compiled : CompiledPlan
+            The compiled execution plan.
+        rule_tally_map : dict, optional
+            Mapping of rule_id -> bool indicating whether to use exact counts (True)
+            or early termination (False). If not provided, defaults to exact counts.
         """
+        import polars as pl
+
         # Build rule_id -> severity mapping for predicates
         rule_severity_map = self._build_severity_map()
         available_cols = set(df.columns)
+        rule_tally_map = rule_tally_map or {}
 
         vec_results: List[Dict[str, Any]] = []
         if compiled.predicates:
@@ -170,22 +294,53 @@ class RuleExecutionPlan:
                     valid_predicates.append(p)
 
             # Execute valid predicates in vectorized pass
+            # Split into tally=True (exact counts) and tally=False (early termination)
             if valid_predicates:
-                counts_df = df.select([p.expr.sum().alias(p.rule_id) for p in valid_predicates])
-                counts = counts_df.row(0, named=True)
-                for p in valid_predicates:
-                    failed_count = int(counts[p.rule_id])
-                    passed = failed_count == 0
-                    vec_results.append(
-                        {
-                            "rule_id": p.rule_id,
-                            "passed": passed,
-                            "failed_count": failed_count,
-                            "message": "Passed" if passed else p.message,
-                            "execution_source": "polars",
-                            "severity": rule_severity_map.get(p.rule_id, "blocking"),
-                        }
-                    )
+                tally_predicates = [p for p in valid_predicates if rule_tally_map.get(p.rule_id, True)]
+                fast_predicates = [p for p in valid_predicates if not rule_tally_map.get(p.rule_id, True)]
+
+                # Execute tally=True predicates with .sum() for exact counts
+                if tally_predicates:
+                    counts_df = df.select([p.expr.sum().alias(p.rule_id) for p in tally_predicates])
+                    counts = counts_df.row(0, named=True)
+                    for p in tally_predicates:
+                        failed_count = int(counts[p.rule_id])
+                        passed = failed_count == 0
+                        message = _generate_polars_message(
+                            p.rule_id, failed_count, is_tally=True, predicate_message=p.message
+                        )
+                        vec_results.append(
+                            {
+                                "rule_id": p.rule_id,
+                                "passed": passed,
+                                "failed_count": failed_count,
+                                "message": message,
+                                "execution_source": "polars",
+                                "severity": rule_severity_map.get(p.rule_id, "blocking"),
+                            }
+                        )
+
+                # Execute tally=False predicates with .any() for early termination
+                if fast_predicates:
+                    any_df = df.select([p.expr.any().alias(p.rule_id) for p in fast_predicates])
+                    any_results = any_df.row(0, named=True)
+                    for p in fast_predicates:
+                        has_violation = bool(any_results[p.rule_id])
+                        passed = not has_violation
+                        failed_count = 1 if has_violation else 0
+                        message = _generate_polars_message(
+                            p.rule_id, failed_count, is_tally=False, predicate_message=p.message
+                        )
+                        vec_results.append(
+                            {
+                                "rule_id": p.rule_id,
+                                "passed": passed,
+                                "failed_count": failed_count,
+                                "message": message,
+                                "execution_source": "polars",
+                                "severity": rule_severity_map.get(p.rule_id, "blocking"),
+                            }
+                        )
 
             # Add missing column results
             vec_results.extend(missing_col_results)
@@ -394,10 +549,14 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
     - We normalize namespaced rule names, e.g. "DATASET:not_null" → "not_null".
     - For min/max rows, accept both `value` and `threshold` to match existing contracts.
     - Not all executors support all rules (DuckDB: 3, PostgreSQL: 5).
+    - The `tally` flag is included in specs to control EXISTS vs COUNT execution.
     """
     rid = getattr(rule, "rule_id", None)
     if not isinstance(rid, str):
         return None
+
+    # Get the rule's tally setting (may be None, True, or False)
+    rule_tally = getattr(rule, "tally", None)
 
     # Priority 1: Rule-provided spec (full control)
     to_sql = getattr(rule, "to_sql_spec", None)
@@ -405,6 +564,9 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
         try:
             spec = to_sql()
             if spec:
+                # Inject tally into rule-provided spec if not already set
+                if "tally" not in spec:
+                    spec["tally"] = rule_tally
                 return spec
         except Exception as e:
             log_exception(_logger, f"to_sql_spec failed for {getattr(rule, 'name', '?')}", e)
@@ -422,15 +584,35 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
 
             # If any dialect is supported, include the spec
             if agg_duckdb or agg_postgres or agg_mssql:
-                return {
+                spec = {
                     "kind": "custom_agg",
                     "rule_id": rid,
+                    "tally": rule_tally,
                     "sql_agg": {
                         "duckdb": agg_duckdb,
                         "postgres": agg_postgres,
                         "mssql": agg_mssql,
                     },
                 }
+
+                # Check for optional to_sql_exists() for early termination (tally=False)
+                to_sql_exists = getattr(rule, "to_sql_exists", None)
+                if callable(to_sql_exists):
+                    try:
+                        exists_duckdb = to_sql_exists("duckdb")
+                        exists_postgres = to_sql_exists("postgres")
+                        exists_mssql = to_sql_exists("mssql")
+
+                        if exists_duckdb or exists_postgres or exists_mssql:
+                            spec["sql_exists"] = {
+                                "duckdb": exists_duckdb,
+                                "postgres": exists_postgres,
+                                "mssql": exists_mssql,
+                            }
+                    except Exception as e:
+                        log_exception(_logger, f"to_sql_exists failed for {getattr(rule, 'name', '?')}", e)
+
+                return spec
         except Exception as e:
             log_exception(_logger, f"to_sql_agg failed for {getattr(rule, 'name', '?')}", e)
 
@@ -445,27 +627,29 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
     if name == "not_null":
         col = params.get("column")
         if isinstance(col, str) and col:
-            return {"kind": "not_null", "rule_id": rid, "column": col}
+            return {"kind": "not_null", "rule_id": rid, "column": col, "tally": rule_tally}
 
     if name == "unique":
         col = params.get("column")
         if isinstance(col, str) and col:
-            return {"kind": "unique", "rule_id": rid, "column": col}
+            return {"kind": "unique", "rule_id": rid, "column": col, "tally": rule_tally}
 
     if name == "min_rows":
         thr = params.get("value", params.get("threshold"))
         if isinstance(thr, int):
+            # Dataset rules don't support tally
             return {"kind": "min_rows", "rule_id": rid, "threshold": int(thr)}
 
     if name == "max_rows":
         thr = params.get("value", params.get("threshold"))
         if isinstance(thr, int):
+            # Dataset rules don't support tally
             return {"kind": "max_rows", "rule_id": rid, "threshold": int(thr)}
 
     if name == "allowed_values":
         col = params.get("column")
         values = params.get("values", [])
         if isinstance(col, str) and col and values:
-            return {"kind": "allowed_values", "rule_id": rid, "column": col, "values": list(values)}
+            return {"kind": "allowed_values", "rule_id": rid, "column": col, "values": list(values), "tally": rule_tally}
 
     return None

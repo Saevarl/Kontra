@@ -8,7 +8,7 @@ Thin adapter that defers execution to the RuleExecutionPlan's compiled executor.
 Keeps the backend boundary explicit and behavior deterministic.
 """
 
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import polars as pl
 
@@ -16,7 +16,7 @@ import polars as pl
 class PolarsBackend:
     name = "polars"
 
-    def __init__(self, executor: Callable[[pl.DataFrame, Any], List[Dict[str, Any]]]):
+    def __init__(self, executor: Callable[..., List[Dict[str, Any]]]):
         """
         Parameters
         ----------
@@ -34,9 +34,25 @@ class PolarsBackend:
         """No-op for Polars: pass through the compiled plan."""
         return compiled_plan
 
-    def execute(self, df: pl.DataFrame, compiled_artifact: Any) -> Dict[str, Any]:
-        """Execute the compiled artifact against `df` and wrap results."""
-        results = self._executor(df, compiled_artifact)
+    def execute(
+        self,
+        df: pl.DataFrame,
+        compiled_artifact: Any,
+        rule_tally_map: Optional[Dict[str, bool]] = None,
+    ) -> Dict[str, Any]:
+        """Execute the compiled artifact against `df` and wrap results.
+
+        Parameters
+        ----------
+        df : pl.DataFrame
+            The DataFrame to validate.
+        compiled_artifact : Any
+            The compiled execution plan.
+        rule_tally_map : dict, optional
+            Mapping of rule_id -> bool for tally mode. If True, use exact counts;
+            if False, use early termination. Defaults to exact counts if not provided.
+        """
+        results = self._executor(df, compiled_artifact, rule_tally_map)
         return {"results": results}
 
     def introspect(self, df: pl.DataFrame) -> Dict[str, Any]:

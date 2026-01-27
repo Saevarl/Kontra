@@ -93,6 +93,9 @@ class FreshnessRule(BaseRule):
         max_age: Maximum age allowed (e.g., "24h", "1d", "30m")
     """
 
+    rule_scope = "dataset"
+    supports_tally = False
+
     def __init__(self, name: str, params: Dict[str, Any]):
         super().__init__(name, params)
         self._validate_params()

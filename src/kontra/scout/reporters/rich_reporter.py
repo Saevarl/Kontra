@@ -65,12 +65,23 @@ def _print_to_console(console: Console, profile: DatasetProfile) -> None:
     table.add_column("Cardinality")
     table.add_column("Info")
 
+    # Check if this is a metadata-only preset (scout/lite)
+    is_metadata_only = profile.preset in ("scout", "lite")
+
     for col in profile.columns:
         null_pct = f"{col.null_rate * 100:.1f}%"
-        distinct_str = f"{col.distinct_count:,}"
+
+        # Show "—" for distinct count if not computed (metadata-only preset)
+        if is_metadata_only and col.distinct_count == 0:
+            distinct_str = "[dim]—[/dim]"
+        else:
+            distinct_str = f"{col.distinct_count:,}"
 
         # Cardinality classification
-        if col.uniqueness_ratio >= 0.99 and col.null_rate == 0:
+        if is_metadata_only and col.distinct_count == 0:
+            # Can't determine cardinality without distinct count
+            card = "[dim]—[/dim]"
+        elif col.uniqueness_ratio >= 0.99 and col.null_rate == 0:
             card = "[bold green]unique[/bold green]"
         elif col.is_low_cardinality:
             if col.values:

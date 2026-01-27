@@ -172,11 +172,13 @@ class TestPostgresValidation:
         assert result["results"][0]["passed"] is True
 
         # Should fail: missing 'suspended' from allowed values
+        # Use tally=True to get exact count (default uses EXISTS which returns 1)
         specs = [{
             "kind": "allowed_values",
             "column": "status",
             "values": ["active", "inactive", "pending"],
             "rule_id": "test_allowed_fail",
+            "tally": True,
         }]
         plan = executor.compile(specs)
         result = executor.execute(handle, plan)

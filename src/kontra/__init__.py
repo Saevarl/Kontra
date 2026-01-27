@@ -180,6 +180,7 @@ def validate(
     save: bool = True,
     preplan: str = "auto",
     pushdown: str = "auto",
+    tally: Optional[bool] = None,
     projection: bool = True,
     csv_mode: str = "auto",
     env: Optional[str] = None,
@@ -210,6 +211,8 @@ def validate(
         save: Save result to history (default: True)
         preplan: "on" | "off" | "auto"
         pushdown: "on" | "off" | "auto"
+        tally: Global tally override. None = use per-rule settings (default),
+            True = count all violations (exact), False = early-stop (fast, ≥1)
         projection: Enable column pruning
         csv_mode: "auto" | "duckdb" | "parquet"
         env: Environment name from config
@@ -433,6 +436,7 @@ def validate(
         "save_state": save,
         "preplan": preplan,
         "pushdown": pushdown,
+        "tally": tally,
         "enable_projection": projection,
         "csv_mode": csv_mode,
         "stats_mode": stats,
@@ -651,7 +655,10 @@ def profile(
                 sample_size=sample,
                 **kwargs,
             )
-            return profiler.profile()
+            profile = profiler.profile()
+            # Replace temp file path with friendly name for DataFrame input
+            profile.source_uri = f"<DataFrame: {data.height:,} rows, {data.width} cols>"
+            return profile
         finally:
             os.unlink(temp_path)
     else:
@@ -1815,22 +1822,17 @@ def list_rules() -> List[Dict[str, Any]]:
         },
     }
 
+    # Use RULE_METADATA as source of truth (avoids triggering heavy imports)
+    # All 18 built-in rules are documented in RULE_METADATA
     result = []
-    for name in sorted(RULE_REGISTRY.keys()):
-        info = {"name": name}
-
-        # Add metadata if available
-        if name in RULE_METADATA:
-            meta = RULE_METADATA[name]
-            info["description"] = meta.get("description", "")
-            info["params"] = meta.get("params", {})
-            info["scope"] = meta.get("scope", "unknown")
-        else:
-            # Fallback for rules not in metadata
-            info["description"] = f"Validation rule: {name}"
-            info["params"] = {}
-            info["scope"] = "unknown"
-
+    for name in sorted(RULE_METADATA.keys()):
+        meta = RULE_METADATA[name]
+        info = {
+            "name": name,
+            "description": meta.get("description", ""),
+            "params": meta.get("params", {}),
+            "scope": meta.get("scope", "unknown"),
+        }
         result.append(info)
 
     return result
