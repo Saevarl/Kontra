@@ -290,10 +290,17 @@ def register(app: typer.Typer) -> None:
         """
         Validate data against a declarative contract.
 
-        The CLI remains stateless and declarative:
-          - Delegates to ValidationEngine for execution.
-          - JSON output via reporters for CI/CD.
-          - Rich output for humans.
+        Examples:
+
+            kontra validate contract.yml
+
+            kontra validate contract.yml --data prod.parquet
+
+            kontra validate contract.yml -o json
+
+            kontra validate contract.yml --dry-run
+
+        Exit codes: 0=passed, 1=failed, 2=config error, 3=runtime error
         """
         del no_actions  # placeholder until actions are wired
 

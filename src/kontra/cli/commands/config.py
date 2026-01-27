@@ -76,6 +76,10 @@ def register(app: typer.Typer) -> None:
         )
         typer.echo("  4. Run validation:")
         typer.secho("     kontra validate contracts/data.yml", fg=typer.colors.CYAN)
+        typer.echo("")
+        typer.echo("Or use the Python API:")
+        typer.secho("     import kontra", fg=typer.colors.CYAN)
+        typer.secho("     result = kontra.validate(df, rules=[...])", fg=typer.colors.CYAN)
 
         raise typer.Exit(code=EXIT_SUCCESS)
 

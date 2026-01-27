@@ -13,7 +13,9 @@ import typer
 from kontra.cli.commands import config, diff, history, profile, validate
 from kontra.version import VERSION
 
-app = typer.Typer(help="Kontra CLI — Developer-first Data Quality Engine")
+app = typer.Typer(
+    help="Kontra CLI — Developer-first Data Quality Engine\n\nExit Codes: 0=passed, 1=failed, 2=config error, 3=runtime error",
+)
 
 
 @app.callback(invoke_without_command=True)
