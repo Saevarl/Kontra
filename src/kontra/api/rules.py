@@ -115,10 +115,12 @@ def unique(
 
 def dtype(
     column: str,
-    type: str,
+    type: Optional[str] = None,
     severity: str = "blocking",
     id: Optional[str] = None,
     context: Optional[Dict[str, Any]] = None,
+    *,
+    dtype: Optional[str] = None,  # Alias for type (more intuitive)
 ) -> Dict[str, Any]:
     """
     Column must have the specified data type.
@@ -126,6 +128,7 @@ def dtype(
     Args:
         column: Column name to check
         type: Expected type (int64, float64, string, datetime, bool, etc.)
+        dtype: Alias for type (use either, dtype is preferred)
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (use when applying multiple rules to same column)
         context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
@@ -135,9 +138,17 @@ def dtype(
 
     Returns:
         Rule dict for use with kontra.validate()
+
+    Example:
+        rules.dtype("age", "int64")
+        rules.dtype("age", dtype="int64")  # Same thing
     """
     _validate_column(column, "dtype")
-    return _build_rule("dtype", {"column": column, "type": type}, severity, id, None, context)
+    # Accept either 'type' or 'dtype' parameter (dtype takes precedence)
+    actual_type = dtype if dtype is not None else type
+    if actual_type is None:
+        raise ValueError("dtype() requires 'type' or 'dtype' parameter")
+    return _build_rule("dtype", {"column": column, "type": actual_type}, severity, id, None, context)
 
 
 def range(

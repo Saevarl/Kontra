@@ -92,6 +92,14 @@ class TestRulesHelpers:
         assert rule["params"]["column"] == "age"
         assert rule["params"]["type"] == "int64"
 
+    def test_dtype_with_dtype_param(self):
+        """rules.dtype() accepts dtype= parameter as alias for type."""
+        # Both should produce the same result
+        rule1 = rules.dtype("age", type="int64")
+        rule2 = rules.dtype("age", dtype="int64")
+        assert rule1 == rule2
+        assert rule2["params"]["type"] == "int64"
+
     def test_range(self):
         """rules.range() returns correct dict."""
         rule = rules.range("age", min=0, max=150)

@@ -140,11 +140,15 @@ def _print_to_console(console: Console, profile: DatasetProfile) -> None:
         console.print("[bold]Numeric Summary:[/bold]")
         for col in numeric_cols[:5]:  # Limit to 5
             n = col.numeric
-            console.print(
-                f"  [cyan]{col.name}[/cyan]: "
+            base_stats = (
                 f"min={_fmt_num(n.min)}, max={_fmt_num(n.max)}, "
                 f"mean={_fmt_num(n.mean)}, median={_fmt_num(n.median)}"
             )
+            # Add percentiles if available (interrogate preset)
+            if n.percentiles:
+                pct_parts = [f"p{k.replace('p', '')}={_fmt_num(v)}" for k, v in sorted(n.percentiles.items())]
+                base_stats += f", {', '.join(pct_parts)}"
+            console.print(f"  [cyan]{col.name}[/cyan]: {base_stats}")
 
 
 def _fmt_num(val: float | None) -> str:
