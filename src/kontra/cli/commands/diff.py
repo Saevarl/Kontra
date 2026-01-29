@@ -58,10 +58,12 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """
-        Show changes between validation runs.
+        Compare validation results over time.
 
-        Compares the most recent validation state to a previous state
-        and shows what changed (new failures, resolved issues, regressions).
+        Shows what changed between validation runs: new failures,
+        resolved issues, and regressions. Use for tracking data quality trends.
+
+        For comparing data profiles (schema, statistics), use `profile-diff`.
 
         Examples:
             kontra diff                           # Compare last two runs
@@ -283,10 +285,12 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """
-        Show changes between profiles over time.
+        Compare data profiles over time.
 
-        Compares the most recent profile to a previous one and shows
-        schema changes, data quality shifts, and distribution changes.
+        Shows schema changes, row count deltas, null rate shifts, and
+        distribution changes between profiling runs.
+
+        For comparing validation results (pass/fail), use `diff`.
 
         Prerequisites:
             Run `kontra profile <source> --save-profile` to save profiles.

@@ -262,21 +262,21 @@ class TestCompareOutput:
     """Tests for output methods."""
 
     def test_to_llm(self):
-        """to_llm() produces valid JSON."""
+        """to_llm() produces human-readable text format."""
         before = pl.DataFrame({"id": [1, 2], "value": [100, 200]})
         after = pl.DataFrame({"id": [1, 2], "value": [100, 250]})
 
         result = compare(before, after, key="id")
         llm_output = result.to_llm()
 
-        # Should be valid JSON
-        parsed = json.loads(llm_output)
-        assert "meta" in parsed
-        assert "row_stats" in parsed
-        assert "key_stats" in parsed
-        assert "change_stats" in parsed
-        assert "column_stats" in parsed
-        assert "samples" in parsed
+        # Should be human-readable text (not JSON)
+        assert isinstance(llm_output, str)
+        assert "COMPARE:" in llm_output
+        assert "key:" in llm_output
+        assert "keys:" in llm_output
+        assert "preserved=" in llm_output
+        # For JSON output, use to_json() instead
+        assert llm_output.strip() == result.to_llm().strip()  # Consistent output
 
     def test_to_dict_schema(self):
         """to_dict() matches MVP schema."""

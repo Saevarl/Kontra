@@ -80,7 +80,7 @@ class LocalProfileStore:
         try:
             temp_path.write_text(state.to_json(), encoding="utf-8")
             temp_path.rename(filepath)
-        except Exception:
+        except (OSError, IOError):
             if temp_path.exists():
                 temp_path.unlink()
             raise
@@ -114,7 +114,8 @@ class LocalProfileStore:
                 content = filepath.read_text(encoding="utf-8")
                 state = ProfileState.from_json(content)
                 states.append(state)
-            except Exception:
+            except (OSError, IOError, json.JSONDecodeError, ValueError, KeyError):
+                # Skip corrupted or unreadable profile files
                 continue
 
         return states

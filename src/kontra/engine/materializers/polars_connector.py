@@ -76,7 +76,8 @@ class PolarsConnectorMaterializer(BaseMaterializer):
                 return list(pl.scan_parquet(uri).collect_schema().names())
             if fmt == "csv":
                 return list(pl.scan_csv(uri).collect_schema().names())
-        except Exception:
+        except (OSError, IOError, pl.exceptions.ComputeError, ValueError):
+            # File not found or unreadable - return empty columns
             pass
         return []
 

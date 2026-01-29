@@ -7,12 +7,29 @@ Uses system metadata views for efficient profiling.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
 from kontra.scout.dtype_mapping import normalize_dtype
+
+_logger = logging.getLogger(__name__)
+
+# Lazy-loaded pyodbc exception (pyodbc may not be installed)
+_PyodbcError = None
+
+def _get_db_error():
+    """Get the pyodbc base error class, lazy-loaded."""
+    global _PyodbcError
+    if _PyodbcError is None:
+        try:
+            import pyodbc
+            _PyodbcError = pyodbc.Error
+        except ImportError:
+            _PyodbcError = Exception
+    return _PyodbcError
 
 
 class SqlServerBackend:
@@ -124,7 +141,8 @@ class SqlServerBackend:
             )
             row = cursor.fetchone()
             return int(row[0]) if row and row[0] else None
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Could not get table size: {e}")
             return None
 
     def execute_stats_query(self, exprs: List[str]) -> Dict[str, Any]:
@@ -165,7 +183,8 @@ class SqlServerBackend:
             cursor = self._conn.cursor()
             cursor.execute(sql)
             return [(r[0], int(r[1])) for r in cursor.fetchall()]
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Query error fetching top values for {column}: {e}")
             return []
 
     def fetch_distinct_values(self, column: str) -> List[Any]:
@@ -182,7 +201,8 @@ class SqlServerBackend:
             cursor = self._conn.cursor()
             cursor.execute(sql)
             return [r[0] for r in cursor.fetchall()]
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Query error fetching distinct values for {column}: {e}")
             return []
 
     def fetch_sample_values(self, column: str, limit: int) -> List[Any]:
@@ -198,7 +218,8 @@ class SqlServerBackend:
             cursor = self._conn.cursor()
             cursor.execute(sql)
             return [r[0] for r in cursor.fetchall() if r[0] is not None]
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Query error fetching sample values for {column}: {e}")
             return []
 
     def esc_ident(self, name: str) -> str:
@@ -289,8 +310,8 @@ class SqlServerBackend:
                 if col_name in stats_info:
                     stats_info[col_name]["rows"] = row[2]
                     stats_info[col_name]["rows_sampled"] = row[3]
-        except Exception:
-            pass
+        except _get_db_error() as e:
+            _logger.debug(f"Could not get stats properties: {e}")
 
         # Get distinct counts from histogram
         try:
@@ -312,9 +333,9 @@ class SqlServerBackend:
                 col_name = row[0]
                 if col_name in stats_info:
                     stats_info[col_name]["distinct_count"] = int(row[1]) if row[1] else 0
-        except Exception:
+        except _get_db_error() as e:
             # dm_db_stats_histogram might not be available (requires SQL Server 2016 SP1 CU2+)
-            pass
+            _logger.debug(f"Could not get stats histogram (may require SQL Server 2016+): {e}")
 
         # Fallback: For columns without stats, query COUNT(DISTINCT) directly
         # This handles columns without indexes/statistics
@@ -337,8 +358,8 @@ class SqlServerBackend:
                     for i, col_name in enumerate(cols_without_stats):
                         stats_info[col_name]["distinct_count"] = int(row[i] or 0)
                         stats_info[col_name]["is_estimate"] = False
-            except Exception:
-                pass
+            except _get_db_error() as e:
+                _logger.debug(f"Could not get distinct counts: {e}")
 
         # For null counts, SQL Server doesn't store null statistics in metadata
         # For small tables, just do full count; for large tables, use sampling
@@ -375,9 +396,8 @@ class SqlServerBackend:
                         sample_nulls = row[i] or 0
                         stats_info[col_name]["null_count"] = int(sample_nulls * 100)
                         stats_info[col_name]["is_estimate"] = True
-        except Exception:
-            # Fallback if anything fails
-            pass
+        except _get_db_error() as e:
+            _logger.debug(f"Could not get null counts: {e}")
 
         return stats_info
 
@@ -442,7 +462,8 @@ class SqlServerBackend:
                 "stale_ratio": stale_ratio,
                 "is_fresh": stale_ratio < 0.2,
             }
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Could not get table freshness: {e}")
             return {
                 "modification_counter": 0,
                 "rows": 0,
@@ -502,8 +523,9 @@ class SqlServerBackend:
                 return self.execute_stats_query(exprs)
 
             return result
-        except Exception:
+        except _get_db_error() as e:
             # Fall back to full query if TABLESAMPLE fails
+            _logger.debug(f"TABLESAMPLE query failed, falling back to full query: {e}")
             return self.execute_stats_query(exprs)
 
     def fetch_low_cardinality_values_batched(
@@ -538,8 +560,8 @@ class SqlServerBackend:
                 col_name, val, cnt = row
                 if col_name in result:
                     result[col_name].append((val, int(cnt)))
-        except Exception:
-            pass
+        except _get_db_error() as e:
+            _logger.debug(f"Query error fetching low cardinality values: {e}")
 
         return result
 

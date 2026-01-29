@@ -228,20 +228,22 @@ class TestRelationshipOutput:
     """Tests for output methods."""
 
     def test_to_llm(self):
-        """to_llm() produces valid JSON."""
+        """to_llm() produces human-readable text format."""
         left = pl.DataFrame({"id": [1, 2, 3]})
         right = pl.DataFrame({"id": [1, 2, 4]})
 
         result = profile_relationship(left, right, on="id")
         llm_output = result.to_llm()
 
-        # Should be valid JSON
-        parsed = json.loads(llm_output)
-        assert "meta" in parsed
-        assert "key_stats" in parsed
-        assert "cardinality" in parsed
-        assert "coverage" in parsed
-        assert "samples" in parsed
+        # Should be human-readable text (not JSON)
+        assert isinstance(llm_output, str)
+        assert "RELATIONSHIP:" in llm_output
+        assert "left:" in llm_output
+        assert "right:" in llm_output
+        assert "coverage:" in llm_output
+        assert "multiplicity:" in llm_output
+        # For JSON output, use to_json() instead
+        assert llm_output.strip() == result.to_llm().strip()  # Consistent output
 
     def test_to_dict_schema(self):
         """to_dict() matches MVP schema."""

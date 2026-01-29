@@ -40,7 +40,8 @@ rules:
 
     def test_from_path_file_not_found(self, tmp_path):
         """Raise error for missing file."""
-        with pytest.raises(FileNotFoundError, match="Contract file not found"):
+        from kontra.errors import ContractNotFoundError
+        with pytest.raises(ContractNotFoundError, match="Contract file not found"):
             ContractLoader.from_path(tmp_path / "nonexistent.yml")
 
     def test_from_uri_local_file(self, tmp_path):

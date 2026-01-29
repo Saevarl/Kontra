@@ -64,8 +64,8 @@ def mask_credentials(uri: str) -> str:
             else:
                 new_netloc = f"{parsed.username}:***@{parsed.hostname}"
             return uri.replace(parsed.netloc, new_netloc)
-    except Exception:
-        pass
+    except (ValueError, AttributeError):
+        pass  # URI parsing failed
 
     return uri
 

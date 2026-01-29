@@ -14,7 +14,15 @@ from kontra.cli.commands import config, diff, history, profile, validate
 from kontra.version import VERSION
 
 app = typer.Typer(
-    help="Kontra CLI — Developer-first Data Quality Engine\n\nExit Codes: 0=passed, 1=failed, 2=config error, 3=runtime error",
+    help="""Kontra CLI — Developer-first Data Quality Engine
+
+Quick Start:
+  kontra init                          # Create .kontra/config.yml
+  kontra profile data.parquet          # Explore your data
+  kontra profile data.parquet --draft  # Generate validation rules
+  kontra validate contract.yml         # Run validation
+
+Exit Codes: 0=passed, 1=failed, 2=config error, 3=runtime error""",
 )
 
 

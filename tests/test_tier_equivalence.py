@@ -148,6 +148,7 @@ def run_with_tier(
             pushdown="off",
             emit_report=False,
             stats_mode="summary",
+            tally=True,  # Need exact counts for tier equivalence tests
         )
     elif tier == "sql":
         # SQL pushdown - skip preplan
@@ -157,6 +158,7 @@ def run_with_tier(
             pushdown="on",
             emit_report=False,
             stats_mode="summary",
+            tally=True,  # Need exact counts for tier equivalence tests
         )
     elif tier == "polars":
         # Pure Polars - no preplan, no SQL
@@ -166,6 +168,7 @@ def run_with_tier(
             pushdown="off",
             emit_report=False,
             stats_mode="summary",
+            tally=True,  # Need exact counts for tier equivalence tests
         )
     else:
         raise ValueError(f"Unknown tier: {tier}")

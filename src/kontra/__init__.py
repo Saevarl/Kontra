@@ -154,7 +154,7 @@ from kontra.api.rules import rules
 from kontra.api.decorators import validate as validate_decorator
 
 # Errors
-from kontra.errors import ValidationError, StateCorruptedError
+from kontra.errors import ValidationError, StateCorruptedError, ContractNotFoundError
 
 # Configuration
 from kontra.config.settings import (
@@ -225,7 +225,7 @@ def validate(
         sample_columns: Columns to include in samples for token efficiency.
             - None (default): All columns
             - ["col1", "col2"]: Only specified columns
-            - "relevant": Rule's columns + _row_index only
+            - "relevant": Rule's columns + row_index only
         storage_options: Cloud storage credentials (S3, Azure, GCS).
             For S3/MinIO:
                 - aws_access_key_id, aws_secret_access_key
@@ -319,8 +319,8 @@ def validate(
                 contract_name = contract_obj.name
                 datasource = contract_obj.datasource
                 all_rule_specs.extend(contract_obj.rules)
-            except FileNotFoundError as e:
-                errors.append(f"Contract not found: {e}")
+            except ContractNotFoundError as e:
+                errors.append(str(e))
             except ValueError as e:
                 errors.append(f"Contract parse error: {e}")
             except Exception as e:
@@ -1500,7 +1500,8 @@ def _find_run_id_string(store: Any, contract_fp: str, state: Any) -> Optional[st
                 loaded = store._load_state(filepath)
                 if loaded and loaded.id == state.id:
                     return filepath.rsplit("/", 1)[-1].replace(".json", "")
-        except Exception:
+        except (OSError, IOError, ValueError):
+            # S3 access failed - can't look up run ID
             pass
         return None
 

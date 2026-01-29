@@ -130,15 +130,10 @@ class TestRulesHelpers:
         assert rule["params"]["pattern"] == r"^[\w.-]+@[\w.-]+\.\w+$"
 
     def test_regex_invalid_pattern_raises(self):
-        """rules.regex() with invalid pattern raises at rule construction time."""
-        # Invalid regex: unclosed bracket
-        rule_dict = rules.regex("email", "[invalid(regex")
-
-        # The helper just returns a dict - validation happens when rule is built
-        # Error is raised during rule construction (wrapped in RuntimeError by factory)
-        df = pl.DataFrame({"email": ["test@example.com"]})
-        with pytest.raises(RuntimeError, match="Invalid regex pattern"):
-            kontra.validate(df, rules=[rule_dict], save=False)
+        """rules.regex() with invalid pattern raises at rule creation time (not validate time)."""
+        # Invalid regex: unclosed bracket - raises immediately when creating rule dict
+        with pytest.raises(ValueError, match="Invalid regex pattern"):
+            rules.regex("email", "[invalid(regex")
 
     def test_min_rows(self):
         """rules.min_rows() returns correct dict."""

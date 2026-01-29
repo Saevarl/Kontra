@@ -11,12 +11,29 @@ Schema:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs
 
 from .base import StateBackend
+
+_logger = logging.getLogger(__name__)
+
+# Lazy-loaded pyodbc exception types (pyodbc may not be installed)
+_PyodbcError = None
+
+def _get_db_error():
+    """Get the pyodbc base error class, lazy-loaded."""
+    global _PyodbcError
+    if _PyodbcError is None:
+        try:
+            import pyodbc
+            _PyodbcError = pyodbc.Error
+        except ImportError:
+            _PyodbcError = Exception  # Fallback
+    return _PyodbcError
 from kontra.state.types import (
     Annotation,
     RuleState,
@@ -420,8 +437,8 @@ class SQLServerStore(StateBackend):
             if details:
                 try:
                     parsed_details = json.loads(details)
-                except Exception:
-                    pass
+                except (json.JSONDecodeError, ValueError):
+                    pass  # Malformed JSON, use default
 
             rule = RuleState(
                 rule_id=rule_id,
@@ -487,7 +504,8 @@ class SQLServerStore(StateBackend):
             rule_rows = cursor.fetchall()
 
             return self._build_state_from_rows(run_row, rule_rows)
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting latest state: {e}")
             return None
 
     def get_history(
@@ -542,7 +560,8 @@ class SQLServerStore(StateBackend):
                 states.append(state)
 
             return states
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting history: {e}")
             return []
 
     def get_at(
@@ -584,7 +603,8 @@ class SQLServerStore(StateBackend):
             rule_rows = cursor.fetchall()
 
             return self._build_state_from_rows(run_row, rule_rows)
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting state at timestamp: {e}")
             return None
 
     def delete_old(
@@ -612,7 +632,8 @@ class SQLServerStore(StateBackend):
             deleted = cursor.rowcount
             conn.commit()
             return deleted
-        except Exception:
+        except _get_db_error() as e:
+            _logger.warning(f"Database error deleting old states: {e}")
             conn.rollback()
             return 0
 
@@ -630,7 +651,8 @@ class SQLServerStore(StateBackend):
             cursor.execute(sql)
             rows = cursor.fetchall()
             return [row[0] for row in rows]
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error listing contracts: {e}")
             return []
 
     def clear(self, contract_fingerprint: Optional[str] = None) -> int:
@@ -658,7 +680,8 @@ class SQLServerStore(StateBackend):
             deleted = cursor.rowcount
             conn.commit()
             return deleted
-        except Exception:
+        except _get_db_error() as e:
+            _logger.warning(f"Database error clearing states: {e}")
             conn.rollback()
             return 0
 
@@ -744,7 +767,7 @@ class SQLServerStore(StateBackend):
                 if payload:
                     try:
                         parsed_payload = json.loads(payload)
-                    except Exception:
+                    except (json.JSONDecodeError, ValueError):
                         pass
 
                 annotation = Annotation(
@@ -760,7 +783,8 @@ class SQLServerStore(StateBackend):
                 )
                 annotations.append(annotation)
             return annotations
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting annotations: {e}")
             return []
 
     def get_run_with_annotations(
@@ -843,7 +867,7 @@ class SQLServerStore(StateBackend):
                 if payload:
                     try:
                         parsed_payload = json.loads(payload)
-                    except Exception:
+                    except (json.JSONDecodeError, ValueError):
                         pass
 
                 annotations.append(Annotation(
@@ -860,7 +884,8 @@ class SQLServerStore(StateBackend):
 
             self._attach_annotations_to_state(state, annotations)
             return state
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting run with annotations: {e}")
             return None
 
     def get_history_with_annotations(
@@ -912,7 +937,7 @@ class SQLServerStore(StateBackend):
                 if payload:
                     try:
                         parsed_payload = json.loads(payload)
-                    except Exception:
+                    except (json.JSONDecodeError, ValueError):
                         pass
 
                 annotation = Annotation(
@@ -947,7 +972,8 @@ class SQLServerStore(StateBackend):
                         rule.annotations = []
 
             return states
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error loading annotations for history: {e}")
             for state in states:
                 state.annotations = []
                 for rule in state.rules:

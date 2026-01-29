@@ -21,14 +21,17 @@ class NumericStats:
     percentiles: Dict[str, float] = field(default_factory=dict)  # {"p25": ..., "p50": ..., ...}
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "min": self.min,
             "max": self.max,
             "mean": self.mean,
             "median": self.median,
             "std": self.std,
-            "percentiles": self.percentiles,
         }
+        # Only include percentiles if computed (interrogate preset)
+        if self.percentiles:
+            result["percentiles"] = self.percentiles
+        return result
 
 
 @dataclass
@@ -182,8 +185,15 @@ class DatasetProfile:
         lines.append(f"  Duration: {self.profile_duration_ms}ms")
         lines.append(f"  Columns:")
         for col in self.columns[:10]:
-            null_info = f", nulls={col.null_count}" if col.null_count > 0 else ""
-            lines.append(f"    - {col.name} ({col.dtype}){null_info}")
+            # Build concise column summary
+            parts = [col.dtype]
+            if col.null_rate > 0:
+                parts.append(f"{col.null_rate:.0%} null")
+            if col.distinct_count is not None and col.distinct_count > 0:
+                parts.append(f"{col.distinct_count:,} distinct")
+            if col.semantic_type:
+                parts.append(f"[{col.semantic_type}]")
+            lines.append(f"    - {col.name}: {', '.join(parts)}")
         if len(self.columns) > 10:
             lines.append(f"    ... and {len(self.columns) - 10} more columns")
         return "\n".join(lines)
@@ -215,6 +225,11 @@ class DatasetProfile:
                 return col
         return None
 
+    def to_json(self, indent: int = 2) -> str:
+        """Serialize to JSON string."""
+        import json
+        return json.dumps(self.to_dict(), indent=indent, default=str)
+
     def to_llm(self) -> str:
         """Token-optimized format for LLM context."""
         from kontra.connectors.handle import mask_credentials
@@ -231,7 +246,9 @@ class DatasetProfile:
         lines.append("")
         lines.append("COLUMNS:")
         for col in self.columns[:20]:  # Limit to 20 columns
-            parts = [f"  {col.name} ({col.dtype})"]
+            # Include semantic type tag if detected
+            type_tag = f" [{col.semantic_type}]" if col.semantic_type else ""
+            parts = [f"  {col.name} ({col.dtype}){type_tag}"]
             if col.null_count > 0:
                 parts.append(f"nulls={col.null_count:,} ({col.null_rate:.1%})")
             # Only show distinct_count if actually computed (not 0 in metadata-only mode)
@@ -240,7 +257,12 @@ class DatasetProfile:
             if col.numeric:
                 if col.numeric.min is not None and col.numeric.max is not None:
                     parts.append(f"range=[{col.numeric.min}, {col.numeric.max}]")
-            if col.top_values:
+                # Include percentiles if computed (interrogate preset)
+                if col.numeric.percentiles:
+                    pct_str = " ".join(f"p{k.replace('p','')}={v}" for k, v in sorted(col.numeric.percentiles.items()))
+                    parts.append(pct_str)
+            # Skip top values for unique/identifier columns (every value appears once - not useful)
+            if col.top_values and col.uniqueness_ratio < 0.99:
                 top = col.top_values[0]
                 parts.append(f"top='{top.value}'({top.count:,})")
             lines.append(" ".join(parts))

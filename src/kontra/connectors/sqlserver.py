@@ -219,8 +219,8 @@ def fetch_sqlserver_stats(params: SqlServerConnectionParams) -> Dict[str, Dict[s
                         # Mark as unique if distinct = row count
                         if result[col_name]["n_distinct"] == table_stats["row_estimate"]:
                             result[col_name]["n_distinct"] = -1  # Convention: -1 = all unique
-                except Exception:
-                    # Stats query failed, leave partial data
+                except (KeyError, TypeError, IndexError):
+                    # Stats query failed or malformed, leave partial data
                     pass
 
             return result

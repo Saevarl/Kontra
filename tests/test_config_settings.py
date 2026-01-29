@@ -289,7 +289,7 @@ class TestEffectiveConfig:
         d = config.to_dict()
         assert d["preplan"] == "on"
         assert d["pushdown"] == "auto"
-        assert d["scout"]["preset"] == "deep"
+        assert d["profile"]["preset"] == "deep"
 
 
 class TestConfigTemplate:

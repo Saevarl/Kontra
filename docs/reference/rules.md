@@ -2,43 +2,6 @@
 
 Kontra provides 18 built-in validation rules.
 
-## Most Contracts Use These
-
-Start here. These rules cover 80% of use cases:
-
-| Rule | What It Checks | Example |
-|------|---------------|---------|
-| `not_null` | No NULL values | `{ column: user_id }` |
-| `unique` | No duplicates | `{ column: email }` |
-| `dtype` | Expected type | `{ column: age, type: int64 }` |
-| `allowed_values` | Values in set | `{ column: status, values: [a, b, c] }` |
-| `range` | Min/max bounds | `{ column: age, min: 0, max: 150 }` |
-
-```yaml
-rules:
-  - name: not_null
-    params: { column: user_id }
-
-  - name: unique
-    params: { column: email }
-
-  - name: dtype
-    params: { column: age, type: int64 }
-
-  - name: allowed_values
-    params:
-      column: status
-      values: [active, inactive, pending]
-
-  - name: range
-    params:
-      column: age
-      min: 0
-      max: 150
-```
-
----
-
 ## Quick Reference
 
 | Rule | Description | Parameters |
@@ -54,32 +17,25 @@ rules:
 | `starts_with` | Starts with prefix | `column`, `prefix` |
 | `ends_with` | Ends with suffix | `column`, `suffix` |
 | `dtype` | Type check | `column`, `type` |
-| `min_rows` | Minimum rows | `threshold` |
-| `max_rows` | Maximum rows | `threshold` |
-| `freshness` | Data recency | `column`, `max_age` |
 | `compare` | Cross-column comparison | `left`, `right`, `op` |
 | `conditional_not_null` | Conditional not-null | `column`, `when` |
 | `conditional_range` | Conditional range check | `column`, `when`, `min`, `max` |
+| `min_rows` | Minimum rows | `threshold` |
+| `max_rows` | Maximum rows | `threshold` |
+| `freshness` | Data recency | `column`, `max_age` |
 | `custom_sql_check` | Custom SQL | `sql` |
 
 ---
 
-## Full Reference
+## Column Rules
 
 ### not_null
 
 No NULL values in column.
 
-```yaml
-- name: not_null
-  params:
-    column: user_id
-
-# Also catch NaN values
-- name: not_null
-  params:
-    column: price
-    include_nan: true
+```python
+rules.not_null("user_id")
+rules.not_null("price", include_nan=True)  # Also catch NaN
 ```
 
 | Parameter | Type | Required | Default |
@@ -87,39 +43,32 @@ No NULL values in column.
 | `column` | string | Yes | |
 | `include_nan` | boolean | No | false |
 
-**Note on `include_nan`:** The `include_nan=true` option works reliably when validating DataFrames directly. For file-based validation (Parquet, CSV) with SQL pushdown, DuckDB does not distinguish NaN from NULL in its SQL execution. To ensure NaN values are detected in file validation, either:
-- Validate a DataFrame directly: `kontra.validate(df, ...)`
-- Use `pushdown="off"` to force Polars execution: `kontra.validate("file.parquet", pushdown="off", ...)`
+**NaN handling:** `include_nan=True` works reliably with DataFrames. For file-based validation, neither preplan nor DuckDB distinguishes NaN from NULL. To detect NaN in files, validate a DataFrame directly or use `preplan="off", pushdown="off"` to force Polars execution.
 
 ---
 
 ### unique
 
-No duplicate values in column. NULLs are ignored (SQL semantics).
+No duplicate values. NULLs are ignored (SQL semantics).
 
-```yaml
-- name: unique
-  params:
-    column: email
+```python
+rules.unique("email")
 ```
 
 | Parameter | Type | Required |
 |-----------|------|----------|
 | `column` | string | Yes |
 
-**Count semantics**: `failed_count` = total rows - distinct values (i.e., "extra" rows that would need to be removed to make values unique). For `[a, a, b, c, c, c]`, `failed_count` = 3 (6 total - 3 distinct).
+**Count semantics:** `failed_count` = total rows - distinct values. For `[a, a, b, c, c, c]`, `failed_count` = 3 (6 total - 3 distinct).
 
 ---
 
 ### allowed_values
 
-Values must be in allowed set. NULL = violation.
+Values must be in allowed set.
 
-```yaml
-- name: allowed_values
-  params:
-    column: status
-    values: [active, inactive, pending]
+```python
+rules.allowed_values("status", ["active", "inactive", "pending"])
 ```
 
 | Parameter | Type | Required |
@@ -131,13 +80,10 @@ Values must be in allowed set. NULL = violation.
 
 ### disallowed_values
 
-Values must NOT be in disallowed set. Inverse of `allowed_values`. NULL = pass (NULL is not in any list).
+Values must NOT be in set. Inverse of `allowed_values`.
 
-```yaml
-- name: disallowed_values
-  params:
-    column: status
-    values: [deleted, banned, spam]
+```python
+rules.disallowed_values("status", ["deleted", "banned", "spam"])
 ```
 
 | Parameter | Type | Required |
@@ -145,20 +91,17 @@ Values must NOT be in disallowed set. Inverse of `allowed_values`. NULL = pass (
 | `column` | string | Yes |
 | `values` | list | Yes |
 
-**Use case**: Block specific known-bad values while allowing everything else.
+**Use case:** Block known-bad values while allowing everything else.
 
 ---
 
 ### range
 
-Values must be within bounds. NULL = violation.
+Values must be within bounds.
 
-```yaml
-- name: range
-  params:
-    column: age
-    min: 0
-    max: 150
+```python
+rules.range("age", min=0, max=150)
+rules.range("price", min=0)  # No upper bound
 ```
 
 | Parameter | Type | Required |
@@ -173,14 +116,10 @@ Values must be within bounds. NULL = violation.
 
 ### length
 
-String length must be within bounds. NULL = violation.
+String length must be within bounds.
 
-```yaml
-- name: length
-  params:
-    column: username
-    min: 3
-    max: 50
+```python
+rules.length("username", min=3, max=50)
 ```
 
 | Parameter | Type | Required |
@@ -195,13 +134,10 @@ String length must be within bounds. NULL = violation.
 
 ### regex
 
-Values must match pattern. NULL = violation.
+Values must match pattern.
 
-```yaml
-- name: regex
-  params:
-    column: email
-    pattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+```python
+rules.regex("email", r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 ```
 
 | Parameter | Type | Required |
@@ -209,19 +145,16 @@ Values must match pattern. NULL = violation.
 | `column` | string | Yes |
 | `pattern` | string | Yes |
 
-SQL Server has limited regex support (PATINDEX only).
+**SQL Server:** Limited regex support (PATINDEX only). Falls back to Polars for correct results.
 
 ---
 
 ### contains
 
-Values must contain substring. NULL = violation. Uses efficient LIKE patterns (faster than regex).
+Values must contain substring. Uses efficient LIKE patterns.
 
-```yaml
-- name: contains
-  params:
-    column: email
-    substring: "@"
+```python
+rules.contains("email", "@")
 ```
 
 | Parameter | Type | Required |
@@ -235,13 +168,10 @@ For complex patterns, use `regex` instead.
 
 ### starts_with
 
-Values must start with prefix. NULL = violation. Uses efficient LIKE patterns.
+Values must start with prefix. Uses efficient LIKE patterns.
 
-```yaml
-- name: starts_with
-  params:
-    column: url
-    prefix: "https://"
+```python
+rules.starts_with("url", "https://")
 ```
 
 | Parameter | Type | Required |
@@ -253,13 +183,10 @@ Values must start with prefix. NULL = violation. Uses efficient LIKE patterns.
 
 ### ends_with
 
-Values must end with suffix. NULL = violation. Uses efficient LIKE patterns.
+Values must end with suffix. Uses efficient LIKE patterns.
 
-```yaml
-- name: ends_with
-  params:
-    column: filename
-    suffix: ".csv"
+```python
+rules.ends_with("filename", ".csv")
 ```
 
 | Parameter | Type | Required |
@@ -273,11 +200,8 @@ Values must end with suffix. NULL = violation. Uses efficient LIKE patterns.
 
 Column must have expected type. Schema check only.
 
-```yaml
-- name: dtype
-  params:
-    column: user_id
-    type: int64
+```python
+rules.dtype("user_id", "int64")
 ```
 
 | Parameter | Type | Required |
@@ -285,18 +209,83 @@ Column must have expected type. Schema check only.
 | `column` | string | Yes |
 | `type` | string | Yes |
 
-Supported types: `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`, `float32`, `float64`, `utf8`, `bool`, `date`, `datetime`
+**Supported types:** `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`, `float32`, `float64`, `utf8`, `bool`, `date`, `datetime`
 
 ---
+
+## Cross-Column Rules
+
+### compare
+
+Compare two columns using a comparison operator.
+
+```python
+rules.compare("end_date", "start_date", ">=")
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `left` | string | Yes |
+| `right` | string | Yes |
+| `op` | string | Yes |
+
+**Operators:** `>`, `>=`, `<`, `<=`, `==`, `!=`
+
+**NULL handling:** Rows where either column is NULL are counted as failures. You cannot meaningfully compare NULL values.
+
+---
+
+### conditional_not_null
+
+Column must not be NULL when condition is met.
+
+```python
+rules.conditional_not_null("shipping_date", when="status == 'shipped'")
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `column` | string | Yes |
+| `when` | string | Yes |
+
+**Condition format:** `column_name operator value`
+- Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`
+- Values: `'string'`, `123`, `true`, `false`, `null`
+
+---
+
+### conditional_range
+
+Column must be within range when condition is met.
+
+```python
+rules.conditional_range("discount_percent", when="customer_type == 'premium'", min=10, max=50)
+```
+
+| Parameter | Type | Required |
+|-----------|------|----------|
+| `column` | string | Yes |
+| `when` | string | Yes |
+| `min` | number | No* |
+| `max` | number | No* |
+
+*At least one of `min` or `max` required.
+
+**Behavior:**
+- Only checks rows where `when` condition is TRUE
+- NULL in column when condition is TRUE = violation
+- NULL in condition column = condition is FALSE (no check)
+
+---
+
+## Dataset Rules
 
 ### min_rows
 
 Dataset must have at least N rows.
 
-```yaml
-- name: min_rows
-  params:
-    threshold: 1000
+```python
+rules.min_rows(1000)
 ```
 
 | Parameter | Type | Required |
@@ -309,10 +298,8 @@ Dataset must have at least N rows.
 
 Dataset must have at most N rows.
 
-```yaml
-- name: max_rows
-  params:
-    threshold: 1000000
+```python
+rules.max_rows(1000000)
 ```
 
 | Parameter | Type | Required |
@@ -325,11 +312,8 @@ Dataset must have at most N rows.
 
 Most recent timestamp must be within max_age of now.
 
-```yaml
-- name: freshness
-  params:
-    column: updated_at
-    max_age: "24h"
+```python
+rules.freshness("updated_at", max_age="24h")
 ```
 
 | Parameter | Type | Required |
@@ -337,119 +321,18 @@ Most recent timestamp must be within max_age of now.
 | `column` | string | Yes |
 | `max_age` | string | Yes |
 
-Formats: `Xs` (seconds), `Xm` (minutes), `Xh` (hours), `Xd` (days), `XhYm` (e.g., "1h30m")
+**Formats:** `Xs` (seconds), `Xm` (minutes), `Xh` (hours), `Xd` (days), `XhYm` (e.g., "1h30m")
 
 **Note:** Results depend on when you run the check, not just data content.
 
 ---
 
-### compare
-
-Compare two columns using a comparison operator.
-
-```yaml
-- name: compare
-  params:
-    left: end_date
-    right: start_date
-    op: ">="
-```
-
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `left` | string | Yes |
-| `right` | string | Yes |
-| `op` | string | Yes |
-
-Operators: `>`, `>=`, `<`, `<=`, `==`, `!=`
-
-**NULL handling**: Rows where *either* column is NULL are counted as failures. This is intentional—you cannot meaningfully compare NULL values. If you need to allow NULLs, combine with a conditional rule or filter NULLs upstream.
-
----
-
-### conditional_not_null
-
-Column must not be NULL when condition is met.
-
-```yaml
-- name: conditional_not_null
-  params:
-    column: shipping_date
-    when: "status == 'shipped'"
-```
-
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `column` | string | Yes |
-| `when` | string | Yes |
-
-Condition format: `column_name operator value`
-- Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`
-- Values: `'string'`, `123`, `true`, `false`, `null`
-
-**Multiple conditions on same column:** If you have multiple `conditional_not_null` rules for the same column with different conditions, add an explicit `id` to avoid rule ID collisions:
-
-```yaml
-- name: conditional_not_null
-  id: shipped_needs_date
-  params: { column: shipping_date, when: "status == 'shipped'" }
-
-- name: conditional_not_null
-  id: delivered_needs_date
-  params: { column: shipping_date, when: "status == 'delivered'" }
-```
-
----
-
-### conditional_range
-
-Column must be within range when condition is met. NULL in column when condition is true = violation.
-
-```yaml
-- name: conditional_range
-  params:
-    column: discount_percent
-    when: "customer_type == 'premium'"
-    min: 10
-    max: 50
-```
-
-| Parameter | Type | Required |
-|-----------|------|----------|
-| `column` | string | Yes |
-| `when` | string | Yes |
-| `min` | number | No* |
-| `max` | number | No* |
-
-*At least one of `min` or `max` required.
-
-Condition format: `column_name operator value`
-- Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`
-- Values: `'string'`, `123`, `true`, `false`, `null`
-
-**Behavior:**
-- Only checks rows where `when` condition is TRUE
-- Fails if column is NULL when condition is TRUE
-- Fails if column is outside `[min, max]` when condition is TRUE
-- NULL in condition column → condition is FALSE (no check)
-
-**Example use cases:**
-- Premium customers must get 10-50% discount
-- Orders over $100 must have shipping fee between $0-$10
-- Active users must have session duration 1-3600 seconds
-
----
-
 ### custom_sql_check
 
-Escape hatch for custom SQL. Write a query that selects "violation rows" and Kontra counts them.
+Custom SQL for cases not covered by built-in rules. Write a query that selects violation rows.
 
-```yaml
-- name: custom_sql_check
-  params:
-    sql: |
-      SELECT * FROM {table}
-      WHERE balance < 0 AND account_type = 'savings'
+```python
+rules.custom_sql_check("SELECT * FROM {table} WHERE balance < 0 AND account_type = 'savings'")
 ```
 
 | Parameter | Type | Required |
@@ -458,92 +341,16 @@ Escape hatch for custom SQL. Write a query that selects "violation rows" and Kon
 
 Use `{table}` placeholder. Kontra transforms your query to `COUNT(*)` for efficiency.
 
-**SQL pushdown:** When the data source is PostgreSQL or SQL Server, the SQL is validated using sqlglot to ensure it's safe (SELECT-only, no dangerous functions). If safe, it executes directly on the database.
+**Cross-table queries:**
 
-**Cross-table queries:** You can reference other tables in your SQL:
-
-```yaml
-- name: custom_sql_check
-  params:
-    sql: |
-      SELECT * FROM {table}
-      WHERE category_id NOT IN (SELECT id FROM valid_categories)
+```python
+rules.custom_sql_check("""
+    SELECT * FROM {table}
+    WHERE category_id NOT IN (SELECT id FROM valid_categories)
+""")
 ```
 
-**Safety:** Only SELECT statements are allowed. Queries are validated to reject:
-- INSERT, UPDATE, DELETE, DROP, CREATE, ALTER
-- Dangerous functions like `pg_sleep`, `xp_cmdshell`, `dblink`
-- Multiple statements (SQL injection prevention)
-- System catalog access (`pg_*`, `sys.*`, `information_schema.*`)
-
----
-
-## Severity
-
-All rules accept an optional `severity` parameter:
-
-```yaml
-- name: not_null
-  params: { column: user_id }
-  severity: blocking   # default
-
-- name: allowed_values
-  params: { column: status, values: [a, b] }
-  severity: warning    # reported but exit code 0
-
-- name: range
-  params: { column: score, min: 0 }
-  severity: info       # informational only
-```
-
----
-
-## Tally Mode
-
-By default, Kontra returns exact violation counts by scanning all data (`tally=true`). For performance-critical pipelines, you can use `tally: false` to enable early termination—Kontra stops at the first violation and reports `failed_count: 1`.
-
-```yaml
-rules:
-  # Exact count (default): full scan, failed_count=N is exact
-  - name: not_null
-    params: { column: user_id }
-
-  # Fast mode: stops at first violation, failed_count=1 means "at least 1"
-  - name: not_null
-    params: { column: email }
-    tally: false
-```
-
-| tally | Query Type | failed_count | Speed |
-|-------|------------|--------------|-------|
-| `true` (default) | COUNT | Exact | Normal |
-| `false` | EXISTS | 1 (means ≥1) | Faster* |
-
-*On PostgreSQL, early termination is 7-40x faster. On DuckDB/Parquet, speedup is modest (~1-2x).
-
-**Messages reflect the mode:**
-- `tally: true`: "847 null values found in email"
-- `tally: false`: "At least 1 null value found in email"
-
-**Global override with CLI:**
-```bash
-kontra validate contract.yml --no-tally   # All rules use early termination (fast)
-kontra validate contract.yml --tally      # All rules use exact counts (default)
-```
-
-Per-rule settings override the global flag.
-
-**Which rules support tally?**
-
-| Category | Rules | Supports tally |
-|----------|-------|----------------|
-| Column | `not_null`, `unique`, `allowed_values`, `disallowed_values`, `range`, `length`, `regex`, `contains`, `starts_with`, `ends_with` | Yes |
-| Cross-column | `compare`, `conditional_not_null`, `conditional_range` | Yes |
-| Dataset | `min_rows`, `max_rows`, `freshness` | No* |
-| Schema | `dtype` | No* |
-| Custom | `custom_sql_check` | No* |
-
-*These rules always return exact counts or are binary by nature.
+**Safety:** Only SELECT statements are allowed. Queries are validated to reject INSERT, UPDATE, DELETE, DROP, system catalog access, and dangerous functions.
 
 ---
 
@@ -554,290 +361,84 @@ Per-rule settings override the global flag.
 | `not_null` | NULL = violation |
 | `unique` | NULLs ignored |
 | `allowed_values` | NULL = violation |
-| `disallowed_values` | NULL = pass (NULL is not in any list) |
+| `disallowed_values` | NULL = pass |
 | `range` | NULL = violation |
 | `length` | NULL = violation |
 | `regex` | NULL = violation |
 | `contains` | NULL = violation |
 | `starts_with` | NULL = violation |
 | `ends_with` | NULL = violation |
-| `compare` | NULL = violation |
-| `conditional_not_null` | NULL in condition → condition is FALSE |
-| `conditional_range` | NULL in column = violation (if condition TRUE); NULL in condition → condition is FALSE |
-| `dtype`, `min_rows`, `max_rows` | N/A |
+| `compare` | NULL in either column = violation |
+| `conditional_not_null` | NULL in condition column = condition FALSE |
+| `conditional_range` | NULL in column = violation; NULL in condition = condition FALSE |
 | `freshness` | NULLs excluded from MAX |
+| `dtype`, `min_rows`, `max_rows` | N/A |
 | `custom_sql_check` | User-defined |
 
-**NaN vs NULL:** In Polars, NaN and NULL are distinct. Use `include_nan: true` on `not_null` to catch both.
+**NaN vs NULL:** In Polars, NaN and NULL are distinct. Use `include_nan=True` on `not_null` to catch both.
 
 ---
 
-## Execution Tiers
+## Execution Support
 
-| Rule | Preplan | SQL | Notes |
-|------|---------|-----|-------|
-| `not_null` | ✓ | ✓ | |
-| `unique` | | ✓ | |
-| `allowed_values` | | ✓ | |
-| `disallowed_values` | | ✓ | |
-| `range` | ✓ | ✓ | |
-| `length` | | ✓ | SQL Server uses LEN() |
-| `regex` | | ✓ | SQL Server limited |
-| `contains` | | ✓ | Uses LIKE (fast) |
-| `starts_with` | | ✓ | Uses LIKE (fast) |
-| `ends_with` | | ✓ | Uses LIKE (fast) |
-| `dtype` | Schema | | |
+Rules resolve through preplan (metadata) or SQL pushdown when possible, falling back to Polars otherwise.
+
+### Column Rules
+
+| Rule | Preplan | SQL Pushdown | Tally |
+|------|:-------:|:------------:|:-----:|
+| `not_null` | ✓ | ✓ | ✓ |
+| `unique` | | ✓ | ✓ |
+| `allowed_values` | | ✓ | ✓ |
+| `disallowed_values` | | ✓ | ✓ |
+| `range` | ✓ | ✓ | ✓ |
+| `length` | | ✓ | ✓ |
+| `regex` | | ✓* | ✓ |
+| `contains` | | ✓ | ✓ |
+| `starts_with` | | ✓ | ✓ |
+| `ends_with` | | ✓ | ✓ |
+| `dtype` | schema | | |
+
+*SQL Server has limited regex support; falls back to Polars.
+
+### Cross-Column Rules
+
+| Rule | Preplan | SQL Pushdown | Tally |
+|------|:-------:|:------------:|:-----:|
+| `compare` | | ✓ | ✓ |
+| `conditional_not_null` | | ✓ | ✓ |
+| `conditional_range` | | ✓ | ✓ |
+
+### Dataset Rules
+
+| Rule | Preplan | SQL Pushdown | Tally |
+|------|:-------:|:------------:|:-----:|
 | `min_rows` | ✓ | ✓ | |
 | `max_rows` | ✓ | ✓ | |
 | `freshness` | | ✓ | |
-| `compare` | | ✓ | |
-| `conditional_not_null` | | ✓ | |
-| `conditional_range` | | ✓ | |
 | `custom_sql_check` | | ✓ | |
 
-Preplan returns binary (0 or ≥1), not exact counts. Use `--preplan off` for exact counts.
+Dataset rules return exact counts or are binary by nature, so tally doesn't apply.
 
 ---
 
-## Adding Custom Rules
-
-### Basic Custom Rule (Polars Only)
-
-```python
-from kontra.rule_defs.base import BaseRule
-from kontra.rule_defs.registry import register_rule
-
-@register_rule("my_rule")
-class MyRule(BaseRule):
-    def __init__(self, name, params):
-        super().__init__(name, params)
-        self.column = self._get_required_param("column", str)
-
-    def validate(self, df):
-        mask = df[self.column] < 0
-        return self._failures(df, mask, f"{self.column} has negative values")
-```
-
-This rule works but requires data to be loaded into Polars.
-
-### Where to Put Custom Rules
-
-Custom rules must be **imported before** `kontra.validate()` is called. The `@register_rule` decorator registers the rule when the module is imported.
-
-```python
-# my_rules.py
-from kontra.rule_defs.base import BaseRule
-from kontra.rule_defs.registry import register_rule
-
-@register_rule("positive")
-class PositiveRule(BaseRule):
-    def __init__(self, name, params):
-        super().__init__(name, params)
-        self.column = self._get_required_param("column", str)
-
-    def validate(self, df):
-        mask = df[self.column].is_null() | (df[self.column] <= 0)
-        return self._failures(df, mask, f"{self.column} must be positive")
-```
-
-```python
-# main.py
-import my_rules  # Must import to register the rule
-import kontra
-
-result = kontra.validate("data.parquet", rules=[
-    {"name": "positive", "params": {"column": "amount"}}
-])
-```
-
-### Parameter Validation
-
-Use built-in helpers for parameter validation:
-
-```python
-def __init__(self, name, params):
-    super().__init__(name, params)
-
-    # Required parameter - raises ValueError if missing or wrong type
-    self.column = self._get_required_param("column", str)
-
-    # Optional parameter with default
-    self.threshold = params.get("threshold", 0)
-
-    # Manual validation
-    if self.threshold < 0:
-        raise ValueError(f"threshold must be >= 0, got {self.threshold}")
-```
-
-### Available Helper Methods
-
-| Method | Purpose |
-|--------|---------|
-| `_get_required_param(name, type)` | Get required param, raises if missing/wrong type |
-| `_failures(df, mask, message)` | Create failure result from boolean mask |
-| `_check_columns(df, columns)` | Check columns exist, returns error dict if not |
-| `self.params` | Dict of all parameters passed to the rule |
-| `self.rule_id` | Auto-generated ID like `COL:amount:positive` |
-
-### Custom Rule with SQL Pushdown
-
-Add `to_sql_agg()` to enable SQL pushdown without modifying executors:
-
-```python
-import polars as pl
-from kontra.rule_defs.base import BaseRule
-from kontra.rule_defs.predicates import Predicate
-from kontra.rule_defs.registry import register_rule
-
-@register_rule("positive")
-class PositiveRule(BaseRule):
-    """Values must be > 0. NULL = violation."""
-
-    def __init__(self, name, params):
-        super().__init__(name, params)
-        self.column = params["column"]
-
-    def validate(self, df):
-        """Fallback: Polars execution."""
-        mask = df[self.column].is_null() | (df[self.column] <= 0)
-        return self._failures(df, mask, f"{self.column} non-positive")
-
-    def compile_predicate(self):
-        """Optional: Vectorized Polars (faster than validate())."""
-        return Predicate(
-            rule_id=self.rule_id,
-            expr=pl.col(self.column).is_null() | (pl.col(self.column) <= 0),
-            columns={self.column},
-            message=f"{self.column} non-positive",
-        )
-
-    def to_sql_agg(self, dialect="duckdb"):
-        """SQL pushdown: no data loading needed."""
-        col = f'"{self.column}"'
-        return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
-
-    def required_columns(self):
-        """For projection optimization."""
-        return {self.column}
-```
-
-| Method | Purpose | Execution Path |
-|--------|---------|----------------|
-| `validate(df)` | **Required**. Fallback | Polars (data loaded) |
-| `compile_predicate()` | Vectorized Polars + sampling | Polars (faster) |
-| `to_sql_agg(dialect)` | SQL pushdown (exact counts) | DuckDB/PostgreSQL/SQL Server |
-| `to_sql_exists(dialect)` | SQL early termination (tally=False) | DuckDB/PostgreSQL/SQL Server |
-| `required_columns()` | Projection | Load fewer columns |
-
-> **Sample Collection**: `compile_predicate()` is required for `sample_failures()` to work.
-> Without it, rule results will have `samples=None` and `samples_reason="rule_unsupported"`.
-> The predicate's `expr` is used to filter the DataFrame for failing rows.
-
-### Dialect-Specific SQL
-
-`to_sql_agg(dialect)` is called once per dialect (`"duckdb"`, `"postgres"`, `"mssql"`). Handle differences:
-
-```python
-def to_sql_agg(self, dialect="duckdb"):
-    # SQL Server uses [brackets], others use "double quotes"
-    if dialect == "mssql":
-        col = f'[{self.column}]'
-    else:
-        col = f'"{self.column}"'
-
-    return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
-```
-
-Return `None` to skip SQL pushdown for a dialect (falls back to Polars):
-
-```python
-def to_sql_agg(self, dialect="duckdb"):
-    if dialect == "mssql":
-        return None  # SQL Server not supported, use Polars
-
-    col = f'"{self.column}"'
-    return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
-```
-
-### Early Termination for Custom Rules (tally=False)
-
-By default, custom rules always return exact counts because only `to_sql_agg()` is implemented. To enable early termination (EXISTS queries) for `tally=False`, implement `to_sql_exists()`:
-
-```python
-@register_rule("positive")
-class PositiveRule(BaseRule):
-    # ... __init__, validate, compile_predicate, required_columns ...
-
-    def to_sql_agg(self, dialect="duckdb"):
-        """SQL aggregate for exact counts (tally=True)."""
-        col = f'"{self.column}"'
-        return f'SUM(CASE WHEN {col} IS NULL OR {col} <= 0 THEN 1 ELSE 0 END)'
-
-    def to_sql_exists(self, dialect="duckdb"):
-        """WHERE condition for EXISTS query (tally=False). Optional."""
-        col = f'"{self.column}"'
-        return f'{col} IS NULL OR {col} <= 0'
-```
-
-| Method | Returns | Used When |
-|--------|---------|-----------|
-| `to_sql_agg()` | COUNT expression | `tally=True` (exact counts) |
-| `to_sql_exists()` | WHERE condition | `tally=False` (early termination) |
-
-When `tally=False` but `to_sql_exists()` is not implemented, Kontra falls back to `to_sql_agg()` and returns exact counts. Use `--dry-run` to see warnings about missing implementations.
-
-### Using a Custom Rule
-
-After defining your rule, use it like any built-in rule:
-
-```python
-import kontra
-
-# Validate a DataFrame
-result = kontra.validate(df, rules=[
-    {"name": "positive", "params": {"column": "amount"}},
-])
-
-# Or in YAML contracts:
-# rules:
-#   - name: positive
-#     params:
-#       column: amount
-
-# Check if SQL pushdown was used
-print(result.rules[0].source)  # "sql" for parquet/database, "polars" for DataFrames
-```
-
----
-
-## Data Format Edge Cases
+## Edge Cases
 
 ### CSV Files
 
-**Empty strings vs NULL**: CSV parsing differs between engines:
+**Empty strings vs NULL:** CSV parsing differs between engines:
 
-| Row | Raw CSV | Polars (DataFrame) | DuckDB (file path) |
-|-----|---------|--------------------|--------------------|
-| 2 | `""` | Empty string | NULL |
-| 3 | `` (trailing) | NULL | NULL |
+| Raw CSV | Polars | DuckDB |
+|---------|--------|--------|
+| `""` | Empty string | NULL |
+| `` (trailing) | NULL | NULL |
 
-```csv
-id,name
-1,Alice
-2,""     # Polars: empty string, DuckDB: NULL
-3,       # Both: NULL
-```
+For consistent behavior, load CSV with Polars first: `kontra.validate(pl.read_csv("file.csv"), ...)`
 
-**Impact**: `kontra.profile(df)` vs `kontra.profile("file.csv")` may report different `null_rate` for columns with empty strings. This is inherent CSV ambiguity - quoted empty (`""`) has no universal interpretation.
+### Large Integers
 
-**Recommendation**: For consistent behavior, load CSV with Polars first: `kontra.profile(pl.read_csv("file.csv"))`
+Very large integers (e.g., 10^100) cause `OverflowError` because they exceed Polars integer types. Use string columns for arbitrary-precision numbers.
 
-**First row is always header**: CSV files are assumed to have a header row. If your CSV has no header, the first data row becomes column names.
+### SQL Server Regex
 
-### Large Values
-
-**Integer overflow**: Very large integers (e.g., 10^100) cause `OverflowError` because they exceed Polars integer types. Use string columns for arbitrary-precision numbers.
-
-### SQL Server
-
-**Regex falls back to Polars**: SQL Server doesn't support true regex (PATINDEX uses LIKE wildcards). The `regex` rule automatically falls back to Polars execution for correct results.
+SQL Server doesn't support true regex. The `regex` rule falls back to Polars for correct results.

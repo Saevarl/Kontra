@@ -46,7 +46,7 @@ def generate_rules_yaml(profile: DatasetProfile) -> str:
         "name: suggested_contract",
         f"description: Auto-generated from Scout profile",
         "",
-        f'dataset: "{profile.source_uri}"',
+        f'datasource: "{profile.source_uri}"',
         "",
         "rules:",
     ]

@@ -181,7 +181,7 @@ def profile_for(df: "pl.DataFrame", cols: List[str]) -> Dict[str, Dict[str, Any]
                     pl.col(c).max().alias(f"__max__{c}"),
                     pl.col(c).mean().alias(f"__mean__{c}"),
                 ]
-        except Exception:
+        except (pl.exceptions.ColumnNotFoundError, KeyError):
             # column missing (shouldn't happen if projection is correct) — skip extras
             pass
         exprs.extend(e)

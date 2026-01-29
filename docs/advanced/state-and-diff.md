@@ -1,51 +1,116 @@
-# State & Diff
+# Project Setup & History
 
-Track validation history and compare runs over time.
+Initialize a Kontra project, track validation history, and compare runs over time.
 
-## How It Works
+---
 
-When you run `kontra validate`, results are automatically saved to a state backend. You can then compare runs to detect regressions or improvements.
-
-## CLI Usage
+## Initialize a Project
 
 ```bash
-# Run validation (automatically saves state)
-kontra validate contract.yml
-
-# Compare to previous run
-kontra diff
-
-# Compare to 7 days ago
-kontra diff --since 7d
-
-# Compare to specific date
-kontra diff --run 2024-01-15
-
-# Output formats
-kontra diff -o json      # CI/CD integration
-kontra diff -o llm       # Token-optimized
+kontra init
 ```
 
-### View Validation History
+Creates:
+- `.kontra/config.yml` - Project configuration
+- `contracts/` - Directory for validation contracts
+
+The config file contains documented defaults and examples:
+
+```yaml
+version: "1"
+
+defaults:
+  preplan: "auto"       # on | off | auto
+  pushdown: "auto"      # on | off | auto
+  projection: "on"      # on | off
+  output_format: "rich" # rich | json
+  state_backend: "local"
+
+datasources: {}
+  # prod_db:
+  #   type: postgres
+  #   host: ${PGHOST}
+  #   ...
+```
+
+### Named Datasources
+
+Define datasources once in config, reference them everywhere:
+
+```yaml
+# .kontra/config.yml
+datasources:
+  prod_db:
+    type: postgres
+    host: ${PGHOST}
+    user: ${PGUSER}
+    password: ${PGPASSWORD}
+    database: ${PGDATABASE}
+    tables:
+      users: public.users
+      orders: public.orders
+
+  data_lake:
+    type: s3
+    bucket: ${S3_BUCKET}
+    prefix: warehouse/
+    tables:
+      events: events.parquet
+```
+
+Then use them:
+
+```bash
+kontra profile prod_db.users
+kontra validate contract.yml --data prod_db.orders
+```
+
+```python
+result = kontra.validate("prod_db.users", rules=[...])
+```
+
+Credentials stay in config (or environment variables). Contracts stay clean and portable.
+
+---
+
+## Validation History
+
+When you run `kontra validate`, results are automatically saved to a state backend. This enables comparing runs over time.
+
+### View History
 
 ```bash
 # Show all runs for a contract
 kontra history contract.yml
 
-# Show only recent runs (last 7 days)
+# Recent runs only
 kontra history contract.yml --since 7d
 
-# Show only failed runs
+# Failed runs only
 kontra history contract.yml --failed-only
 
-# Output as JSON for processing
+# JSON output
 kontra history contract.yml -o json
-
-# Limit number of runs shown
-kontra history contract.yml --limit 20
 ```
 
-## Python API
+### Compare Runs (Diff)
+
+```bash
+# Compare latest to previous
+kontra diff contract.yml
+
+# Compare to 7 days ago
+kontra diff contract.yml --since 7d
+
+# Compare to specific date
+kontra diff contract.yml --run 2024-01-15
+
+# Output formats
+kontra diff contract.yml -o json   # CI/CD integration
+kontra diff contract.yml -o llm    # Token-optimized
+```
+
+### Python API
 
 ```python
 import kontra
@@ -79,7 +144,7 @@ diff.to_json()
 diff.to_llm()
 ```
 
-## History Management
+### History API
 
 ```python
 # List past runs
@@ -87,7 +152,7 @@ runs = kontra.list_runs("my_contract")
 for run in runs:
     print(f"{run['timestamp']}: {'PASS' if run['passed'] else 'FAIL'}")
 
-# Get specific run (returns ValidationResult)
+# Get specific run
 result = kontra.get_run("my_contract")  # latest
 result = kontra.get_run("my_contract", run_id="2024-01-15T10:30:00")
 
@@ -96,11 +161,14 @@ if kontra.has_runs("my_contract"):
     diff = kontra.diff("my_contract")
 ```
 
+---
+
 ## State Backends
 
-Configure in `.kontra/config.yml`:
+Configure where validation history is stored:
 
 ```yaml
+# .kontra/config.yml
 defaults:
   state_backend: "local"  # default
 
@@ -114,7 +182,7 @@ environments:
 
 ### Local (Default)
 
-State stored in `.kontra/state/` directory.
+State stored in `.kontra/state/` directory. No setup required.
 
 ```yaml
 state_backend: "local"
@@ -122,7 +190,7 @@ state_backend: "local"
 
 ### PostgreSQL
 
-State stored in database tables.
+State stored in database tables (`kontra_runs`, `kontra_annotations`).
 
 ```yaml
 state_backend: postgres://${PGHOST}/${PGDATABASE}
@@ -130,7 +198,7 @@ state_backend: postgres://${PGHOST}/${PGDATABASE}
 
 ### S3
 
-State stored in S3 bucket.
+State stored as JSON files in S3.
 
 ```yaml
 state_backend: s3://my-bucket/kontra-state/
@@ -146,14 +214,11 @@ State stored in database tables.
 state_backend: mssql://${MSSQL_HOST}/${MSSQL_DATABASE}
 ```
 
-Or via URI:
-```yaml
-state_backend: sqlserver://user:password@host:1433/database
-```
+---
 
 ## Annotations
 
-Annotations provide "memory without authority"—agents and humans can record context about validation runs without affecting Kontra's behavior:
+Annotations provide "memory without authority"—agents and humans can record context about validation runs without affecting Kontra's behavior.
 
 ```python
 import kontra
@@ -185,7 +250,7 @@ for ann in result.annotations or []:
 # Query annotations across runs (agent memory)
 hints = kontra.get_annotations(
     "users_contract.yml",
-    rule_id="COL:email:not_null",  # filter to specific rule
+    rule_id="COL:email:not_null",
 )
 for hint in hints:
     print(f"[{hint['annotation_type']}] {hint['summary']}")
@@ -193,11 +258,15 @@ for hint in hints:
 
 **Key invariant**: Kontra never reads annotations during validation or diff. They're purely for consumer use.
 
-Annotations are stored in a normalized schema:
+Annotations are stored in:
 - `kontra_annotations` table (PostgreSQL, SQL Server)
 - `<run_id>.ann.jsonl` files (local, S3)
 
+---
+
 ## Disabling State
+
+Skip saving results to state backend:
 
 ```bash
 kontra validate contract.yml --no-state

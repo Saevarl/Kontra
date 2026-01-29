@@ -1,6 +1,6 @@
 # Agents & LLM Integration
 
-Kontra is a data quality measurement engine designed for programmatic use by LLM agents and services.
+Kontra is designed for programmatic use by LLM agents and services.
 
 ---
 
@@ -38,38 +38,82 @@ for col in profile.columns:
 
 ## Transformation Probes
 
-### Compare (Before/After)
+Measure transformation effects before and after changes.
 
-Measures what changed between two datasets:
+### Compare (Before/After)
 
 ```python
 result = kontra.compare(before_df, after_df, key="user_id")
-print(result.to_llm())
-```
 
-Output includes:
-- `row_stats.delta` - change in row count
-- `row_stats.ratio` - ratio of after/before rows
-- `key_stats.duplicated_after` - keys appearing >1x in after
-- `key_stats.dropped` - keys lost in transformation
-- `change_stats.changed_rows` - rows where values differ
-- `samples.duplicated_keys` - example duplicated keys
+# Key metrics
+result.row_delta           # change in row count
+result.duplicated_after    # keys appearing >1x in after
+result.dropped             # keys lost in transformation
+result.changed_rows        # rows where values differ
+```
 
 ### Profile Relationship (JOIN Structure)
 
-Measures JOIN viability before writing transformation:
-
 ```python
 profile = kontra.profile_relationship(left_df, right_df, on="customer_id")
-print(profile.to_llm())
+
+# Key metrics
+profile.right_duplicate_keys         # keys appearing >1x in right
+profile.right_key_multiplicity_max   # max rows per key in right
+profile.left_keys_without_match      # left keys not in right
 ```
 
-Output includes:
-- `key_stats.left/right.unique_keys` - distinct keys per side
-- `key_stats.right.duplicate_keys` - keys appearing >1x in right
-- `cardinality.right_key_multiplicity.max` - max rows per key in right
-- `coverage.left_keys_without_match` - left keys not in right
-- `samples.right_keys_with_multiple_rows` - example duplicated keys
+See [Transformation Probes](../reference/probes.md) for full schemas and all fields.
+
+---
+
+## Token-Optimized Output
+
+All result types have a `.to_llm()` method that returns a compact, token-efficient string:
+
+```python
+# Validation result
+result = kontra.validate("data.parquet", rules=[...])
+print(result.to_llm())
+# VALIDATION: my_contract PASSED
+# PASSED: 5 rules
+
+# With failures
+# VALIDATION: my_contract FAILED
+# BLOCKING: COL:email:not_null (523 nulls), COL:status:allowed_values (12 invalid)
+# WARNING: COL:age:range (3 out of bounds)
+# PASSED: 13 rules
+
+# Profile
+profile = kontra.profile("data.parquet")
+print(profile.to_llm())
+# DATASET: users.parquet (50K rows, 8 cols)
+# COLS: user_id(int64,100%,unique), email(str,98%), status(str,100%,3vals), ...
+
+# Compare
+result = kontra.compare(before, after, key="order_id")
+print(result.to_llm())
+# COMPARE: 1000 → 1200 rows (+200)
+# key: order_id
+# keys: preserved=1000, dropped=0, added=0
+# duplicated_keys: 50
+# changes: 200 modified, 800 unchanged
+
+# Diff
+diff = kontra.diff("my_contract")
+print(diff.to_llm())
+# DIFF: my_contract 2024-01-10 -> 2024-01-12
+# REGRESSION: COL:email:not_null (0 -> 523 nulls)
+# RESOLVED: COL:age:range
+```
+
+### Output Methods
+
+| Method | Description |
+|--------|-------------|
+| `.to_dict()` | Nested dictionary |
+| `.to_json()` | JSON string |
+| `.to_llm()` | Compact string for LLM context |
 
 ---
 
@@ -97,47 +141,6 @@ rules.max_rows(1000000)
 
 ---
 
-## Token-Optimized Output
-
-All result types have a `.to_llm()` method that returns a compact, token-efficient string:
-
-```python
-# Validation result
-result = kontra.validate("data.parquet", rules=[...])
-print(result.to_llm())
-# VALIDATION: my_contract PASSED
-# PASSED: 5 rules
-
-# With failures
-# VALIDATION: my_contract FAILED
-# BLOCKING: COL:email:not_null (523 nulls), COL:status:allowed_values (12 invalid)
-# WARNING: COL:age:range (3 out of bounds)
-# PASSED: 13 rules
-
-# Profile
-profile = kontra.profile("data.parquet")
-print(profile.to_llm())
-# DATASET: users.parquet (50K rows, 8 cols)
-# COLS: user_id(int64,100%,unique), email(str,98%), status(str,100%,3vals), ...
-
-# Diff
-diff = kontra.diff("my_contract")
-print(diff.to_llm())
-# DIFF: my_contract 2024-01-10 -> 2024-01-12
-# REGRESSION: COL:email:not_null (0 -> 523 nulls)
-# RESOLVED: COL:age:range
-```
-
-### Output Methods
-
-| Method | Description |
-|--------|-------------|
-| `.to_dict()` | Nested dictionary |
-| `.to_json()` | JSON string |
-| `.to_llm()` | Compact string for LLM context |
-
----
-
 ## Service Integration
 
 ### Health Check
@@ -150,7 +153,7 @@ health = kontra.health()
 #     "status": "ok",
 #     "config_found": True,
 #     "config_path": "/app/.kontra/config.yml",
-#     "rule_count": 13,
+#     "rule_count": 18,
 #     "rules": ["not_null", "unique", "range", ...]
 # }
 
@@ -250,7 +253,7 @@ except KontraError as e:
 
 ---
 
-## Workflow Examples
+## Workflow Example
 
 ### Transformation Pipeline
 

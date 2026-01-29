@@ -7,10 +7,13 @@ Supports Parquet and CSV files (local + S3/HTTP).
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
+
+_logger = logging.getLogger(__name__)
 
 try:
     import pyarrow.parquet as pq
@@ -59,8 +62,8 @@ class DuckDBBackend:
         if self.con:
             try:
                 self.con.execute(f"DROP VIEW IF EXISTS {self._view_name}")
-            except Exception:
-                pass
+            except duckdb.Error:
+                pass  # View cleanup is best-effort
 
     def get_schema(self) -> List[Tuple[str, str]]:
         """Return [(column_name, raw_type), ...]"""
@@ -82,8 +85,8 @@ class DuckDBBackend:
                     if os.getenv("KONTRA_VERBOSE"):
                         print(f"[INFO] Parquet metadata: {meta.num_rows} rows from footer")
                     return meta.num_rows
-            except Exception:
-                pass
+            except (OSError, IOError, ValueError) as e:
+                _logger.debug(f"Could not get row count from Parquet metadata: {e}")
 
         # Fall back to query
         result = self.con.execute(f"SELECT COUNT(*) FROM {self._view_name}").fetchone()
@@ -96,8 +99,8 @@ class DuckDBBackend:
                 meta = self._get_parquet_metadata()
                 if meta:
                     return meta.serialized_size
-            except Exception:
-                pass
+            except (OSError, IOError, ValueError) as e:
+                _logger.debug(f"Could not get size from Parquet metadata: {e}")
         return None
 
     def execute_stats_query(self, exprs: List[str]) -> Dict[str, Any]:
@@ -125,7 +128,8 @@ class DuckDBBackend:
         try:
             rows = self.con.execute(sql).fetchall()
             return [(r[0], int(r[1])) for r in rows]
-        except Exception:
+        except duckdb.Error as e:
+            _logger.debug(f"Query error getting null counts: {e}")
             return []
 
     def fetch_distinct_values(self, column: str) -> List[Any]:
@@ -140,7 +144,8 @@ class DuckDBBackend:
         try:
             rows = self.con.execute(sql).fetchall()
             return [r[0] for r in rows]
-        except Exception:
+        except duckdb.Error as e:
+            _logger.debug(f"Query error fetching distinct values for {column}: {e}")
             return []
 
     def fetch_sample_values(self, column: str, limit: int) -> List[Any]:
@@ -155,7 +160,8 @@ class DuckDBBackend:
         try:
             rows = self.con.execute(sql).fetchall()
             return [r[0] for r in rows if r[0] is not None]
-        except Exception:
+        except duckdb.Error as e:
+            _logger.debug(f"Query error fetching sample values for {column}: {e}")
             return []
 
     def esc_ident(self, name: str) -> str:
@@ -260,16 +266,18 @@ class DuckDBBackend:
                         container = parsed.netloc.split(".")[0]
                     path_part = parsed.path.lstrip("/")
                     uri = f"{container}/{path_part}"
-                except Exception:
+                except (ImportError, OSError, ValueError) as e:
                     # Azure filesystem not available or credentials invalid
                     # Fall back to DuckDB-based profiling
+                    _logger.debug(f"Could not create Azure filesystem: {e}")
                     return None
 
             pf = pq.ParquetFile(uri, filesystem=fs)
             self._parquet_metadata = pf.metadata
             return self._parquet_metadata
 
-        except Exception:
+        except (OSError, IOError, ValueError) as e:
+            _logger.debug(f"Could not read Parquet metadata: {e}")
             return None
 
     def supports_metadata_only(self) -> bool:

@@ -42,7 +42,7 @@ def pick_executor(
         try:
             if executor.supports(handle, sql_specs):
                 return executor
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             # Be conservative: ignore faulty executors
             continue
     return None

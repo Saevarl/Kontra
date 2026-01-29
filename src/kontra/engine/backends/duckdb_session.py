@@ -46,7 +46,7 @@ def create_duckdb_connection(handle: DatasetHandle) -> duckdb.DuckDBPyConnection
             # Best-effort for unknown schemes: load httpfs just in case
             try:
                 _configure_http(con, handle.fs_opts)
-            except Exception:
+            except duckdb.Error:
                 pass  # Ignore if httpfs fails to load
 
     return con
@@ -61,7 +61,7 @@ def _safe_set(con: duckdb.DuckDBPyConnection, key: str, value: Any) -> None:
     """
     try:
         con.execute(f"SET {key} = ?", [str(value)])
-    except Exception:
+    except duckdb.Error:
         # Fails gracefully if the setting doesn't exist (e.g., wrong DuckDB version)
         pass
 
@@ -74,7 +74,7 @@ def _configure_threads(con: duckdb.DuckDBPyConnection) -> None:
     env_threads = os.getenv("DUCKDB_THREADS")
     try:
         nthreads = int(env_threads) if env_threads else (os.cpu_count() or 4)
-    except Exception:
+    except (ValueError, TypeError):
         nthreads = os.cpu_count() or 4
 
     # Try both PRAGMA (older) and SET (newer) for compatibility
@@ -82,7 +82,7 @@ def _configure_threads(con: duckdb.DuckDBPyConnection) -> None:
         try:
             con.execute(sql)
             break
-        except Exception:
+        except duckdb.Error:
             continue
 
 

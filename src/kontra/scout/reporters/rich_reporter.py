@@ -45,8 +45,15 @@ def _print_to_console(console: Console, profile: DatasetProfile) -> None:
     title = f"[bold cyan]Kontra {preset_title}[/bold cyan] - {mask_credentials(profile.source_uri)}"
     size_str = ""
     if profile.estimated_size_bytes:
-        size_mb = profile.estimated_size_bytes / (1024 * 1024)
-        size_str = f" | Size: {size_mb:.1f} MB"
+        size_bytes = profile.estimated_size_bytes
+        if size_bytes < 1024:
+            size_str = f" | Size: {size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            size_kb = size_bytes / 1024
+            size_str = f" | Size: {size_kb:.1f} KB"
+        else:
+            size_mb = size_bytes / (1024 * 1024)
+            size_str = f" | Size: {size_mb:.1f} MB"
     sample_str = f" (sampled: {profile.sample_size:,} rows)" if profile.sampled else ""
 
     header = (
@@ -88,7 +95,7 @@ def _print_to_console(console: Console, profile: DatasetProfile) -> None:
                 vals = ", ".join(str(v) for v in col.values[:5])
                 if len(col.values) > 5:
                     vals += f" +{len(col.values) - 5} more"
-                card = f"[yellow]low[/yellow]: [{vals}]"
+                card = f"[yellow]low[/yellow] ({vals})"
             else:
                 card = "[yellow]low[/yellow]"
         elif col.distinct_count < 100:

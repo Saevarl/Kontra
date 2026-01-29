@@ -11,12 +11,29 @@ Schema:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs
 
 from .base import StateBackend
+
+_logger = logging.getLogger(__name__)
+
+# Lazy-loaded psycopg exception types (psycopg may not be installed)
+_PsycopgError = None
+
+def _get_db_error():
+    """Get the psycopg base error class, lazy-loaded."""
+    global _PsycopgError
+    if _PsycopgError is None:
+        try:
+            import psycopg
+            _PsycopgError = psycopg.Error
+        except ImportError:
+            _PsycopgError = Exception  # Fallback
+    return _PsycopgError
 from kontra.state.types import (
     Annotation,
     RuleState,
@@ -482,7 +499,8 @@ class PostgresStore(StateBackend):
                 rule_rows = cur.fetchall()
 
                 return self._build_state_from_rows(run_row, rule_rows)
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting latest state for {contract_fingerprint}: {e}")
             return None
 
     def get_history(
@@ -540,7 +558,8 @@ class PostgresStore(StateBackend):
                     states.append(state)
 
                 return states
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting history for {contract_fingerprint}: {e}")
             return []
 
     def get_at(
@@ -583,7 +602,8 @@ class PostgresStore(StateBackend):
                 rule_rows = cur.fetchall()
 
                 return self._build_state_from_rows(run_row, rule_rows)
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting state at timestamp for {contract_fingerprint}: {e}")
             return None
 
     def delete_old(
@@ -612,7 +632,8 @@ class PostgresStore(StateBackend):
                 deleted = cur.rowcount
             conn.commit()
             return deleted
-        except Exception:
+        except _get_db_error() as e:
+            _logger.warning(f"Database error deleting old states for {contract_fingerprint}: {e}")
             conn.rollback()
             return 0
 
@@ -630,7 +651,8 @@ class PostgresStore(StateBackend):
                 cur.execute(sql)
                 rows = cur.fetchall()
                 return [row[0] for row in rows]
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error listing contracts: {e}")
             return []
 
     def clear(self, contract_fingerprint: Optional[str] = None) -> int:
@@ -658,7 +680,8 @@ class PostgresStore(StateBackend):
                 deleted = cur.rowcount
             conn.commit()
             return deleted
-        except Exception:
+        except _get_db_error() as e:
+            _logger.warning(f"Database error clearing states: {e}")
             conn.rollback()
             return 0
 
@@ -751,7 +774,8 @@ class PostgresStore(StateBackend):
                     )
                     annotations.append(annotation)
                 return annotations
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting annotations for run {run_id}: {e}")
             return []
 
     def get_annotations_for_contract(
@@ -814,7 +838,8 @@ class PostgresStore(StateBackend):
                     )
                     annotations.append(annotation)
                 return annotations
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting annotations for contract {contract_fingerprint}: {e}")
             return []
 
     def get_run_with_annotations(
@@ -907,7 +932,8 @@ class PostgresStore(StateBackend):
 
                 self._attach_annotations_to_state(state, annotations)
                 return state
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Database error getting run with annotations: {e}")
             return None
 
     def get_history_with_annotations(
@@ -987,8 +1013,9 @@ class PostgresStore(StateBackend):
                         rule.annotations = []
 
             return states
-        except Exception:
+        except _get_db_error() as e:
             # On error, return states without annotations
+            _logger.debug(f"Database error loading annotations for history: {e}")
             for state in states:
                 state.annotations = []
                 for rule in state.rules:

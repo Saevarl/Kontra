@@ -198,7 +198,7 @@ class TestConditionalRangeEdgeCases:
         })
         result = kontra.validate(df, rules=[
             rules.conditional_range("value", "type == 'x'", min=10, max=50)
-        ], save=False)
+        ], save=False, tally=True)
         assert not result.passed
         assert result.rules[0].failed_count == 3
 
