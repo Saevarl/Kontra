@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 import polars as pl
 
 from kontra.api.compare import CompareResult
+from kontra.probes.utils import load_data
 
 
 def compare(
@@ -65,8 +66,8 @@ def compare(
         key = [key]
 
     # Load data if paths provided
-    before_df = _load_data(before)
-    after_df = _load_data(after)
+    before_df = load_data(before)
+    after_df = load_data(after)
 
     # Compute the comparison
     result = _compute_compare(before_df, after_df, key, sample_limit)
@@ -76,34 +77,6 @@ def compare(
         pass
 
     return result
-
-
-def _load_data(data: Union[pl.DataFrame, str]) -> pl.DataFrame:
-    """
-    Load data from DataFrame or path/URI.
-
-    For MVP, only Polars DataFrames are fully supported.
-    File paths are loaded via Polars read functions.
-    """
-    if isinstance(data, pl.DataFrame):
-        return data
-
-    if isinstance(data, str):
-        # Simple file loading for MVP
-        if data.lower().endswith(".parquet"):
-            return pl.read_parquet(data)
-        elif data.lower().endswith(".csv"):
-            return pl.read_csv(data)
-        elif data.startswith("s3://"):
-            return pl.read_parquet(data)
-        else:
-            # Try parquet first, then CSV
-            try:
-                return pl.read_parquet(data)
-            except Exception:
-                return pl.read_csv(data)
-
-    raise ValueError(f"Unsupported data type: {type(data)}")
 
 
 def _compute_compare(

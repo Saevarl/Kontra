@@ -34,7 +34,8 @@ class AllowedValuesRule(BaseRule):
         # If NULL is in allowed values, NULL should NOT be a violation (fill_null(False))
         # If NULL is not allowed, NULL IS a violation (fill_null(True))
         mask = (~df[column].is_in(list(values))).fill_null(not null_allowed)
-        res = super()._failures(df, mask, f"{column} contains disallowed values")
+        values_str = self._format_values_list(values)
+        res = super()._failures(df, mask, f"{column} value not in [{values_str}]")
         res["rule_id"] = self.rule_id
 
         # Add detailed explanation for failures
@@ -87,6 +88,15 @@ class AllowedValuesRule(BaseRule):
 
         return f"Found {len(unexpected)} unexpected value(s)"
 
+    def _format_values_list(self, values: Sequence[Any], max_show: int = 5) -> str:
+        """Format values list for display, truncating if too long."""
+        str_vals = [repr(v) if isinstance(v, str) else str(v) for v in values if v is not None]
+        if len(str_vals) <= max_show:
+            return ", ".join(str_vals)
+        else:
+            shown = ", ".join(str_vals[:max_show])
+            return f"{shown}, ... ({len(str_vals)} total)"
+
     def compile_predicate(self) -> Optional[Predicate]:
         column = self.params["column"]
         values: Sequence[Any] = self.params["values"]
@@ -94,10 +104,11 @@ class AllowedValuesRule(BaseRule):
         null_allowed = None in set(values)
         # If NULL is allowed, don't treat NULL as violation
         expr = (~pl.col(column).is_in(values)).fill_null(not null_allowed)
+        values_str = self._format_values_list(values)
         return Predicate(
             rule_id=self.rule_id,
             expr=expr,
-            message=f"{column} contains disallowed values",
+            message=f"{column} value not in [{values_str}]",
             columns={column},
         )
 

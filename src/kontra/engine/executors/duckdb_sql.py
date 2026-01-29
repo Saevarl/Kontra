@@ -14,12 +14,15 @@ light introspection. The engine may reuse staged Parquet for materialization
 to avoid a second CSV parse.
 """
 
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
+
+_logger = logging.getLogger(__name__)
 
 # --- Kontra Imports ---
 from kontra.engine.backends.duckdb_session import create_duckdb_connection
@@ -301,7 +304,8 @@ class DuckDBSqlExecutor(SqlExecutor):
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
     ) -> bool:
         scheme = (handle.scheme or "").lower()
-        if scheme not in {"", "file", "s3", "http", "https"}:
+        # Support local files, S3, HTTP(S), and Azure ADLS Gen2
+        if scheme not in {"", "file", "s3", "http", "https", "abfs", "abfss", "az"}:
             return False
         return any((s.get("kind") in self.SUPPORTED_RULES) for s in (sql_specs or []))
 
@@ -661,8 +665,8 @@ class DuckDBSqlExecutor(SqlExecutor):
                 row_count = int(nrow[0]) if nrow and nrow[0] is not None else None
                 cur = con.execute(f"SELECT * FROM {esc_ident(view)} LIMIT 0")
                 available_cols = [d[0] for d in cur.description] if cur.description else []
-            except Exception:
-                pass  # Non-fatal - introspect can still be called
+            except duckdb.Error as e:
+                _logger.debug(f"Could not get row count/columns: {e}")
 
             return {
                 "results": results,
@@ -670,15 +674,15 @@ class DuckDBSqlExecutor(SqlExecutor):
                 "row_count": row_count,
                 "available_cols": available_cols,
             }
-        except Exception:
+        except duckdb.Error:
             if tmpdir is not None:
                 tmpdir.cleanup()
             raise
         finally:
             try:
                 con.execute(f"DROP VIEW IF EXISTS {esc_ident(view)};")
-            except Exception:
-                pass
+            except duckdb.Error:
+                pass  # View cleanup is best-effort
 
     def introspect(
         self,
@@ -711,12 +715,12 @@ class DuckDBSqlExecutor(SqlExecutor):
                 "available_cols": cols,
                 "staging": {"path": staged_path, "tmpdir": tmpdir},
             }
-        except Exception:
+        except duckdb.Error:
             if tmpdir is not None:
                 tmpdir.cleanup()
             raise
         finally:
             try:
                 con.execute(f"DROP VIEW IF EXISTS {esc_ident(view)};")
-            except Exception:
-                pass
+            except duckdb.Error:
+                pass  # View cleanup is best-effort

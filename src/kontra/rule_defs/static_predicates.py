@@ -35,7 +35,8 @@ def _from_rule_hook(rule: BaseRule) -> List[PredicateT]:
     if callable(fn):
         try:
             preds = fn() or []
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
+            # Hook implementation failed - skip this rule's predicates
             preds = []
         # Ensure each tuple starts with this rule's rule_id
         fixed: List[PredicateT] = []
@@ -88,6 +89,15 @@ def _conservative_builtin_mapping(rule: BaseRule) -> List[PredicateT]:
         col = params.get("column"); v = params.get("value")
         if isinstance(col, str) and col and v is not None:
             out.append((rid, col, "<=", v))
+    if name == "range":
+        col = params.get("column")
+        min_v = params.get("min")
+        max_v = params.get("max")
+        if isinstance(col, str) and col:
+            if min_v is not None:
+                out.append((rid, col, ">=", min_v))
+            if max_v is not None:
+                out.append((rid, col, "<=", max_v))
 
     # regex("^prefix") → prefix
     if name == "regex":

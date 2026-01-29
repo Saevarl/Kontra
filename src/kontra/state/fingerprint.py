@@ -140,7 +140,7 @@ def fingerprint_dataset(
         json_str = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
         return _stable_hash(json_str)
 
-    except Exception:
+    except (TypeError, ValueError, OSError):
         # Don't fail validation if fingerprinting fails
         return None
 

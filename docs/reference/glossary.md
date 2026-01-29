@@ -10,22 +10,23 @@ Common terms used in Kontra documentation and output.
 | **warning** | Rule failure is logged but doesn't fail validation. Use for non-critical issues worth tracking. |
 | **info** | Informational rule. Failures are recorded but have no impact on pass/fail status. |
 
-## Execution Modes
+## Execution
 
 | Term | Description |
 |------|-------------|
-| **preplan** | Metadata-only analysis that can prove violations exist without scanning data. Uses Parquet row-group stats or database statistics. Returns `failed_count: 1` as lower bound when violations detected. |
-| **pushdown** | Execute validation rules directly in the database (DuckDB, PostgreSQL, SQL Server). Avoids transferring data to memory. |
-| **tally** | Count all violations exactly (`tally=true`) vs early-stop when first violation found (`tally=false`). Early-stop is faster but returns approximate counts. |
-| **projection** | Only load columns needed for validation, not the entire dataset. Reduces memory usage and speeds up execution. |
+| **preplan** | Metadata-only resolution. Uses Parquet row-group stats or database statistics. Returns `failed_count: 1` as lower bound. |
+| **pushdown** | SQL execution in the database engine (DuckDB, PostgreSQL, SQL Server). Avoids loading data into memory. |
+| **tally** | `tally=True` counts all violations exactly. `tally=False` stops at first violation (faster, returns ≥1). |
+| **projection** | Load only columns needed for validation. Reduces memory and speeds up execution. |
+| **source** | Which path resolved a rule: `"metadata"` (preplan), `"sql"` (pushdown), or `"polars"` (fallback). |
 
 ## Profile Presets
 
 | Preset | Speed | What's Computed |
 |--------|-------|-----------------|
-| **scout** | Fastest | Null counts, semantic types. No distinct counts or statistics. |
-| **scan** | Medium | Full statistics: nulls, distinct counts, min/max/mean, top values. |
-| **interrogate** | Slowest | Everything in scan + percentiles (p25, p50, p75, p99). |
+| **scout** | Fastest | Metadata only: null counts, min/max, semantic types. No distinct counts or sampled stats. |
+| **scan** | Medium | Metadata + targeted queries: distinct counts, numeric stats (min/max/mean/median/std), top values. No percentiles. |
+| **interrogate** | Slowest | Full scan: everything in scan + percentiles (p25, p75, p99). |
 
 ## Semantic Types
 
@@ -53,7 +54,7 @@ Number of distinct values in a column:
 
 | Term | Description |
 |------|-------------|
-| **to_llm()** | Token-optimized format for LLM agents. 85-92% smaller than JSON. |
+| **to_llm()** | Token-optimized and structured output format for LLM agents. 85-92% smaller than JSON. |
 | **to_dict()** | Python dictionary format. Full data, includes all fields. |
 | **to_json()** | JSON string format. Same as to_dict() but serialized. |
 
@@ -68,23 +69,29 @@ Number of distinct values in a column:
   "rules": [
     {
       "rule_id": "COL:email:not_null",
+      "name": "not_null",
       "passed": true,
       "failed_count": 0,
-      "failed_count_exact": true,
+      "tally": false,
       "severity": "blocking",
+      "source": "metadata",
       "message": "Passed: email has no null values",
+      "column": "email",
       "samples": []
     },
     {
       "rule_id": "COL:age:range",
+      "name": "range",
       "passed": false,
       "failed_count": 3,
-      "failed_count_exact": true,
+      "tally": true,
       "severity": "blocking",
-      "message": "Failed: 3 failures in age",
-      "context": {"owner": "data_team"},
+      "source": "sql",
+      "violation_rate": 0.00006,
+      "message": "3 values outside range [0, 120]",
+      "column": "age",
       "samples": [
-        {"_row_index": 42, "id": 42, "age": -5}
+        {"id": 42, "age": -5}
       ]
     }
   ]
@@ -96,14 +103,17 @@ Number of distinct values in a column:
 | `passed` | bool | Overall validation result (all blocking rules passed) |
 | `total_rows` | int | Row count of validated dataset |
 | `total_rules` | int | Number of rules executed |
-| `failed_count` | int | Total violations across all blocking rules |
+| `failed_count` | int | Number of rules that failed |
 | `rules[].rule_id` | string | Unique rule identifier |
+| `rules[].name` | string | Rule type (e.g., `not_null`, `unique`) |
 | `rules[].passed` | bool | Whether this rule passed |
 | `rules[].failed_count` | int | Number of violations (0 if passed) |
-| `rules[].failed_count_exact` | bool | `true` if count is exact, `false` if lower bound (tally=false) |
+| `rules[].tally` | bool | `true` if count is exact, `false` if lower bound (≥1) |
 | `rules[].severity` | string | `"blocking"`, `"warning"`, or `"info"` |
+| `rules[].source` | string | Execution path: `"metadata"`, `"sql"`, or `"polars"` |
+| `rules[].violation_rate` | float | Fraction of rows that failed (0.0 to 1.0) |
 | `rules[].message` | string | Human-readable result description |
-| `rules[].context` | object | Optional consumer-defined metadata from contract |
+| `rules[].column` | string | Column name (for column-level rules) |
 | `rules[].samples` | array | Sample failing rows (if `sample > 0`) |
 
 ### Profile JSON Schema
@@ -135,7 +145,8 @@ Number of distinct values in a column:
         "min": 18,
         "max": 95,
         "mean": 42.3,
-        "percentiles": {"p25": 28, "p50": 41, "p75": 56, "p99": 89}
+        "median": 41,
+        "std": 15.2
       }
     }
   ]
@@ -154,7 +165,7 @@ Number of distinct values in a column:
 | `columns[].null_rate` | float | Fraction of nulls (0.0 to 1.0) |
 | `columns[].distinct_count` | int | Unique values (omitted in `scout` preset) |
 | `columns[].semantic_type` | string | Inferred role: `identifier`, `category`, `measure`, `timestamp` |
-| `columns[].numeric` | object | Statistics for numeric columns (min, max, mean, percentiles) |
+| `columns[].numeric` | object | Statistics for numeric columns (min, max, mean, median, std; percentiles in `interrogate`) |
 | `columns[].top_values` | array | Most frequent values for categorical columns |
 
 ## Rule IDs
@@ -202,7 +213,7 @@ For unique rule violations:
 
 ```python
 # Contract approach
-result = kontra.validate("contract.yml", data="data.parquet")
+result = kontra.validate("data.parquet", "contract.yml")
 
 # Inline approach
 result = kontra.validate(df, rules=[

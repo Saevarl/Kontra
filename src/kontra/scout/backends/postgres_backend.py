@@ -7,12 +7,29 @@ Uses pg_stats for efficient metadata queries and standard SQL for profiling.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.postgres import PostgresConnectionParams, get_connection
 from kontra.scout.dtype_mapping import normalize_dtype
+
+_logger = logging.getLogger(__name__)
+
+# Lazy-loaded psycopg exception (psycopg may not be installed)
+_PsycopgError = None
+
+def _get_db_error():
+    """Get the psycopg base error class, lazy-loaded."""
+    global _PsycopgError
+    if _PsycopgError is None:
+        try:
+            import psycopg
+            _PsycopgError = psycopg.Error
+        except ImportError:
+            _PsycopgError = Exception
+    return _PsycopgError
 
 
 class PostgreSQLBackend:
@@ -119,7 +136,8 @@ class PostgreSQLBackend:
                 )
                 row = cur.fetchone()
                 return int(row[0]) if row else None
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Could not get table size: {e}")
             return None
 
     def execute_stats_query(self, exprs: List[str]) -> Dict[str, Any]:
@@ -166,7 +184,8 @@ class PostgreSQLBackend:
             with self._conn.cursor() as cur:
                 cur.execute(sql)
                 return [(r[0], int(r[1])) for r in cur.fetchall()]
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Query error fetching top values for {column}: {e}")
             return []
 
     def fetch_distinct_values(self, column: str) -> List[Any]:
@@ -183,7 +202,8 @@ class PostgreSQLBackend:
             with self._conn.cursor() as cur:
                 cur.execute(sql)
                 return [r[0] for r in cur.fetchall()]
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Query error fetching distinct values for {column}: {e}")
             return []
 
     def fetch_sample_values(self, column: str, limit: int) -> List[Any]:
@@ -200,7 +220,8 @@ class PostgreSQLBackend:
             with self._conn.cursor() as cur:
                 cur.execute(sql)
                 return [r[0] for r in cur.fetchall() if r[0] is not None]
-        except Exception:
+        except _get_db_error() as e:
+            _logger.debug(f"Query error fetching sample values for {column}: {e}")
             return []
 
     def esc_ident(self, name: str) -> str:
@@ -290,8 +311,8 @@ class PostgreSQLBackend:
                     if mcv_raw.startswith("{") and mcv_raw.endswith("}"):
                         vals = mcv_raw[1:-1].split(",")
                         most_common_vals = [v.strip().strip('"') for v in vals if v.strip()]
-                except Exception:
-                    pass
+                except (ValueError, AttributeError):
+                    pass  # Malformed pg_stats value
 
             result[col_name] = {
                 "null_count": null_count,
@@ -407,8 +428,9 @@ class PostgreSQLBackend:
                     return self.execute_stats_query(exprs)
 
                 return result
-        except Exception:
+        except _get_db_error() as e:
             # Fall back to full query if TABLESAMPLE fails
+            _logger.debug(f"TABLESAMPLE query failed, falling back to full query: {e}")
             return self.execute_stats_query(exprs)
 
     def fetch_low_cardinality_values_batched(
@@ -450,8 +472,8 @@ class PostgreSQLBackend:
                     col_name, val, cnt = row
                     if col_name in result:
                         result[col_name].append((val, int(cnt)))
-        except Exception:
-            pass
+        except _get_db_error() as e:
+            _logger.debug(f"Query error fetching low cardinality values: {e}")
 
         return result
 

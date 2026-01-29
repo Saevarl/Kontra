@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 # --- Version handling (robust to early-boot states) ---------------------------
 try:
     from kontra.version import VERSION as _VERSION
-except Exception:  # pragma: no cover
+except (ImportError, ModuleNotFoundError):  # pragma: no cover
     _VERSION = "0.0.0-dev"
 
 SCHEMA_VERSION = "1.0"
@@ -16,7 +16,7 @@ SCHEMA_VERSION = "1.0"
 try:
     import fastjsonschema  # type: ignore
     _HAVE_VALIDATOR = True
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     _HAVE_VALIDATOR = False
 
 _VALIDATOR = None  # lazy-compiled validator
@@ -82,8 +82,8 @@ def _derive_exec_seconds(summary: Dict[str, Any], stats: Optional[Dict[str, Any]
             ms = stats.get("run_meta", {}).get("duration_ms_total")
             if isinstance(ms, (int, float)):
                 return float(ms) / 1000.0
-        except Exception:
-            pass
+        except (TypeError, AttributeError, KeyError):
+            pass  # stats structure unexpected
     return 0.0
 
 
@@ -97,8 +97,8 @@ def _derive_rows_evaluated(summary: Dict[str, Any], stats: Optional[Dict[str, An
             n = stats.get("dataset", {}).get("nrows")
             if isinstance(n, int) and n >= 0:
                 return int(n)
-        except Exception:
-            pass
+        except (TypeError, AttributeError, KeyError):
+            pass  # stats structure unexpected
     return 0
 
 
@@ -125,7 +125,7 @@ def build_payload(
         "dataset_name": str(dataset_name),
         "timestamp_utc": _utc_now_iso(),
         "engine_version": str(engine_version or _VERSION),
-        "validation_passed": bool(summary.get("passed", failed_count == 0)),
+        "passed": bool(summary.get("passed", failed_count == 0)),
         "statistics": {
             "execution_time_seconds": _derive_exec_seconds(summary, stats),
             "rows_evaluated": _derive_rows_evaluated(summary, stats),
@@ -157,9 +157,14 @@ def render_json(
     stats: Optional[Dict[str, Any]] = None,
     quarantine: Optional[Dict[str, Any]] = None,
     validate: bool = False,
+    pretty: bool = True,
 ) -> str:
     """
-    Build (+ optionally validate) and dump as compact, deterministic JSON.
+    Build (+ optionally validate) and dump as JSON.
+
+    Args:
+        pretty: If True (default), output indented JSON for readability.
+                If False, output compact JSON for machine use.
     """
     payload = build_payload(
         dataset_name=dataset_name,
@@ -172,8 +177,11 @@ def render_json(
     if validate and _HAVE_VALIDATOR:
         _validate_against_local_schema(payload)
 
-    # Deterministic string: stable key order & separators
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    if pretty:
+        return json.dumps(payload, sort_keys=True, indent=2, ensure_ascii=False)
+    else:
+        # Compact deterministic format for machine use
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 # --- Optional local schema validation ----------------------------------------
@@ -192,8 +200,8 @@ def _load_local_schema() -> Optional[Dict[str, Any]]:
         with resources.as_file(path) as p:
             with open(p, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        return None
+    except (ImportError, ModuleNotFoundError, FileNotFoundError, OSError, json.JSONDecodeError):
+        return None  # Schema not available, validation will be skipped
 
 
 def _validate_against_local_schema(payload: Dict[str, Any]) -> None:

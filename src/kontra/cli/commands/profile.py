@@ -88,10 +88,10 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         """
-        Profile a dataset (Kontra Profile).
+        Profile a dataset to understand its structure and statistics.
 
-        Generates comprehensive column-level statistics optimized for
-        developer exploration and LLM context compression.
+        Generates column-level statistics including types, null rates,
+        distinct counts, and value distributions.
 
         Presets control profiling depth:
           - scout: Quick recon. Metadata only (schema, row count, null/distinct counts).
@@ -218,7 +218,15 @@ def _run_profile(
             storage_options=parsed_storage_options,
         )
 
-        profile_result = profiler.profile()
+        # Show progress spinner for non-JSON output
+        if effective_output_format not in ("json", "llm"):
+            from rich.console import Console
+            from rich.status import Status
+            console = Console()
+            with Status("Profiling...", console=console, spinner="dots"):
+                profile_result = profiler.profile()
+        else:
+            profile_result = profiler.profile()
 
         # Save profile if requested
         if effective_save_profile:

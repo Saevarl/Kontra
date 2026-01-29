@@ -294,7 +294,7 @@ class TestAllowedValuesIntegration:
 
         result = kontra.validate(df, rules=[
             r.allowed_values("status", ["active", "inactive", "pending"]),
-        ])
+        ], tally=True)  # Need exact counts for this test
 
         assert not result.passed
         assert result.failed_count == 1

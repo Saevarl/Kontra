@@ -150,7 +150,7 @@ def _render_table(runs: list, contract: str, verbose: bool) -> None:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                     ts_display = dt.strftime("%Y-%m-%d %H:%M")
-                except Exception:
+                except ValueError:
                     ts_display = ts[:16]
             else:
                 ts_display = str(ts)[:16]

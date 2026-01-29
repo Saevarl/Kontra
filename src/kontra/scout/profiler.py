@@ -16,12 +16,15 @@ Efficiency optimizations:
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.version import VERSION
+
+_logger = logging.getLogger(__name__)
 
 from .types import (
     ColumnProfile,
@@ -578,8 +581,8 @@ class ScoutProfiler:
                         )
                         for val, cnt in rows
                     ]
-                except Exception:
-                    pass
+                except (ValueError, TypeError, OSError) as e:
+                    _logger.debug(f"Could not fetch top values for {col_name}: {e}")
 
         return profiles
 
@@ -753,17 +756,17 @@ class ScoutProfiler:
                 )
                 for val, cnt in rows
             ]
-        except Exception:
+        except (ValueError, TypeError, OSError) as e:
             # Some types may not be groupable
-            pass
+            _logger.debug(f"Could not fetch top values for {profile.name}: {e}")
 
     def _fetch_all_values(self, profile: ColumnProfile) -> None:
         """Fetch all distinct values for low-cardinality columns."""
         try:
             profile.values = self.backend.fetch_distinct_values(profile.name)
-        except Exception:
+        except (ValueError, TypeError, OSError) as e:
             # Some types may not be sortable
-            pass
+            _logger.debug(f"Could not fetch distinct values for {profile.name}: {e}")
 
     def _detect_patterns(self, profiles: List[ColumnProfile]) -> None:
         """Detect common patterns in string columns."""
@@ -778,8 +781,8 @@ class ScoutProfiler:
                 sample = [str(v) for v in sample if v is not None]
                 if sample:
                     profile.detected_patterns = detect_patterns(sample)
-            except Exception:
-                pass
+            except (ValueError, TypeError, OSError) as e:
+                _logger.debug(f"Could not detect patterns for {profile.name}: {e}")
 
     def _infer_semantic_types(self, profiles: List[ColumnProfile]) -> None:
         """Infer semantic type for each column based on profile data."""

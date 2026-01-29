@@ -1,0 +1,218 @@
+[
+  {
+    "scenario": "not_null_1000",
+    "row_count": 1000,
+    "rule_type": "not_null",
+    "duckdb_time_ms": 6.685424828901887,
+    "polars_time_ms": 0.02046641893684864,
+    "winner": "polars",
+    "speedup": 326.65337544054444
+  },
+  {
+    "scenario": "unique_1000",
+    "row_count": 1000,
+    "rule_type": "unique",
+    "duckdb_time_ms": 6.337441806681454,
+    "polars_time_ms": 0.1266248058527708,
+    "winner": "polars",
+    "speedup": 50.048975506822295
+  },
+  {
+    "scenario": "range_1000",
+    "row_count": 1000,
+    "rule_type": "range",
+    "duckdb_time_ms": 7.207299815490842,
+    "polars_time_ms": 0.08923320565372705,
+    "winner": "polars",
+    "speedup": 80.76925806587126
+  },
+  {
+    "scenario": "regex_1000",
+    "row_count": 1000,
+    "rule_type": "regex",
+    "duckdb_time_ms": 6.478766584768891,
+    "polars_time_ms": 0.1245749881491065,
+    "winner": "polars",
+    "speedup": 52.00696127712503
+  },
+  {
+    "scenario": "allowed_values_1000",
+    "row_count": 1000,
+    "rule_type": "allowed_values",
+    "duckdb_time_ms": 6.053741788491607,
+    "polars_time_ms": 0.10364179033786058,
+    "winner": "polars",
+    "speedup": 58.41023942906707
+  },
+  {
+    "scenario": "mixed_5_rules_1000",
+    "row_count": 1000,
+    "rule_type": "mixed_5_rules",
+    "duckdb_time_ms": 7.269449811428785,
+    "polars_time_ms": 0.23262493778020144,
+    "winner": "polars",
+    "speedup": 31.24965827308427
+  },
+  {
+    "scenario": "not_null_10000",
+    "row_count": 10000,
+    "rule_type": "not_null",
+    "duckdb_time_ms": 6.390225002542138,
+    "polars_time_ms": 0.01769179943948984,
+    "winner": "polars",
+    "speedup": 361.19700680522783
+  },
+  {
+    "scenario": "unique_10000",
+    "row_count": 10000,
+    "rule_type": "unique",
+    "duckdb_time_ms": 6.554516567848623,
+    "polars_time_ms": 0.327150197699666,
+    "winner": "polars",
+    "speedup": 20.03519060644393
+  },
+  {
+    "scenario": "range_10000",
+    "row_count": 10000,
+    "rule_type": "range",
+    "duckdb_time_ms": 5.9985663974657655,
+    "polars_time_ms": 0.09404998272657394,
+    "winner": "polars",
+    "speedup": 63.78062200080408
+  },
+  {
+    "scenario": "regex_10000",
+    "row_count": 10000,
+    "rule_type": "regex",
+    "duckdb_time_ms": 7.214658171869814,
+    "polars_time_ms": 0.3144168062135577,
+    "winner": "polars",
+    "speedup": 22.946159458694726
+  },
+  {
+    "scenario": "allowed_values_10000",
+    "row_count": 10000,
+    "rule_type": "allowed_values",
+    "duckdb_time_ms": 5.961958388797939,
+    "polars_time_ms": 0.20250841043889523,
+    "winner": "polars",
+    "speedup": 29.440547066053323
+  },
+  {
+    "scenario": "mixed_5_rules_10000",
+    "row_count": 10000,
+    "rule_type": "mixed_5_rules",
+    "duckdb_time_ms": 7.87556660361588,
+    "polars_time_ms": 0.5773835815489292,
+    "winner": "polars",
+    "speedup": 13.640094480151893
+  },
+  {
+    "scenario": "not_null_100000",
+    "row_count": 100000,
+    "rule_type": "not_null",
+    "duckdb_time_ms": 6.973858387209475,
+    "polars_time_ms": 0.017050188034772873,
+    "winner": "polars",
+    "speedup": 409.0194414857299
+  },
+  {
+    "scenario": "unique_100000",
+    "row_count": 100000,
+    "rule_type": "unique",
+    "duckdb_time_ms": 11.060666805133224,
+    "polars_time_ms": 2.3115333635360003,
+    "winner": "polars",
+    "speedup": 4.784991200911543
+  },
+  {
+    "scenario": "range_100000",
+    "row_count": 100000,
+    "rule_type": "range",
+    "duckdb_time_ms": 7.200575200840831,
+    "polars_time_ms": 0.22025024518370628,
+    "winner": "polars",
+    "speedup": 32.69270004596352
+  },
+  {
+    "scenario": "regex_100000",
+    "row_count": 100000,
+    "rule_type": "regex",
+    "duckdb_time_ms": 16.666424996219575,
+    "polars_time_ms": 2.874883613549173,
+    "winner": "polars",
+    "speedup": 5.797252075761121
+  },
+  {
+    "scenario": "allowed_values_100000",
+    "row_count": 100000,
+    "rule_type": "allowed_values",
+    "duckdb_time_ms": 7.580966781824827,
+    "polars_time_ms": 1.3212081976234913,
+    "winner": "polars",
+    "speedup": 5.737904741630432
+  },
+  {
+    "scenario": "mixed_5_rules_100000",
+    "row_count": 100000,
+    "rule_type": "mixed_5_rules",
+    "duckdb_time_ms": 13.209208380430937,
+    "polars_time_ms": 3.8603083696216345,
+    "winner": "polars",
+    "speedup": 3.421801347368948
+  },
+  {
+    "scenario": "not_null_1000000",
+    "row_count": 1000000,
+    "rule_type": "not_null",
+    "duckdb_time_ms": 7.454916974529624,
+    "polars_time_ms": 0.01715840771794319,
+    "winner": "polars",
+    "speedup": 434.47603630106875
+  },
+  {
+    "scenario": "unique_1000000",
+    "row_count": 1000000,
+    "rule_type": "unique",
+    "duckdb_time_ms": 24.134208215400577,
+    "polars_time_ms": 41.44493341445923,
+    "winner": "duckdb",
+    "speedup": -1.7172692405965195
+  },
+  {
+    "scenario": "range_1000000",
+    "row_count": 1000000,
+    "rule_type": "range",
+    "duckdb_time_ms": 11.75588364712894,
+    "polars_time_ms": 0.6588332122191787,
+    "winner": "polars",
+    "speedup": 17.843489716511176
+  },
+  {
+    "scenario": "regex_1000000",
+    "row_count": 1000000,
+    "rule_type": "regex",
+    "duckdb_time_ms": 43.05198318324983,
+    "polars_time_ms": 26.667916774749756,
+    "winner": "polars",
+    "speedup": 1.6143736890619502
+  },
+  {
+    "scenario": "allowed_values_1000000",
+    "row_count": 1000000,
+    "rule_type": "allowed_values",
+    "duckdb_time_ms": 12.189591419883072,
+    "polars_time_ms": 10.607633227482438,
+    "winner": "polars",
+    "speedup": 1.1491339451954343
+  },
+  {
+    "scenario": "mixed_5_rules_1000000",
+    "row_count": 1000000,
+    "rule_type": "mixed_5_rules",
+    "duckdb_time_ms": 30.885675153695047,
+    "polars_time_ms": 51.5881503932178,
+    "winner": "duckdb",
+    "speedup": -1.670293757105905
+  }
+]

@@ -43,10 +43,10 @@ def register(app: typer.Typer) -> None:
 
         # Check if already initialized
         if config_path.exists() and not force:
-            typer.secho(
-                f"Kontra already initialized: {config_path}", fg=typer.colors.YELLOW
-            )
-            typer.echo("Use --force to reinitialize.")
+            typer.secho("Kontra already initialized!", fg=typer.colors.GREEN)
+            typer.echo(f"\nConfig: {config_path}")
+            typer.echo("\nTo reinitialize (overwrites existing config):")
+            typer.secho("  kontra init --force", fg=typer.colors.CYAN)
             raise typer.Exit(code=EXIT_SUCCESS)
 
         # Create .kontra directory

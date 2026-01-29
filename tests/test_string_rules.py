@@ -23,7 +23,7 @@ class TestDisallowedValues:
         })
         result = kontra.validate(df, rules=[
             rules.disallowed_values("status", ["deleted", "banned"])
-        ])
+        ], tally=True)
         assert not result.passed
         assert result.failed_count == 1
         assert result.rules[0].failed_count == 2  # deleted and banned
@@ -55,7 +55,7 @@ class TestDisallowedValues:
         })
         result = kontra.validate(df, rules=[
             rules.disallowed_values("code", [3, 4])
-        ])
+        ], tally=True)
         assert not result.passed
         assert result.rules[0].failed_count == 2
 
@@ -70,7 +70,7 @@ class TestLength:
         })
         result = kontra.validate(df, rules=[
             rules.length("username", min=3)
-        ])
+        ], tally=True)
         assert not result.passed
         assert result.rules[0].failed_count == 2  # "jo" and "x"
 
@@ -92,7 +92,7 @@ class TestLength:
         })
         result = kontra.validate(df, rules=[
             rules.length("username", min=3, max=20)
-        ])
+        ], tally=True)
         assert not result.passed
         assert result.rules[0].failed_count == 2  # too short and too long
 
@@ -114,7 +114,7 @@ class TestLength:
         })
         result = kontra.validate(df, rules=[
             rules.length("username", min=1)
-        ])
+        ], tally=True)
         assert not result.passed
         assert result.rules[0].failed_count == 2  # two empty strings
 
@@ -184,7 +184,7 @@ class TestStartsWith:
         })
         result = kontra.validate(df, rules=[
             rules.starts_with("url", "https://")
-        ])
+        ], tally=True)
         assert not result.passed
         assert result.rules[0].failed_count == 2  # http:// and ftp://
 

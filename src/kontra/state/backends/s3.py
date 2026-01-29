@@ -19,6 +19,7 @@ Works with:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import string
@@ -28,6 +29,8 @@ from urllib.parse import urlparse
 
 from .base import StateBackend
 from kontra.state.types import Annotation, ValidationState
+
+_logger = logging.getLogger(__name__)
 
 
 class S3Store(StateBackend):
@@ -156,8 +159,12 @@ class S3Store(StateBackend):
                     line = line.strip()
                     if line:
                         annotations.append(Annotation.from_json(line))
-        except Exception:
-            pass
+        except FileNotFoundError:
+            pass  # No legacy annotations, this is expected
+        except (OSError, PermissionError) as e:
+            _logger.debug(f"Could not read legacy annotations from {legacy_key}: {e}")
+        except (json.JSONDecodeError, ValueError) as e:
+            _logger.warning(f"Malformed annotation data in {legacy_key}: {e}")
 
         # Load from new per-file format
         prefix = self._annotations_prefix(contract_fingerprint, run_id_str)
@@ -169,10 +176,16 @@ class S3Store(StateBackend):
                         content = f.read().strip()
                         if content:
                             annotations.append(Annotation.from_json(content))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except FileNotFoundError:
+                    pass  # File disappeared between glob and read, ignore
+                except (json.JSONDecodeError, ValueError) as e:
+                    _logger.warning(f"Malformed annotation in {ann_file}: {e}")
+                except (OSError, PermissionError) as e:
+                    _logger.debug(f"Could not read annotation {ann_file}: {e}")
+        except FileNotFoundError:
+            pass  # No annotation directory, expected for runs without annotations
+        except (OSError, PermissionError) as e:
+            _logger.debug(f"Could not list annotations at {prefix}: {e}")
 
         return annotations
 
@@ -213,7 +226,16 @@ class S3Store(StateBackend):
                 state.id = hash(run_id) & 0x7FFFFFFF
 
             return state
-        except Exception:
+        except FileNotFoundError:
+            return None
+        except json.JSONDecodeError as e:
+            _logger.warning(f"Malformed state file {filepath}: {e}")
+            return None
+        except (OSError, PermissionError) as e:
+            _logger.debug(f"Could not read state from {filepath}: {e}")
+            return None
+        except (KeyError, ValueError, TypeError) as e:
+            _logger.warning(f"Invalid state data in {filepath}: {e}")
             return None
 
     def get_latest(self, contract_fingerprint: str) -> Optional[ValidationState]:
@@ -237,7 +259,10 @@ class S3Store(StateBackend):
                 f for f in all_files
                 if not f.endswith(".ann.jsonl") and ".ann." not in f.rsplit("/", 1)[-1]
             ]
-        except Exception:
+        except FileNotFoundError:
+            return []  # No state directory for this contract
+        except (OSError, PermissionError) as e:
+            _logger.warning(f"Could not list state history for {contract_fingerprint}: {e}")
             return []
 
         if not files:
@@ -269,7 +294,10 @@ class S3Store(StateBackend):
                 f for f in all_files
                 if not f.endswith(".ann.jsonl") and ".ann." not in f.rsplit("/", 1)[-1]
             ]
-        except Exception:
+        except FileNotFoundError:
+            return 0  # No state directory
+        except (OSError, PermissionError) as e:
+            _logger.warning(f"Could not list states for cleanup in {contract_fingerprint}: {e}")
             return 0
 
         if not files:
@@ -289,12 +317,12 @@ class S3Store(StateBackend):
                 # Delete corresponding annotations (both legacy JSONL and new per-file)
                 run_id = filepath.rsplit("/", 1)[-1].replace(".json", "")
 
-                # Legacy JSONL
+                # Legacy JSONL - ignore if not found
                 ann_key = self._annotations_key(contract_fingerprint, run_id)
                 try:
                     fs.rm(f"s3://{ann_key}")
-                except Exception:
-                    pass
+                except FileNotFoundError:
+                    pass  # No legacy annotations for this run
 
                 # New per-file annotations
                 ann_prefix = self._annotations_prefix(contract_fingerprint, run_id)
@@ -303,11 +331,12 @@ class S3Store(StateBackend):
                     for ann_file in ann_files:
                         try:
                             fs.rm(f"s3://{ann_file}")
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            except Exception:
+                        except FileNotFoundError:
+                            pass  # Already deleted
+                except FileNotFoundError:
+                    pass  # No annotations directory
+            except (OSError, PermissionError) as e:
+                _logger.debug(f"Could not delete old state {filepath}: {e}")
                 continue
 
         return deleted
@@ -320,7 +349,10 @@ class S3Store(StateBackend):
         try:
             # List directories under the state prefix
             items = fs.ls(f"s3://{prefix}/", detail=False)
-        except Exception:
+        except FileNotFoundError:
+            return []  # No state directory yet
+        except (OSError, PermissionError) as e:
+            _logger.warning(f"Could not list contracts in S3 state store: {e}")
             return []
 
         contracts = []
@@ -354,13 +386,19 @@ class S3Store(StateBackend):
             try:
                 # Delete all files (json and jsonl)
                 for pattern in ["*.json", "*.jsonl"]:
-                    files = fs.glob(f"s3://{prefix}/{pattern}")
-                    for filepath in files:
-                        fs.rm(f"s3://{filepath}")
-                        if filepath.endswith(".json") and not filepath.endswith(".ann.jsonl"):
-                            deleted += 1
-            except Exception:
-                pass
+                    try:
+                        files = fs.glob(f"s3://{prefix}/{pattern}")
+                        for filepath in files:
+                            try:
+                                fs.rm(f"s3://{filepath}")
+                                if filepath.endswith(".json") and not filepath.endswith(".ann.jsonl"):
+                                    deleted += 1
+                            except FileNotFoundError:
+                                pass  # Already deleted
+                    except FileNotFoundError:
+                        pass  # No files matching pattern
+            except (OSError, PermissionError) as e:
+                _logger.warning(f"Could not clear state for {contract_fingerprint}: {e}")
         else:
             # Clear all contracts
             for fp in self.list_contracts():
@@ -418,10 +456,12 @@ class S3Store(StateBackend):
             try:
                 with fs.open(f"s3://{legacy_key}", "r") as f:
                     existing_count += sum(1 for _ in f)
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except FileNotFoundError:
+                pass  # No legacy annotations
+        except FileNotFoundError:
+            pass  # No annotations yet, starting fresh
+        except (OSError, PermissionError) as e:
+            _logger.debug(f"Could not count existing annotations: {e}")
 
         annotation.id = existing_count + 1
 
@@ -471,15 +511,17 @@ class S3Store(StateBackend):
         run_id_str = None
         try:
             all_files = fs.glob(f"s3://{prefix}/*.json")
-            files = [f for f in all_files if not f.endswith(".ann.jsonl")]
+            files = [f for f in all_files if not f.endswith(".ann.jsonl") and ".ann." not in f.rsplit("/", 1)[-1]]
 
             for filepath in files:
                 loaded = self._load_state(filepath)
                 if loaded and loaded.id == state.id:
                     run_id_str = filepath.rsplit("/", 1)[-1].replace(".json", "")
                     break
-        except Exception:
-            pass
+        except FileNotFoundError:
+            pass  # No state files
+        except (OSError, PermissionError) as e:
+            _logger.debug(f"Could not search for run file: {e}")
 
         if not run_id_str:
             state.annotations = []
@@ -510,15 +552,17 @@ class S3Store(StateBackend):
         id_to_run_id: Dict[int, str] = {}
         try:
             all_files = fs.glob(f"s3://{prefix}/*.json")
-            files = [f for f in all_files if not f.endswith(".ann.jsonl")]
+            files = [f for f in all_files if not f.endswith(".ann.jsonl") and ".ann." not in f.rsplit("/", 1)[-1]]
 
             for filepath in files:
                 loaded = self._load_state(filepath)
                 if loaded and loaded.id:
                     run_id_str = filepath.rsplit("/", 1)[-1].replace(".json", "")
                     id_to_run_id[loaded.id] = run_id_str
-        except Exception:
-            pass
+        except FileNotFoundError:
+            pass  # No state files
+        except (OSError, PermissionError) as e:
+            _logger.debug(f"Could not build run ID mapping: {e}")
 
         # Load annotations for each state
         for state in states:

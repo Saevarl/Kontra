@@ -293,6 +293,7 @@ class TestSqlServerRegexFallback:
             rules=[
                 rules.regex("username", r"^user_\d+$"),  # Matches user_1, user_2, etc.
             ],
+            tally=True,  # Need exact counts for this test
         )
 
         # Should fail - 2 rows have dup_user_* which don't match ^user_\d+$

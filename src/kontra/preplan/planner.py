@@ -28,10 +28,10 @@ def _schema_names(md_schema) -> List[str]:
     # Compatible with various pyarrow versions
     try:
         return list(md_schema.names)
-    except Exception:
+    except (AttributeError, TypeError):
         try:
             return [f.name for f in md_schema.to_arrow_schema()]
-        except Exception:
+        except (AttributeError, TypeError):
             return []
 
 
@@ -54,7 +54,7 @@ def _name_for_rg_col(rg, j, fallback: str) -> str:
     try:
         # path_in_schema handles nested names properly
         return str(rg.column(j).path_in_schema)
-    except Exception:
+    except (AttributeError, IndexError, TypeError):
         return fallback
 
 

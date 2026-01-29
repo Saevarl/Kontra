@@ -1,12 +1,6 @@
 # Python API
 
-Use Kontra as a library in your Python code.
-
-## Install
-
-```bash
-pip install kontra
-```
+Validate files, databases, and DataFrames. Profile data. Draft contracts. Track quality over time.
 
 ## Basic Usage
 
@@ -14,67 +8,227 @@ pip install kontra
 import kontra
 from kontra import rules
 
-result = kontra.validate("data.parquet", rules=[
+result = kontra.validate("users.parquet", rules=[
     rules.not_null("user_id"),
     rules.unique("email"),
-    rules.range("age", min=0, max=150),
+    rules.range("age", min=0, max=120),
 ])
 
 if result.passed:
     print("All rules passed!")
 else:
     for rule in result.blocking_failures:
-        print(f"FAILED: {rule.rule_id} - {rule.message}")
+        print(f"{rule.rule_id}: {rule.message}")
 ```
 
-Pass file paths directly—no need to load data yourself. Kontra handles Parquet, CSV, and database connections.
-
-### With DataFrames
-
-Already have data loaded? Pass it directly:
+### DataFrames
 
 ```python
 import polars as pl
 
-df = pl.read_parquet("data.parquet")
-result = kontra.validate(df, rules=[
-    rules.not_null("user_id"),
-])
+df = pl.read_parquet("users.parquet")
+result = kontra.validate(df, rules=[...])
 ```
 
 Works with Polars and pandas DataFrames.
 
-## Common Patterns
-
-### Validate with a Contract File
+### Contracts
 
 ```python
-result = kontra.validate("data.parquet", "contracts/users.yml")
-```
+result = kontra.validate("users.parquet", "contracts/users.yml")
 
-### Mix Contract and Inline Rules
-
-```python
-result = kontra.validate("data.parquet", "contracts/base.yml", rules=[
+# Mix contract and inline rules
+result = kontra.validate("users.parquet", "contracts/base.yml", rules=[
     rules.freshness("updated_at", max_age="24h"),
 ])
 ```
 
-### Profile Data
+### Databases
 
 ```python
-profile = kontra.profile("data.parquet")
+# URI
+result = kontra.validate(
+    "postgres://user:pass@localhost:5432/myapp/public.users",
+    rules=[rules.not_null("user_id")]
+)
+
+# Bring your own connection
+import psycopg
+conn = psycopg.connect(host="localhost", dbname="myapp")
+result = kontra.validate(conn, table="public.users", rules=[...])
+```
+
+Works with common PostgreSQL and SQL Server drivers, plus SQLAlchemy engines.
+
+### Cloud Storage
+
+```python
+# S3 with environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+result = kontra.validate("s3://bucket/data.parquet", rules=[...])
+
+# S3 with explicit credentials
+result = kontra.validate(
+    "s3://bucket/data.parquet",
+    storage_options={
+        "aws_access_key_id": "...",
+        "aws_secret_access_key": "...",
+        "aws_region": "us-east-1",
+    },
+    rules=[...]
+)
+
+# MinIO / S3-compatible
+result = kontra.validate(
+    "s3://bucket/data.parquet",
+    storage_options={
+        "aws_access_key_id": "minioadmin",
+        "aws_secret_access_key": "minioadmin",
+        "aws_region": "us-east-1",
+        "endpoint_url": "http://localhost:9000",
+    },
+    rules=[...]
+)
+
+# Azure ADLS Gen2 (uses AZURE_STORAGE_* env vars)
+result = kontra.validate(
+    "abfss://container@account.dfs.core.windows.net/data.parquet",
+    rules=[...]
+)
+```
+
+The `storage_options` parameter also works with `profile()`.
+
+### Dicts and Lists
+
+```python
+data = [
+    {"id": 1, "email": "alice@example.com", "status": "active"},
+    {"id": 2, "email": "bob@example.com", "status": "pending"},
+]
+
+result = kontra.validate(data, rules=[
+    rules.not_null("email"),
+    rules.allowed_values("status", ["active", "pending", "inactive"]),
+])
+```
+
+Data must be flat (list of dicts or single dict).
+
+---
+
+## Rule Helpers
+
+```python
+from kontra import rules
+
+# Common rules
+rules.not_null("user_id")
+rules.unique("email")
+rules.range("age", min=0, max=120)
+rules.allowed_values("status", ["active", "pending"])
+rules.regex("email", r".*@.*")
+
+# Cross-column
+rules.compare("end_date", "start_date", ">=")
+rules.conditional_not_null("shipping_date", when="status == 'shipped'")
+
+# Dataset-level
+rules.min_rows(1000)
+rules.freshness("updated_at", max_age="24h")
+```
+
+All rules accept optional parameters:
+
+```python
+rules.not_null("email", severity="warning")  # blocking | warning | info
+rules.not_null("email", tally=True)          # exact counts
+rules.not_null("email", id="custom_id")      # custom rule ID
+```
+
+See [Rules Reference](reference/rules.md) for all 18 rules and parameters.
+
+---
+
+## Working with Results
+
+```python
+result = kontra.validate("users.parquet", rules=[...])
+
+# Status
+result.passed          # bool
+result.total_rows      # int
+result.total_rules     # int
+result.failed_count    # int - number of rules that failed
+result.quality_score   # float 0.0-1.0, or None if weights not configured
+
+# Iterate rules
+for rule in result.rules:
+    print(f"{rule.rule_id}: {'PASS' if rule.passed else 'FAIL'}")
+    print(f"  source: {rule.source}")  # "metadata", "sql", or "polars"
+
+# Filter by severity
+result.blocking_failures   # failed rules with severity=blocking
+result.warnings            # failed rules with severity=warning
+
+# Violation rates
+for rule in result.rules:
+    if rule.violation_rate:
+        print(f"{rule.rule_id}: {rule.violation_rate:.2%} of rows failed")
+
+# Serialize
+result.to_dict()       # dict
+result.to_json()       # JSON string
+result.to_llm()        # token-efficient string
+```
+
+### RuleResult Properties
+
+```python
+rule.rule_id          # e.g., "COL:email:not_null"
+rule.name             # e.g., "not_null"
+rule.passed           # bool
+rule.failed_count     # int - violating rows (exact or ≥1 depending on tally)
+rule.violation_rate   # float or None
+rule.severity         # "blocking", "warning", or "info"
+rule.severity_weight  # float or None (if weights configured)
+rule.source           # "metadata", "sql", or "polars"
+rule.message          # human-readable description
+rule.column           # column name if applicable
+rule.context          # consumer-defined metadata from contract
+rule.samples          # list of failing rows or None
+```
+
+---
+
+## Profiling
+
+```python
+profile = kontra.profile("users.parquet")
+
 print(f"Rows: {profile.row_count}")
 print(f"Columns: {profile.column_count}")
 
 for col in profile.columns:
     print(f"  {col.name}: {col.dtype}, {col.null_rate:.0%} null")
+
+profile.to_llm()  # token-efficient summary
 ```
 
-Presets control profiling depth:
-- `"scout"` - Quick recon (metadata only, no table scan)
-- `"scan"` - Full stats via metadata + strategic queries [default]
-- `"interrogate"` - Deep investigation (full table scan + percentiles)
+### Presets
+
+| Preset | What it does | When to use |
+|--------|--------------|-------------|
+| `scout` | Metadata only, zero data access | Quick recon, schema exploration |
+| `scan` | Metadata + strategic queries | Default. Rich stats without full scan |
+| `interrogate` | Full table scan | Deep analysis, percentiles, exact distributions |
+
+```python
+kontra.profile("data.parquet", preset="scout")       # metadata only
+kontra.profile("data.parquet", preset="scan")        # default
+kontra.profile("data.parquet", preset="interrogate") # full scan
+```
+
+`scan` is the sweet spot: it extracts null rates, distinct counts, min/max, and top values using targeted aggregations instead of scanning every row. See [Performance](advanced/performance.md) for how this works.
 
 ### Draft Rules from Profile
 
@@ -85,184 +239,121 @@ suggestions = kontra.draft(profile)
 # Use directly
 result = kontra.validate("data.parquet", rules=suggestions.to_dict())
 
-# Or save as contract
+# Filter by confidence
+suggestions.filter(min_confidence=0.8)
+
+# Save as contract
 suggestions.save("contracts/generated.yml")
 ```
 
-### Validate Database Tables
+---
+
+## Sampling
+
+By default, no samples are collected. Enable with `sample`:
 
 ```python
-import psycopg
-import kontra
-from kontra import rules
+result = kontra.validate("users.parquet", rules=[...], sample=5)
 
-# Pass your own connection
-conn = psycopg.connect(host="localhost", dbname="myapp")
-result = kontra.validate(
-    conn,
-    table="public.users",
-    rules=[rules.not_null("user_id")],
-)
-conn.close()
-
-# Or use a direct URI
-result = kontra.validate(
-    "postgres://user:pass@host/db/public.users",
-    rules=[rules.not_null("id")]
-)
+for rule in result.blocking_failures:
+    print(f"{rule.rule_id}: {rule.failed_count} failures")
+    for row in rule.samples or []:
+        print(f"  {row}")
 ```
 
-**Supported connection types:**
-- `psycopg` / `psycopg2` / `psycopg3` (PostgreSQL)
-- `pg8000` (PostgreSQL)
-- `pyodbc` (SQL Server, PostgreSQL via ODBC)
-- `pymssql` (SQL Server)
-- SQLAlchemy engines and connections
+### Lazy Sampling
 
-**Table reference formats:**
-- `"users"` - uses default schema (public for PostgreSQL, dbo for SQL Server)
-- `"public.users"` - schema.table
-- `"mydb.dbo.orders"` - database.schema.table
-
-### Named Datasources (Alternative)
-
-Instead of passing connections or URIs, you can define reusable datasources in `.kontra/config.yml`:
-
-```yaml
-datasources:
-  prod_db:
-    type: postgres
-    host: localhost
-    database: myapp
-    tables:
-      users: public.users
-      orders: public.orders
-```
-
-Then reference by name:
-
-```python
-result = kontra.validate("prod_db.users", "contracts/users.yml")
-
-result = kontra.validate("prod_db.orders", rules=[
-    rules.not_null("order_id"),
-    rules.range("quantity", min=1),
-])
-```
-
-### Validate JSON Data
-
-Validate lists of dicts (e.g., API responses) or single records:
-
-```python
-# List of dicts (flat tabular JSON)
-api_data = [
-    {"id": 1, "email": "alice@example.com", "status": "active"},
-    {"id": 2, "email": "bob@example.com", "status": "pending"},
-]
-
-result = kontra.validate(api_data, rules=[
-    rules.not_null("email"),
-    rules.allowed_values("status", ["active", "pending", "inactive"]),
-])
-
-# Single dict (single record validation)
-record = {"id": 1, "email": "test@example.com"}
-result = kontra.validate(record, rules=[
-    rules.not_null("email"),
-    rules.regex("email", r".*@.*"),
-])
-```
-
-This is useful for:
-- Validating API response data before processing
-- Single-record validation in web applications
-- Testing data transformations
-
-**Note**: Data must be flat (tabular). Nested JSON like `{"user": {"email": "..."}}` should be flattened before validation.
-
-### Debug Failed Rules
-
-When validation fails, each rule includes sample failing rows for debugging:
-
-```python
-result = kontra.validate("data.parquet", rules=[
-    rules.not_null("email"),
-    rules.allowed_values("status", ["active", "inactive"]),
-])
-
-if not result.passed:
-    for rule in result.blocking_failures:
-        print(f"{rule.rule_id}: {rule.failed_count} failures")
-        for row in rule.samples or []:
-            print(f"  Row {row['_row_index']}: {row}")
-```
-
-By default, no samples are collected (`sample=0`) for performance. Enable with `sample` and `sample_budget` parameters:
-
-```python
-result = kontra.validate(..., sample=5)  # Collect up to 5 samples per rule
-result = kontra.validate(..., sample=10, sample_budget=100)  # More samples
-```
-
-For token efficiency (e.g., when working with LLMs), limit which columns appear in samples:
-
-```python
-# Only include specific columns in samples
-result = kontra.validate(..., sample_columns=["id", "email", "status"])
-
-# Only include columns relevant to each rule (+ _row_index)
-result = kontra.validate(..., sample_columns="relevant")
-```
-
-For more samples than cached, use `sample_failures()`:
+Fetch more samples after validation:
 
 ```python
 samples = result.sample_failures("COL:email:not_null", n=20)
 ```
 
-**Note**: For database connections (BYOC), keep the connection open until done with `sample_failures()`.
+**Note:** For BYOC (bring your own connection), keep the connection open until done with `sample_failures()`.
 
-### Pipeline Validation Decorator
+### Sample Columns
 
-Validate data returned from functions with the `@kontra.validate_decorator`:
+Limit columns in samples for token efficiency:
 
 ```python
-import kontra
-from kontra import rules
+result = kontra.validate(..., sample=5, sample_columns=["id", "email", "status"])
+result = kontra.validate(..., sample=5, sample_columns="relevant")  # rule columns only
+```
 
+### Tally and Sampling
+
+In fail-fast mode (`tally=False`), Kontra stops at the first violation, so you get at most 1 sample per rule. Use `sample_failures()` for more, or set `tally=True` for a full scan.
+
+---
+
+## Validation Options
+
+```python
+result = kontra.validate(
+    "data.parquet",
+    "contract.yml",
+
+    # Execution control
+    preplan="auto",      # "on" | "off" | "auto"
+    pushdown="auto",     # "on" | "off" | "auto"
+    tally=False,         # exact counts vs fail-fast
+    projection=True,     # column pruning
+
+    # Sampling
+    sample=5,            # samples per rule
+    sample_budget=50,    # total samples across all rules
+    sample_columns=None, # None | list | "relevant"
+
+    # Environment
+    env="production",    # environment from config
+    csv_mode="auto",     # "auto" | "duckdb" | "parquet"
+
+    # History
+    save=True,           # save to history
+)
+```
+
+### Dry Run
+
+Validate contract syntax without executing:
+
+```python
+check = kontra.validate(None, "contract.yml", dry_run=True)
+
+check.valid          # bool
+check.rules_count    # int
+check.columns_needed # list
+check.errors         # list
+```
+
+---
+
+## Decorator
+
+Validate data returned from functions:
+
+```python
 @kontra.validate_decorator(
     rules=[rules.not_null("id"), rules.unique("email")],
-    on_fail="raise",  # "raise" | "warn" | "return_result"
+    on_fail="raise",
 )
 def load_users():
     return pl.read_parquet("users.parquet")
 
-# Call as normal - validation happens automatically
-users = load_users()  # Raises ValidationError if validation fails
+users = load_users()  # Raises ValidationError if fails
 ```
 
-**`on_fail` options:**
+### on_fail Options
 
 | Option | Behavior |
 |--------|----------|
-| `"raise"` | Raise `ValidationError` on blocking failures—pipeline stops (default) |
-| `"warn"` | Emit warning to stderr, return data—pipeline continues |
-| `"return_result"` | Return `(data, ValidationResult)` tuple—caller decides |
-| `callable` | Custom callback `(result, data) -> data`—you decide |
+| `"raise"` | Raise `ValidationError` (default) |
+| `"warn"` | Emit warning, return data |
+| `"return_result"` | Return `(data, ValidationResult)` tuple |
+| `callable` | Custom callback `(result, data) -> data` |
 
 ```python
-# Custom callback: Kontra measures, you decide
-def notify_and_continue(result, data):
-    if not result.passed:
-        slack.post(f"Validation failed: {result.failed_count} violations")
-    return data
-
-@kontra.validate_decorator(rules=[...], on_fail=notify_and_continue)
-def fetch_data():
-    ...
-
-# Lambda for quick transformations
+# Custom callback
 @kontra.validate_decorator(
     rules=[...],
     on_fail=lambda result, data: data.drop_nulls() if not result.passed else data
@@ -270,213 +361,25 @@ def fetch_data():
 def get_orders():
     ...
 
-# Get validation result alongside data
+# Get result alongside data
 @kontra.validate_decorator(rules=[...], on_fail="return_result")
 def load_users():
     ...
 
 data, result = load_users()
-if not result.passed:
-    print(f"Validation issues: {result.failed_count}")
 ```
 
-Works with contract files too:
+Works with contracts:
 
 ```python
-@kontra.validate_decorator(contract="contracts/users.yml", on_fail="raise")
+@kontra.validate_decorator(contract="contracts/users.yml")
 def load_users():
     return pl.read_parquet("users.parquet")
 ```
 
-## Available Rules
-
-```python
-from kontra import rules
-
-# Column checks
-rules.not_null("column")
-rules.unique("column")
-rules.dtype("column", "int64")
-rules.range("column", min=0, max=100)
-rules.allowed_values("column", ["a", "b", "c"])
-rules.disallowed_values("column", ["bad", "invalid"])
-rules.regex("column", r"^[A-Z]{2}\d{4}$")
-
-# String checks (efficient LIKE patterns, faster than regex)
-rules.length("column", min=3, max=50)
-rules.contains("email", "@")
-rules.starts_with("url", "https://")
-rules.ends_with("filename", ".csv")
-
-# Cross-column checks
-rules.compare("end_date", "start_date", ">=")
-rules.conditional_not_null("shipping_date", when="status == 'shipped'")
-rules.conditional_range("discount", when="tier == 'premium'", min=10, max=50)
-
-# Dataset checks
-rules.min_rows(1000)
-rules.max_rows(1000000)
-rules.freshness("updated_at", max_age="24h")
-rules.custom_sql_check("SELECT * FROM {table} WHERE balance < 0")
-
-# All rules accept optional parameters
-rules.not_null("email", severity="warning")  # "blocking" | "warning" | "info"
-rules.range("score", min=0, max=100, id="score_range")  # custom rule ID
-rules.not_null("email", tally=True)  # exact count vs early termination
-```
-
-### Tally Mode
-
-By default, rules stop at the first violation found (fast, returns `failed_count=1`). Set `tally=True` to get exact violation counts:
-
-```python
-# Fast (default): early termination, failed_count=1 means "at least 1"
-rules.not_null("email")
-
-# Exact count: full scan, failed_count is exact
-rules.not_null("email", tally=True)
-```
-
-Global override via `kontra.validate()`:
-
-```python
-# Force exact counts for all rules
-result = kontra.validate("data.parquet", rules=[...], tally=True)
-
-# Force early termination for all rules
-result = kontra.validate("data.parquet", rules=[...], tally=False)
-```
-
-Per-rule `tally` settings override the global flag.
-
-Supported on column and cross-column rules. Dataset rules (`min_rows`, `max_rows`, `freshness`) and `dtype` always return exact counts.
-
-### Rule Context in Contracts
-
-Add consumer-defined context to rules in contract files. Kontra stores this data but doesn't use it for validation—consumers/agents access it for routing, explanations, or fix hints:
-
-```yaml
-rules:
-  - name: not_null
-    params:
-      column: email
-    context:
-      owner: data_eng_team
-      fix_hint: Ensure email is provided for all users
-      tags: ["daily_check", "critical"]
-```
-
-Access in code:
-
-```python
-result = kontra.validate("data.parquet", "contract.yml")
-
-for rule in result.blocking_failures:
-    msg = rule.message
-    if rule.context and rule.context.get("fix_hint"):
-        msg += f" → {rule.context['fix_hint']}"
-    print(msg)
-```
-
-## Working with Results
-
-```python
-result = kontra.validate("data.parquet", rules=[...])
-
-# Status
-result.passed          # bool
-result.total_rows      # int - row count of validated dataset
-result.total_rules     # int
-result.failed_count    # int
-
-# Per-rule violation rates (LLM-friendly)
-for rule in result.rules:
-    if rule.violation_rate:  # None if passed or no failures
-        print(f"{rule.rule_id}: {rule.violation_rate:.2%} of rows failed")
-
-# Iterate rules
-for rule in result.rules:
-    print(f"{rule.rule_id}: {'PASS' if rule.passed else 'FAIL'}")
-
-# Filter failures
-for rule in result.blocking_failures:
-    print(f"{rule.rule_id}: {rule.failed_count} violations")
-
-for rule in result.warnings:
-    print(f"Warning: {rule.rule_id}")
-
-# Access rule details for programmatic use
-for rule in result.rules:
-    print(f"{rule.rule_id}:")
-    print(f"  message: {rule.message}")  # Human-readable description
-    print(f"  details: {rule.details}")  # Structured failure data
-    print(f"  context: {rule.context}")  # Consumer-defined metadata
-
-# Serialize
-result.to_dict()       # dict
-result.to_json()       # JSON string
-```
-
 ---
 
-## Going Deeper
-
-### Validation Options
-
-```python
-result = kontra.validate(
-    "data.parquet",
-    "contract.yml",
-    preplan="auto",      # "on" | "off" | "auto"
-    pushdown="auto",     # "on" | "off" | "auto"
-    projection=True,     # column pruning
-    csv_mode="auto",     # "auto" | "duckdb" | "parquet" (for CSV files)
-    env="production",    # environment from config
-    save=True,           # save to history (default: True, use False to disable)
-)
-```
-
-### Execution Model
-
-When you pass a DataFrame, Kontra validates in-memory using Polars.
-
-When you pass a file path or database URI, Kontra uses a tiered execution model:
-1. **Metadata preplan**: Check Parquet statistics or pg_stats (instant)
-2. **SQL pushdown**: Run rules as SQL aggregates (DuckDB, PostgreSQL, SQL Server)
-3. **Polars fallback**: Load data for remaining rules
-
-For full details, see [Execution Model](advanced/performance.md).
-
-### Dry Run
-
-Validate contract/rules syntax without executing against data:
-
-```python
-check = kontra.validate(None, "contract.yml", dry_run=True)
-check.valid          # bool - is contract syntax valid?
-check.rules_count    # int - number of rules that would run
-check.columns_needed # list - columns the contract requires
-check.contract_name  # str - name from contract (if any)
-check.errors         # list - any parse/validation errors
-```
-
-Use `dry_run=True` to:
-- Validate contract files before deploying to production
-- Check which columns a contract needs without loading data
-- Catch syntax errors early in CI/CD pipelines
-
-```python
-# Example: Pre-validate contracts
-check = kontra.validate(None, "new_contract.yml", dry_run=True)
-if not check.valid:
-    print(f"Contract errors: {check.errors}")
-    sys.exit(1)
-print(f"Contract OK: {check.rules_count} rules need columns {check.columns_needed}")
-```
-
-Note: `save=False` skips state persistence but still executes validation. Use `dry_run=True` to skip execution entirely.
-
-### Compare Runs Over Time
+## History and Diff
 
 ```python
 # Compare latest to previous run
@@ -486,16 +389,28 @@ if diff.regressed:
     print("Quality regressed!")
     for rule in diff.new_failures:
         print(f"  NEW: {rule.rule_id}")
+
+diff.to_llm()  # token-efficient summary
 ```
 
-For full diff capabilities, see [State & Diff](advanced/state-and-diff.md).
-
-### Annotations
-
-Annotations provide "memory without authority"—agents and humans can record context about validation runs without affecting Kontra's behavior:
+### History Functions
 
 ```python
-# Annotate the latest run for a contract
+kontra.get_history(contract, since=None, limit=None, failed_only=False)
+kontra.list_runs(contract)
+kontra.get_run(contract, run_id=None)  # default: latest
+kontra.has_runs(contract)
+```
+
+See [State & Diff](advanced/state-and-diff.md) for full details.
+
+---
+
+## Annotations
+
+Record context about validation runs. Kontra stores annotations but never reads them during validation.
+
+```python
 kontra.annotate(
     "users_contract.yml",
     actor_type="agent",
@@ -504,7 +419,7 @@ kontra.annotate(
     summary="Fixed null emails by backfilling from user_profiles",
 )
 
-# Annotate a specific rule
+# Annotate specific rule
 kontra.annotate(
     "users_contract.yml",
     rule_id="COL:email:not_null",
@@ -513,56 +428,127 @@ kontra.annotate(
     annotation_type="false_positive",
     summary="Service accounts are expected to have null emails",
 )
-
-# Annotate with structured payload
-kontra.annotate(
-    "users_contract.yml",
-    actor_type="agent",
-    actor_id="analysis-agent",
-    annotation_type="root_cause",
-    summary="Upstream data source failed validation",
-    payload={
-        "upstream_source": "crm_export",
-        "failure_time": "2024-01-15T08:30:00Z",
-        "affected_rows": 1523,
-    },
-)
 ```
-
-**Invariant**: Kontra never reads annotations during validation or diff. They're purely for consumer use.
 
 Load runs with annotations:
 
 ```python
 result = kontra.get_run_with_annotations("users_contract.yml")
 
-# Run-level annotations
 for ann in result.annotations or []:
     print(f"[{ann['annotation_type']}] {ann['summary']}")
-
-# Rule-level annotations
-for rule in result.rules:
-    for ann in rule.annotations or []:
-        print(f"  {rule.rule_id}: [{ann['annotation_type']}] {ann['summary']}")
 ```
 
-Common annotation types (suggested, not enforced):
-- `"resolution"`: I fixed this
-- `"root_cause"`: This failed because...
-- `"false_positive"`: This isn't actually a problem
-- `"acknowledged"`: I saw this, will address later
-- `"suppressed"`: Intentionally ignoring this
-- `"note"`: General comment
+Common types: `resolution`, `root_cause`, `false_positive`, `acknowledged`, `suppressed`, `note`
 
-### LLM-Optimized Output
+---
+
+## Output Examples
+
+### ValidationResult
 
 ```python
-result.to_llm()   # token-efficient string
-profile.to_llm()  # token-efficient string
-diff.to_llm()     # token-efficient string
+print(result.to_llm())
 ```
 
-For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
+Passing:
+```
+VALIDATION: users_contract PASSED (50,000 rows)
+PASSED: 4 rules
+```
+
+Failing:
+```
+VALIDATION: users_contract FAILED (5 rows)
+BLOCKING: COL:age:range (1), COL:email:not_null (2), COL:status:allowed_values (1)
+PASSED: 0 rules
+```
+
+### RuleResult
+
+```python
+for rule in result.rules:
+    print(rule.to_llm())
+```
+
+```
+COL:age:range: FAIL (1 failures)[20.0%]
+COL:email:not_null: FAIL (2 failures)[40.0%]
+COL:status:allowed_values: FAIL (1 failures)[20.0%]
+```
+
+### DatasetProfile
+
+```python
+print(profile)
+```
+
+```
+DatasetProfile(users.parquet)
+  Preset: scan
+  Rows: 50,000 | Columns: 5
+  Columns:
+    - user_id: int, 50,000 distinct, [identifier]
+    - email: string, 2% null, 49,000 distinct
+    - status: string, 3 distinct, [category]
+    - age: int, 78 distinct, [measure]
+    - created_at: datetime, [timestamp]
+```
+
+```python
+print(profile.to_llm())
+```
+
+```
+PROFILE: users.parquet
+rows=50,000 cols=5
+
+COLUMNS:
+  user_id (int) [identifier] distinct=50,000 range=[1.0, 50000.0]
+  email (string) nulls=1,000 (2.0%) distinct=49,000
+  status (string) [category] distinct=3 top='pending'(16,667)
+  age (int) [measure] distinct=78 range=[18.0, 95.0]
+  created_at (datetime) [timestamp]
+```
+
+### JSON Output
+
+```python
+result.to_dict()
+```
+
+```json
+{
+  "passed": false,
+  "dataset": "users_contract",
+  "total_rows": 50000,
+  "total_rules": 4,
+  "passed_count": 2,
+  "failed_count": 2,    // number of rules that failed
+  "warning_count": 0,
+  "rules": [...]
+}
+```
+
+```python
+rule.to_dict()
+```
+
+```json
+{
+  "rule_id": "COL:email:not_null",
+  "name": "not_null",
+  "passed": false,
+  "failed_count": 1000,  // violating rows
+  "message": "1000 null values found in email",
+  "severity": "blocking",
+  "source": "sql",
+  "violation_rate": 0.02,
+  "column": "email"
+}
+```
+
+All `to_llm()` outputs are designed for token efficiency. See [Agents & Services](advanced/agents-and-llms.md) for integration patterns.
 
 ---
 
@@ -573,56 +559,34 @@ For agent integration, see [Agents & Services](advanced/agents-and-llms.md).
 | Function | Description |
 |----------|-------------|
 | `kontra.validate(data, contract, **opts)` | Validate data |
-| `kontra.profile(data, **opts)` | Profile data (presets: scout, scan, interrogate) |
+| `kontra.profile(data, preset, **opts)` | Profile data |
 | `kontra.draft(profile)` | Draft rules from profile |
 | `kontra.diff(contract, **opts)` | Compare validation runs |
-| `kontra.list_rules()` | List all available rule types |
-| `@kontra.validate_decorator(...)` | Decorator for pipeline validation |
+| `kontra.list_rules()` | List available rule types |
+| `@kontra.validate_decorator(...)` | Pipeline validation decorator |
 
 ### Transformation Probes
 
 | Function | Description |
 |----------|-------------|
-| `kontra.compare(before, after, key)` | Measure transformation effects between datasets |
-| `kontra.profile_relationship(left, right, on)` | Measure JOIN structure between datasets |
+| `kontra.compare(before, after, key)` | Measure transformation effects |
+| `kontra.profile_relationship(left, right, on)` | Measure JOIN structure |
 
-See [Transformation Probes](probes.md) for full documentation.
-
-### History Functions
-
-| Function | Description |
-|----------|-------------|
-| `kontra.get_history(contract, since=None, limit=None, failed_only=False)` | Get validation history with filtering |
-| `kontra.list_runs(contract)` | List past validation runs |
-| `kontra.get_run(contract, run_id=None)` | Get specific run (default: latest) |
-| `kontra.has_runs(contract)` | Check if history exists for contract |
-
-### Annotation Functions
-
-| Function | Description |
-|----------|-------------|
-| `kontra.annotate(contract, ...)` | Add annotation to a run or rule |
-| `kontra.get_annotations(contract, rule_id=, ...)` | Query annotations across runs |
-| `kontra.get_run_with_annotations(contract)` | Get run with annotations loaded |
+See [Transformation Probes](reference/probes.md) for details.
 
 ### Result Types
 
 | Type | Key Properties |
 |------|----------------|
-| `ValidationResult` | `passed`, `total_rows`, `data`, `rules`, `blocking_failures`, `warnings`, `annotations` (opt-in), `sample_failures()`, `to_dict()`, `to_json()`, `to_llm()` |
-| `FailureSamples` | `count`, `rule_id`, `to_dict()`, `to_json()`, `to_llm()` (iterable) |
-| `RuleResult` | `rule_id`, `name`, `passed`, `failed_count`, `violation_rate`, `severity`, `message`, `column`, `details`, `context`, `annotations` (opt-in), `samples`, `samples_source`, `samples_reason` |
-| `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
-| `DatasetProfile` | `row_count`, `column_count`, `columns` |
+| `ValidationResult` | `passed`, `total_rows`, `quality_score`, `rules`, `blocking_failures`, `warnings`, `sample_failures()`, `to_dict()`, `to_llm()` |
+| `RuleResult` | `rule_id`, `passed`, `failed_count`, `violation_rate`, `severity`, `severity_weight`, `source`, `message`, `context`, `samples` |
+| `DatasetProfile` | `row_count`, `column_count`, `columns`, `to_llm()` |
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |
-| `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved` |
-| `Suggestions` | `filter(min_confidence)`, `to_dict()`, `to_yaml()`, `save(path)` |
-| `CompareResult` | `row_delta`, `duplicated_after`, `changed_rows`, `columns_modified`, `samples_*` |
-| `RelationshipProfile` | `left_key_multiplicity_max`, `right_key_multiplicity_max`, `*_keys_with_match`, `samples_*` |
+| `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved`, `to_llm()` |
+| `Suggestions` | `filter()`, `to_dict()`, `to_yaml()`, `save()` |
+| `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 
-All result types support `to_dict()`, `to_json()`, and `to_llm()` for serialization.
-
-### Error Handling
+### Errors
 
 ```python
 from kontra.errors import (
@@ -633,23 +597,5 @@ from kontra.errors import (
     ConnectionError,
     DuplicateRuleIdError,
 )
-from kontra import ValidationError  # raised by @validate_decorator
-
-try:
-    result = kontra.validate("data.parquet", "contract.yml")
-except ContractNotFoundError as e:
-    print(f"Contract not found: {e}")
-except DuplicateRuleIdError as e:
-    # Multiple rules with same auto-generated ID
-    print(f"Duplicate rule ID: {e.rule_id}")
-    print(f"Add explicit 'id' field to distinguish rules")
-except KontraError as e:
-    print(f"Kontra error: {e}")
-
-# ValidationError from decorator
-try:
-    users = load_users()  # decorated function
-except ValidationError as e:
-    print(f"Validation failed: {e}")
-    print(f"Failed rules: {len(e.result.blocking_failures)}")
+from kontra import ValidationError  # from @validate_decorator
 ```

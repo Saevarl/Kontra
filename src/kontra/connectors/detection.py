@@ -100,7 +100,7 @@ def _detect_pyodbc_dialect(conn: Any) -> str:
         # Default for pyodbc (most common use case)
         return SQLSERVER
 
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         # If getinfo fails, assume SQL Server (most common pyodbc use)
         return SQLSERVER
 

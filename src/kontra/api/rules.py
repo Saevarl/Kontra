@@ -176,13 +176,19 @@ def range(
         Rule dict for use with kontra.validate()
 
     Raises:
-        ValueError: If neither min nor max is provided, or if min > max
+        ValueError: If neither min nor max is provided, if min > max, or if min/max are not numeric
     """
     _validate_column(column, "range")
 
     # Validate at least one bound is provided
     if min is None and max is None:
         raise ValueError("range rule: at least one of 'min' or 'max' must be provided")
+
+    # Validate min/max are numeric
+    if min is not None and not isinstance(min, (int, float)):
+        raise ValueError(f"range rule: min must be numeric, got {type(min).__name__}")
+    if max is not None and not isinstance(max, (int, float)):
+        raise ValueError(f"range rule: max must be numeric, got {type(max).__name__}")
 
     # Validate min <= max
     if min is not None and max is not None and min > max:
@@ -244,8 +250,18 @@ def regex(
 
     Returns:
         Rule dict for use with kontra.validate()
+
+    Raises:
+        ValueError: If pattern is not a valid regex
     """
+    import re
     _validate_column(column, "regex")
+    # Validate regex pattern early - fail fast with helpful message
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        pos_info = f" at position {e.pos}" if e.pos is not None else ""
+        raise ValueError(f"Invalid regex pattern{pos_info}: {e.msg}\n  Pattern: {pattern}")
     return _build_rule("regex", {"column": column, "pattern": pattern}, severity, id, tally, context)
 
 
@@ -413,9 +429,15 @@ def compare(
     Example:
         # Ensure end_date >= start_date
         rules.compare("end_date", "start_date", ">=")
+
+    Raises:
+        ValueError: If op is not a valid comparison operator
     """
     _validate_column(left, "compare (left)")
     _validate_column(right, "compare (right)")
+    valid_ops = {">", ">=", "<", "<=", "==", "!="}
+    if op not in valid_ops:
+        raise ValueError(f"Invalid comparison operator '{op}'. Must be one of: {', '.join(sorted(valid_ops))}")
     return _build_rule("compare", {"left": left, "right": right, "op": op}, severity, id, tally, context)
 
 
@@ -496,8 +518,13 @@ def conditional_range(
     Example:
         # discount_percent must be between 10 and 50 for premium customers
         rules.conditional_range("discount_percent", "customer_type == 'premium'", min=10, max=50)
+
+    Raises:
+        ValueError: If neither min nor max is provided
     """
     _validate_column(column, "conditional_range")
+    if min is None and max is None:
+        raise ValueError("conditional_range requires at least one of 'min' or 'max'")
     params = {"column": column, "when": when}
     if min is not None:
         params["min"] = min
@@ -570,7 +597,7 @@ def length(
         Rule dict for use with kontra.validate()
 
     Raises:
-        ValueError: If neither min nor max is provided, or if min > max
+        ValueError: If neither min nor max is provided, if min > max, or if min/max are not integers
 
     Example:
         rules.length("username", min=3, max=50)
@@ -579,6 +606,12 @@ def length(
 
     if min is None and max is None:
         raise ValueError("length rule: at least one of 'min' or 'max' must be provided")
+
+    # Validate min/max are integers (length must be whole number)
+    if min is not None and not isinstance(min, int):
+        raise ValueError(f"length rule: min must be an integer, got {type(min).__name__}")
+    if max is not None and not isinstance(max, int):
+        raise ValueError(f"length rule: max must be an integer, got {type(max).__name__}")
 
     if min is not None and max is not None and min > max:
         raise ValueError(f"length rule: min ({min}) must be <= max ({max})")

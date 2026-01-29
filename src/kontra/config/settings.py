@@ -265,7 +265,7 @@ class EffectiveConfig:
             "stats": self.stats,
             "state_backend": self.state_backend,
             "csv_mode": self.csv_mode,
-            "scout": {
+            "profile": {
                 "preset": self.scout_preset,
                 "save_profile": self.scout_save_profile,
                 "list_values_threshold": self.scout_list_values_threshold,
@@ -656,6 +656,23 @@ def resolve_datasource(
         from pathlib import Path
         base = Path(ds.base_path)
         return str(base / table_ref)
+
+    elif isinstance(ds, MSSQLDatasourceConfig):
+        # mssql://user:pass@host:port/database/schema.table
+        user = ds.user
+        password = ds.password
+        host = ds.host
+        port = ds.port
+        database = ds.database
+
+        if user and password:
+            auth = f"{user}:{password}@"
+        elif user:
+            auth = f"{user}@"
+        else:
+            auth = ""
+
+        return f"mssql://{auth}{host}:{port}/{database}/{table_ref}"
 
     else:
         raise ValueError(f"Unknown datasource type for '{ds_name}'")

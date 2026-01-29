@@ -13,6 +13,7 @@ Directory structure:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import string
@@ -22,6 +23,8 @@ from typing import Dict, List, Optional
 
 from .base import StateBackend
 from kontra.state.types import Annotation, ValidationState
+
+_logger = logging.getLogger(__name__)
 
 
 class LocalStore(StateBackend):
@@ -69,7 +72,9 @@ class LocalStore(StateBackend):
             # Split on underscore to get timestamp part
             ts_part = run_id.split("_")[0]
             return datetime.strptime(ts_part, "%Y-%m-%dT%H-%M-%S").replace(tzinfo=timezone.utc)
-        except Exception:
+        except (ValueError, IndexError):
+            # ValueError: invalid timestamp format
+            # IndexError: no underscore in run_id
             return None
 
     def _run_file(self, contract_fingerprint: str, run_id: str) -> Path:
@@ -102,7 +107,8 @@ class LocalStore(StateBackend):
                 encoding="utf-8",
             )
             temp_path.rename(filepath)
-        except Exception:
+        except (OSError, PermissionError, IOError):
+            # Clean up temp file on failure, then re-raise
             if temp_path.exists():
                 temp_path.unlink()
             raise
@@ -124,7 +130,16 @@ class LocalStore(StateBackend):
                 state.id = hash(run_id) & 0x7FFFFFFF  # Positive integer
 
             return state
-        except Exception:
+        except FileNotFoundError:
+            return None
+        except json.JSONDecodeError as e:
+            _logger.warning(f"Malformed state file {filepath}: {e}")
+            return None
+        except (OSError, PermissionError) as e:
+            _logger.debug(f"Could not read state from {filepath}: {e}")
+            return None
+        except (KeyError, ValueError, TypeError) as e:
+            _logger.warning(f"Invalid state data in {filepath}: {e}")
             return None
 
     def get_latest(self, contract_fingerprint: str) -> Optional[ValidationState]:
@@ -189,7 +204,10 @@ class LocalStore(StateBackend):
                 ann_file = self._annotations_file(contract_fingerprint, run_id)
                 if ann_file.exists():
                     ann_file.unlink()
-            except Exception:
+            except FileNotFoundError:
+                pass  # Already deleted
+            except (OSError, PermissionError) as e:
+                _logger.debug(f"Could not delete old state {filepath}: {e}")
                 continue
 
         return deleted
@@ -357,8 +375,9 @@ class LocalStore(StateBackend):
                             continue
 
                         all_annotations.append(ann)
-                    except Exception:
-                        # Skip malformed annotations
+                    except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
+                        # Skip malformed annotations but log for debugging
+                        _logger.debug(f"Skipping malformed annotation in {ann_file}: {e}")
                         continue
 
         # Sort by created_at descending (newest first)

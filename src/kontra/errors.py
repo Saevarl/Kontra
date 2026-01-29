@@ -499,6 +499,24 @@ def format_error_for_cli(error: Exception) -> str:
     if isinstance(error, KontraError):
         return str(error)
 
+    # Handle Pydantic validation errors with friendly messages
+    error_type = type(error).__name__
+    if error_type == "ValidationError" and hasattr(error, "errors"):
+        # Pydantic ValidationError - extract field-level issues
+        try:
+            issues = []
+            for err in error.errors():  # type: ignore
+                loc = ".".join(str(x) for x in err.get("loc", []))
+                msg = err.get("msg", "invalid value")
+                if loc:
+                    issues.append(f"  - {loc}: {msg}")
+                else:
+                    issues.append(f"  - {msg}")
+            if issues:
+                return f"Configuration error:\n" + "\n".join(issues)
+        except (AttributeError, TypeError, KeyError):
+            pass  # Fall through to default handling
+
     # Handle common exception types with better messages
     error_str = str(error).lower()
 
@@ -527,6 +545,34 @@ def format_error_for_cli(error: Exception) -> str:
         return (
             f"Authentication failed: {error}\n\n"
             "Check username and password are correct."
+        )
+
+    # S3-specific errors
+    if "nosuchbucket" in error_str or "bucket" in error_str and "not found" in error_str:
+        return (
+            f"S3 bucket not found: {error}\n\n"
+            "Check the bucket name is correct and you have access."
+        )
+
+    if "nosuchkey" in error_str or "key" in error_str and "not found" in error_str:
+        return (
+            f"S3 object not found: {error}\n\n"
+            "Check the object key (path) is correct."
+        )
+
+    if "nocredentials" in error_str or "credentials" in error_str:
+        return (
+            f"AWS credentials not found: {error}\n\n"
+            "Set credentials via environment variables:\n"
+            "  export AWS_ACCESS_KEY_ID=your_key\n"
+            "  export AWS_SECRET_ACCESS_KEY=your_secret\n"
+            "  export AWS_REGION=us-east-1"
+        )
+
+    if "invalidaccesskeyid" in error_str or "signaturemismatch" in error_str:
+        return (
+            f"AWS credentials invalid: {error}\n\n"
+            "Check your AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are correct."
         )
 
     # Default: just return the error message

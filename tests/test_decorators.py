@@ -288,14 +288,14 @@ class TestValidateDecoratorOptions:
 
         data, result = load_data()
 
-        # Samples should only have id and _row_index
+        # Samples should only have id and row_index
         samples = result.rules[0].samples
         assert len(samples) > 0
         for sample in samples:
-            # Should have id, _row_index (and maybe _duplicate_count)
+            # Should have id, row_index (and maybe _duplicate_count)
             sample_keys = set(sample.keys())
             assert "id" in sample_keys
-            assert "_row_index" in sample_keys
+            assert "row_index" in sample_keys
             assert "name" not in sample_keys
             assert "email" not in sample_keys
 

@@ -92,7 +92,7 @@ class TestSampleFailuresNotNull:
         samples = result.sample_failures("COL:email:not_null")
 
         assert len(samples) == 2
-        assert all("_row_index" in s for s in samples)
+        assert all("row_index" in s for s in samples)
         assert all(s["email"] is None for s in samples)
 
     def test_row_indices_are_accurate(self, df_with_nulls):
@@ -101,7 +101,7 @@ class TestSampleFailuresNotNull:
         samples = result.sample_failures("COL:email:not_null")
 
         # Rows 1 and 3 have nulls (0-indexed)
-        indices = [s["_row_index"] for s in samples]
+        indices = [s["row_index"] for s in samples]
         assert sorted(indices) == [1, 3]
 
 
@@ -249,7 +249,7 @@ class TestSampleFailuresCompare:
 
         # Row 1: end_date (2024-02-01) < start_date (2024-03-01)
         assert len(samples) == 1
-        assert samples[0]["_row_index"] == 1
+        assert samples[0]["row_index"] == 1
 
 
 class TestSampleFailuresConditionalNotNull:
@@ -279,7 +279,7 @@ class TestSampleFailuresConditionalNotNull:
         # Row 1: status=active but email=null
         # Row 2: status=inactive so doesn't count
         assert len(samples) == 1
-        assert samples[0]["_row_index"] == 1
+        assert samples[0]["row_index"] == 1
         assert samples[0]["status"] == "active"
         assert samples[0]["email"] is None
 
@@ -425,7 +425,7 @@ class TestSampleFailuresDataSources:
         samples = result.sample_failures("COL:email:not_null")
 
         assert len(samples) == 1
-        assert samples[0]["_row_index"] == 1
+        assert samples[0]["row_index"] == 1
 
 
 # =============================================================================
@@ -434,7 +434,7 @@ class TestSampleFailuresDataSources:
 
 
 class TestRowIndexAccuracy:
-    """Tests that _row_index accurately reflects source data position."""
+    """Tests that row_index accurately reflects source data position."""
 
     def test_indices_match_original_positions(self):
         """Row indices match original DataFrame positions."""
@@ -446,19 +446,19 @@ class TestRowIndexAccuracy:
         result = kontra.validate(df, rules=[rules.not_null("value")])
         samples = result.sample_failures("COL:value:not_null", n=100)
 
-        indices = [s["_row_index"] for s in samples]
+        indices = [s["row_index"] for s in samples]
 
         # Verify each index is a multiple of 17
         for idx in indices:
             assert idx % 17 == 0, f"Index {idx} should be multiple of 17"
 
     def test_can_locate_row_by_index(self, df_with_nulls):
-        """Can use _row_index to locate row in original data."""
+        """Can use row_index to locate row in original data."""
         result = kontra.validate(df_with_nulls, rules=[rules.not_null("email")])
         samples = result.sample_failures("COL:email:not_null")
 
         for sample in samples:
-            idx = sample["_row_index"]
+            idx = sample["row_index"]
             original_row = df_with_nulls.row(idx, named=True)
 
             # Verify sample matches original
@@ -505,7 +505,7 @@ class TestFailureSamplesMethods:
         assert "SAMPLES:" in llm_str
         assert "COL:email:not_null" in llm_str
         assert "2 rows" in llm_str
-        assert "row=" in llm_str  # New format: row=1 instead of _row_index=1
+        assert "row=" in llm_str  # New format: row=1 instead of row_index=1
 
     def test_to_llm_empty(self, df_with_nulls):
         """to_llm() handles empty samples."""
@@ -523,7 +523,7 @@ class TestFailureSamplesMethods:
         # Can iterate
         count = 0
         for row in samples:
-            assert "_row_index" in row
+            assert "row_index" in row
             count += 1
         assert count == 2
 
@@ -533,7 +533,7 @@ class TestFailureSamplesMethods:
         samples = result.sample_failures("COL:email:not_null")
 
         first = samples[0]
-        assert "_row_index" in first
+        assert "row_index" in first
         assert isinstance(first, dict)
 
     def test_count_property(self, df_with_nulls):
@@ -653,8 +653,8 @@ class TestMultipleRules:
         status_samples = result.sample_failures("COL:status:allowed_values")
 
         # Same row (index 0) appears in both
-        assert email_samples[0]["_row_index"] == 0
-        assert status_samples[0]["_row_index"] == 0
+        assert email_samples[0]["row_index"] == 0
+        assert status_samples[0]["row_index"] == 0
 
 
 # =============================================================================
@@ -688,7 +688,7 @@ class TestEagerSampling:
     def test_sample_parameter_limits_per_rule(self):
         """sample parameter limits samples per rule."""
         df = pl.DataFrame({"email": [None] * 10})
-        result = kontra.validate(df, rules=[rules.not_null("email")], sample=3)
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=3, tally=True)
 
         r = result.rules[0]
         assert len(r.samples) == 3
@@ -773,7 +773,7 @@ class TestEagerSampling:
 
         # Verify it's the same data as cached
         cached = result.rules[0].samples
-        assert samples[0]["_row_index"] == cached[0]["_row_index"]
+        assert samples[0]["row_index"] == cached[0]["row_index"]
 
     def test_unique_rule_has_duplicate_count(self):
         """Unique rule samples include _duplicate_count."""
@@ -874,8 +874,8 @@ class TestSampleColumnProjection:
         )
         r = result.rules[0]
         assert r.samples is not None
-        # Should have all columns plus _row_index
-        assert "_row_index" in r.samples[0]
+        # Should have all columns plus row_index
+        assert "row_index" in r.samples[0]
         assert "email" in r.samples[0]
         assert "name" in r.samples[0]
         assert "extra1" in r.samples[0]
@@ -891,9 +891,9 @@ class TestSampleColumnProjection:
         )
         r = result.rules[0]
         assert r.samples is not None
-        # Should only have id, email, and _row_index
+        # Should only have id, email, and row_index
         sample_keys = set(r.samples[0].keys())
-        assert sample_keys == {"_row_index", "id", "email"}
+        assert sample_keys == {"row_index", "id", "email"}
 
     def test_relevant_mode_not_null(self, df_many_columns):
         """'relevant' mode includes only rule's columns."""
@@ -907,8 +907,8 @@ class TestSampleColumnProjection:
         r = result.rules[0]
         assert r.samples is not None
         sample_keys = set(r.samples[0].keys())
-        # Should only have email and _row_index
-        assert sample_keys == {"_row_index", "email"}
+        # Should only have email and row_index
+        assert sample_keys == {"row_index", "email"}
 
     def test_relevant_mode_compare_rule(self):
         """'relevant' mode includes both columns for compare rule."""
@@ -928,8 +928,8 @@ class TestSampleColumnProjection:
         r = result.rules[0]
         assert r.samples is not None
         sample_keys = set(r.samples[0].keys())
-        # Should have start_date, end_date, and _row_index
-        assert sample_keys == {"_row_index", "start_date", "end_date"}
+        # Should have start_date, end_date, and row_index
+        assert sample_keys == {"row_index", "start_date", "end_date"}
 
     def test_relevant_mode_conditional_not_null(self, df_many_columns):
         """'relevant' mode includes condition column and target column."""
@@ -945,20 +945,20 @@ class TestSampleColumnProjection:
             sample_keys = set(r.samples[0].keys())
             assert "email" in sample_keys
             assert "status" in sample_keys
-            assert "_row_index" in sample_keys
+            assert "row_index" in sample_keys
 
     def test_row_index_always_included(self, df_many_columns):
-        """_row_index is always included even when not in column list."""
+        """row_index is always included even when not in column list."""
         result = kontra.validate(
             df_many_columns,
             rules=[rules.not_null("email")],
             sample=5,
-            sample_columns=["email"],  # Doesn't include _row_index
+            sample_columns=["email"],  # Doesn't include row_index
             save=False
         )
         r = result.rules[0]
         assert r.samples is not None
-        assert "_row_index" in r.samples[0]
+        assert "row_index" in r.samples[0]
 
     def test_nonexistent_columns_ignored(self, df_many_columns):
         """Columns not in DataFrame are silently ignored."""
@@ -971,7 +971,7 @@ class TestSampleColumnProjection:
         )
         r = result.rules[0]
         assert r.samples is not None
-        # Should only have id and _row_index (nonexistent is ignored)
+        # Should only have id and row_index (nonexistent is ignored)
         sample_keys = set(r.samples[0].keys())
         assert "nonexistent_column" not in sample_keys
         assert "id" in sample_keys
@@ -996,7 +996,7 @@ class TestSampleColumnProjection:
         sample_keys = set(r.samples[0].keys())
         assert "_duplicate_count" in sample_keys
         assert "code" in sample_keys
-        assert "_row_index" in sample_keys
+        assert "row_index" in sample_keys
 
     def test_token_efficiency(self, df_many_columns):
         """Column projection reduces JSON output size."""
@@ -1043,7 +1043,7 @@ class TestSampleColumnProjection:
         r = result.rules[0]
         assert r.samples is not None
         sample_keys = set(r.samples[0].keys())
-        assert sample_keys == {"_row_index", "id", "email"}
+        assert sample_keys == {"row_index", "id", "email"}
 
     def test_csv_with_column_projection(self, tmp_path):
         """Column projection works with CSV files."""
@@ -1066,4 +1066,4 @@ class TestSampleColumnProjection:
         r = result.rules[0]
         assert r.samples is not None
         sample_keys = set(r.samples[0].keys())
-        assert sample_keys == {"_row_index", "id", "email"}
+        assert sample_keys == {"row_index", "id", "email"}

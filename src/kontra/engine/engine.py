@@ -353,7 +353,8 @@ class ValidationEngine:
         # Independent toggles
         preplan: Literal["on", "off", "auto"] = "auto",
         pushdown: Literal["on", "off", "auto"] = "auto",
-        tally: Optional[bool] = None,  # Global tally override (None = use per-rule)
+        tally: Optional[bool] = None,  # Global tally setting (None = use per-rule)
+        tally_is_override: bool = False,  # True = tally overrides per-rule (CLI), False = per-rule wins (API)
         enable_projection: bool = True,
         csv_mode: Literal["auto", "duckdb", "parquet"] = "auto",
         # Diagnostics
@@ -410,7 +411,8 @@ class ValidationEngine:
 
         self.preplan = preplan
         self.pushdown = pushdown
-        self.tally = tally  # Global tally override (None = use per-rule settings)
+        self.tally = tally  # Global tally setting
+        self.tally_is_override = tally_is_override  # CLI sets True to override per-rule
         self.enable_projection = bool(enable_projection)
         self.csv_mode = csv_mode
         self.show_plan = show_plan
@@ -746,6 +748,34 @@ class ValidationEngine:
 
         return result
 
+    def _derive_contract_name(self, dataset: str) -> str:
+        """
+        Derive a user-friendly contract name from dataset path.
+
+        Examples:
+            "users.parquet" -> "users.parquet"
+            "s3://bucket/data/users.parquet" -> "users.parquet"
+            "postgres:///public.users" -> "public.users"
+            "inline_validation" -> "inline_validation"
+        """
+        if not dataset:
+            return "inline_validation"
+
+        # For URIs, extract the last meaningful part
+        if "://" in dataset:
+            # postgres:///schema.table -> schema.table
+            if dataset.startswith(("postgres://", "mssql://")):
+                parts = dataset.split("/")
+                return parts[-1] if parts[-1] else "validation"
+            # s3://bucket/path/file.parquet -> file.parquet
+            # abfss://container@account.../path/file.parquet -> file.parquet
+            parts = dataset.rstrip("/").split("/")
+            return parts[-1] if parts[-1] else "validation"
+
+        # For file paths, use the filename
+        from pathlib import Path
+        return Path(dataset).name or dataset
+
     def _load_contract(self) -> Contract:
         """
         Load contract from file and/or merge with inline rules.
@@ -796,9 +826,11 @@ class ValidationEngine:
             return contract
 
         # No contract file - create synthetic contract from inline rules
+        # Use data path as name for better UX (shows "users.parquet" instead of "inline_contract")
         dataset = self.data_path or "inline_validation"
+        name = self._derive_contract_name(dataset)
         return Contract(
-            name="inline_contract",
+            name=name,
             dataset=dataset,
             rules=inline_specs,
         )
@@ -826,16 +858,23 @@ class ValidationEngine:
         rule_severity_map = {r.rule_id: r.severity for r in rules}
 
         # Build rule_id -> effective tally mapping
-        # Precedence: per-rule setting > global setting > default (True for backwards compat)
+        # Precedence:
+        #   1. CLI --tally flag (tally_is_override=True) - explicit user intent
+        #   2. Per-rule tally setting in contract
+        #   3. API tally= parameter (tally_is_override=False)
+        #   4. Default (False for speed)
         def _effective_tally(rule) -> bool:
-            # If rule has explicit tally setting, use it
+            # CLI tally override beats everything
+            if self.tally_is_override and self.tally is not None:
+                return self.tally
+            # Per-rule setting beats API default
             if rule.tally is not None:
                 return rule.tally
-            # Otherwise, use global setting if set, else default to True (exact counts)
-            # Default True maintains backwards compatibility - users can opt into fast mode
+            # API default (if set)
             if self.tally is not None:
                 return self.tally
-            return True
+            # Ultimate default - False enables preplan/early-exit optimizations
+            return False
 
         rule_tally_map = {r.rule_id: _effective_tally(r) for r in rules}
 
@@ -1001,7 +1040,7 @@ class ValidationEngine:
                 if is_auth_error or is_not_found or is_permission:
                     # These are real errors - don't silently skip
                     raise RuntimeError(
-                        f"Preplan failed due to {err_type}: {e}. "
+                        f"Unable to access file: {e}. "
                         "Check file path and credentials."
                     ) from e
 
@@ -1453,9 +1492,14 @@ class ValidationEngine:
                 detail = f": {msg}"
                 if failed_count > 0:
                     failure_word = "failure" if failed_count == 1 else "failures"
-                    # Add ≥ prefix for approximate counts (tally=False)
-                    prefix = "" if is_tally else "≥"
-                    detail = f": {prefix}{failed_count:,} {failure_word}"
+                    if is_tally:
+                        detail = f": {failed_count:,} {failure_word}"
+                    else:
+                        # Add ≥ prefix and hint for approximate counts (tally=False)
+                        detail = f": ≥{failed_count:,} {failure_word}"
+                        if not hasattr(self, '_tally_hint_shown'):
+                            detail += " (use --tally for exact count)"
+                            self._tally_hint_shown = True
 
                 # Use different icon for warning/info
                 icon = "❌" if severity == "blocking" else ("⚠️" if severity == "warning" else "ℹ️")

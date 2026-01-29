@@ -5,6 +5,7 @@ import os
 import yaml
 
 from kontra.config.models import Contract, RuleSpec
+from kontra.errors import ContractNotFoundError
 
 
 class ContractLoader:
@@ -21,7 +22,7 @@ class ContractLoader:
     def from_path(path: Union[str, Path]) -> Contract:
         p = Path(path)
         if not p.exists():
-            raise FileNotFoundError(f"Contract file not found: {p}")
+            raise ContractNotFoundError(str(p))
         with p.open("r") as f:
             raw = yaml.safe_load(f)
         return ContractLoader._parse_and_validate(raw, source=str(p))

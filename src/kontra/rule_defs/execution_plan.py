@@ -76,20 +76,21 @@ def _generate_polars_message(
         return f"{count_str} duplicate {row_str}{col_part}"
 
     elif rule_kind in ("allowed_values", "disallowed_values"):
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} {row_str} with disallowed value{col_part}"
+        # Use predicate message which includes the allowed values list
+        return f"{count_str} {row_str}: {predicate_message}"
 
     elif rule_kind == "range":
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} {row_str} out of range{col_part}"
+        # Use predicate message which includes the constraint values [min, max]
+        # e.g., "age values outside range [0, 150]"
+        return f"{count_str} {row_str}: {predicate_message}"
 
     elif rule_kind == "length":
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} {row_str} with invalid length{col_part}"
+        # Use predicate message which includes the constraint values [min, max]
+        return f"{count_str} {row_str}: {predicate_message}"
 
     elif rule_kind == "regex":
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} {row_str} failed regex match{col_part}"
+        # Use predicate message which includes the pattern
+        return f"{count_str} {row_str}: {predicate_message}"
 
     elif rule_kind == "contains":
         col_part = f" in {column}" if column else ""
@@ -104,13 +105,16 @@ def _generate_polars_message(
         return f"{count_str} {row_str} with invalid suffix{col_part}"
 
     elif rule_kind == "compare":
-        return f"{count_str} {row_str} failed comparison"
+        # Use predicate message which includes column names (e.g., "end_date is not greater than start_date")
+        return f"{count_str} {row_str}: {predicate_message}"
 
     elif rule_kind == "conditional_not_null":
-        return f"{count_str} {row_str} with null value when condition met"
+        # Use predicate message which includes column and condition (e.g., "shipping_date is null when status == 'shipped'")
+        return f"{count_str} {row_str}: {predicate_message}"
 
     elif rule_kind == "conditional_range":
-        return f"{count_str} {row_str} out of range when condition met"
+        # Use predicate message which includes column, range, and condition
+        return f"{count_str} {row_str}: {predicate_message}"
 
     else:
         # For unknown rule kinds or custom IDs, use predicate message with count prefix

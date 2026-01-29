@@ -336,27 +336,27 @@ class TestPostgresStoreMocked:
         """PostgresStore.get_latest() queries database."""
         store, mock_cursor = pg_store
 
-        # Mock the run row (normalized schema)
-        mock_cursor.fetchone.return_value = {
-            "id": 1,
-            "contract_fingerprint": "abc123def456",
-            "contract_name": "test_contract",
-            "dataset_fingerprint": "data123",
-            "dataset_name": "data.parquet",
-            "run_at": datetime.now(timezone.utc),
-            "duration_ms": None,
-            "passed": True,
-            "total_rows": None,
-            "total_rules": 5,
-            "passed_rules": 5,
-            "failed_rules": 0,
-            "blocking_failures": 0,
-            "warning_failures": 0,
-            "info_failures": 0,
-            "execution_stats": None,
-            "schema_version": "2.0",
-            "engine_version": "0.4.1",
-        }
+        # Mock the run row (tuple matching SELECT column order)
+        mock_cursor.fetchone.return_value = (
+            1,  # id
+            "abc123def456",  # contract_fingerprint
+            "test_contract",  # contract_name
+            "data123",  # dataset_fingerprint
+            "data.parquet",  # dataset_name
+            datetime.now(timezone.utc),  # run_at
+            None,  # duration_ms
+            True,  # passed
+            None,  # total_rows
+            5,  # total_rules
+            5,  # passed_rules
+            0,  # failed_rules
+            0,  # blocking_failures
+            0,  # warning_failures
+            0,  # info_failures
+            None,  # execution_stats
+            "2.0",  # schema_version
+            "0.4.1",  # engine_version
+        )
         mock_cursor.fetchall.return_value = []  # No rule results
 
         result = store.get_latest("abc123def456")
@@ -378,28 +378,28 @@ class TestPostgresStoreMocked:
         """PostgresStore.get_history() returns states from database."""
         store, mock_cursor = pg_store
 
-        # Mock run rows (normalized schema)
+        # Mock run rows (tuple matching SELECT column order)
         mock_cursor.fetchall.return_value = [
-            {
-                "id": 1,
-                "contract_fingerprint": "abc123def456",
-                "contract_name": "test_contract",
-                "dataset_fingerprint": "data123",
-                "dataset_name": "data.parquet",
-                "run_at": datetime.now(timezone.utc),
-                "duration_ms": None,
-                "passed": True,
-                "total_rows": None,
-                "total_rules": 5,
-                "passed_rules": 5,
-                "failed_rules": 0,
-                "blocking_failures": 0,
-                "warning_failures": 0,
-                "info_failures": 0,
-                "execution_stats": None,
-                "schema_version": "2.0",
-                "engine_version": "0.4.1",
-            },
+            (
+                1,  # id
+                "abc123def456",  # contract_fingerprint
+                "test_contract",  # contract_name
+                "data123",  # dataset_fingerprint
+                "data.parquet",  # dataset_name
+                datetime.now(timezone.utc),  # run_at
+                None,  # duration_ms
+                True,  # passed
+                None,  # total_rows
+                5,  # total_rules
+                5,  # passed_rules
+                0,  # failed_rules
+                0,  # blocking_failures
+                0,  # warning_failures
+                0,  # info_failures
+                None,  # execution_stats
+                "2.0",  # schema_version
+                "0.4.1",  # engine_version
+            ),
         ]
 
         history = store.get_history("abc123def456", limit=10)

@@ -13,6 +13,7 @@ from kontra.cli.constants import (
     EXIT_VALIDATION_FAILED,
 )
 from kontra.cli.renderers import print_rich_stats
+from kontra.errors import ContractNotFoundError
 
 
 def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) -> None:
@@ -244,7 +245,8 @@ def register(app: typer.Typer) -> None:
         sql_engine: Literal["auto", "none"] = typer.Option(
             "auto",
             "--sql-engine",
-            help="(deprecated) Use '--pushdown off' instead. 'none' disables pushdown.",
+            hidden=True,  # Deprecated - hidden from help
+            help="(deprecated) Use '--pushdown off' instead.",
         ),
         show_plan: bool = typer.Option(
             False,
@@ -416,6 +418,7 @@ def register(app: typer.Typer) -> None:
                 preplan=effective_preplan,
                 pushdown=effective_pushdown,
                 tally=tally,
+                tally_is_override=(tally is not None),  # CLI flag overrides per-rule
                 enable_projection=enable_projection,
                 csv_mode=effective_csv_mode,
                 # Diagnostics
@@ -427,7 +430,16 @@ def register(app: typer.Typer) -> None:
                 # Cloud storage
                 storage_options=parsed_storage_options,
             )
-            result = eng.run()
+
+            # Show progress spinner for non-JSON output
+            if effective_output_format != "json":
+                from rich.console import Console
+                from rich.status import Status
+                console = Console()
+                with Status("Validating...", console=console, spinner="dots"):
+                    result = eng.run()
+            else:
+                result = eng.run()
 
             if effective_output_format == "json":
                 from kontra.reporters.json_reporter import render_json
@@ -455,6 +467,17 @@ def register(app: typer.Typer) -> None:
             raise
 
         except FileNotFoundError as e:
+            from kontra.errors import format_error_for_cli
+
+            msg = format_error_for_cli(e)
+            typer.secho(f"Error: {msg}", fg=typer.colors.RED)
+            if verbose:
+                import traceback
+
+                typer.secho(f"\n{traceback.format_exc()}", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+
+        except ContractNotFoundError as e:
             from kontra.errors import format_error_for_cli
 
             msg = format_error_for_cli(e)

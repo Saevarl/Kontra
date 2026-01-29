@@ -169,12 +169,50 @@ class CompareResult:
 
     def to_llm(self) -> str:
         """
-        Token-optimized format for LLM context.
+        Token-optimized text format for LLM context.
 
-        This is a thin wrapper over to_dict(). No summarization, no prose.
-        Agents prompt themselves for interpretation.
+        Returns human-readable text (not JSON) for consistency with
+        other to_llm() methods. Concise but complete.
         """
-        return json.dumps(self.to_dict(), indent=2, default=str)
+        lines = []
+
+        # Header
+        delta_sign = "+" if self.row_delta >= 0 else ""
+        lines.append(f"COMPARE: {self.before_rows:,} → {self.after_rows:,} rows ({delta_sign}{self.row_delta:,})")
+        lines.append(f"key: {', '.join(self.key)}")
+
+        # Key stats
+        lines.append(f"keys: preserved={self.preserved:,}, dropped={self.dropped:,}, added={self.added:,}")
+        if self.duplicated_after > 0:
+            lines.append(f"duplicated_keys: {self.duplicated_after:,}")
+
+        # Change stats
+        if self.preserved > 0:
+            lines.append(f"changes: {self.changed_rows:,} modified, {self.unchanged_rows:,} unchanged")
+
+        # Column changes
+        if self.columns_added:
+            lines.append(f"columns_added: {', '.join(self.columns_added)}")
+        if self.columns_removed:
+            lines.append(f"columns_removed: {', '.join(self.columns_removed)}")
+        if self.columns_modified:
+            mod_parts = []
+            for col in self.columns_modified[:5]:
+                frac = self.modified_fraction.get(col, 0)
+                mod_parts.append(f"{col} ({frac:.1%})")
+            if len(self.columns_modified) > 5:
+                mod_parts.append(f"... +{len(self.columns_modified) - 5} more")
+            lines.append(f"columns_modified: {', '.join(mod_parts)}")
+
+        # Samples (abbreviated)
+        if self.samples_dropped_keys:
+            sample_str = ", ".join(str(k) for k in self.samples_dropped_keys[:3])
+            lines.append(f"sample_dropped_keys: [{sample_str}]")
+        if self.samples_duplicated_keys:
+            sample_str = ", ".join(str(k) for k in self.samples_duplicated_keys[:3])
+            lines.append(f"sample_duplicated_keys: [{sample_str}]")
+
+        return "\n".join(lines)
 
 
 @dataclass
@@ -332,9 +370,43 @@ class RelationshipProfile:
 
     def to_llm(self) -> str:
         """
-        Token-optimized format for LLM context.
+        Token-optimized text format for LLM context.
 
-        This is a thin wrapper over to_dict(). No summarization, no prose.
-        Agents prompt themselves for interpretation.
+        Returns human-readable text (not JSON) for consistency with
+        other to_llm() methods. Concise but complete.
         """
-        return json.dumps(self.to_dict(), indent=2, default=str)
+        lines = []
+
+        # Header
+        lines.append(f"RELATIONSHIP: {', '.join(self.on)}")
+        lines.append(f"left: {self.left_rows:,} rows, {self.left_unique_keys:,} unique keys")
+        lines.append(f"right: {self.right_rows:,} rows, {self.right_unique_keys:,} unique keys")
+
+        # Coverage
+        left_match_pct = (self.left_keys_with_match / self.left_unique_keys * 100) if self.left_unique_keys > 0 else 0
+        right_match_pct = (self.right_keys_with_match / self.right_unique_keys * 100) if self.right_unique_keys > 0 else 0
+        lines.append(f"coverage: left={left_match_pct:.1f}%, right={right_match_pct:.1f}%")
+
+        # Duplicates
+        if self.left_duplicate_keys > 0 or self.right_duplicate_keys > 0:
+            lines.append(f"duplicates: left={self.left_duplicate_keys:,}, right={self.right_duplicate_keys:,}")
+
+        # Null rates
+        if self.left_null_rate > 0 or self.right_null_rate > 0:
+            lines.append(f"null_rates: left={self.left_null_rate:.1%}, right={self.right_null_rate:.1%}")
+
+        # Cardinality hints
+        lines.append(
+            f"multiplicity: left=[{self.left_key_multiplicity_min}-{self.left_key_multiplicity_max}], "
+            f"right=[{self.right_key_multiplicity_min}-{self.right_key_multiplicity_max}]"
+        )
+
+        # Samples (abbreviated)
+        if self.samples_left_unmatched:
+            sample_str = ", ".join(str(k) for k in self.samples_left_unmatched[:3])
+            lines.append(f"sample_left_unmatched: [{sample_str}]")
+        if self.samples_right_unmatched:
+            sample_str = ", ".join(str(k) for k in self.samples_right_unmatched[:3])
+            lines.append(f"sample_right_unmatched: [{sample_str}]")
+
+        return "\n".join(lines)

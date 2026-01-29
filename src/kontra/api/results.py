@@ -9,12 +9,15 @@ for the public Python API.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import yaml
+
+_logger = logging.getLogger(__name__)
 
 
 # --- Unique rule sampling helpers (shared by multiple methods) ---
@@ -34,7 +37,7 @@ def _filter_samples_polars(
     """
     Filter samples with special handling for unique rule.
 
-    Works with both DataFrame and LazyFrame sources. Adds _row_index,
+    Works with both DataFrame and LazyFrame sources. Adds row_index,
     and for unique rules adds _duplicate_count sorted by worst offenders.
 
     Args:
@@ -55,7 +58,7 @@ def _filter_samples_polars(
         lf = source
 
     # Add row index
-    lf = lf.with_row_index("_row_index")
+    lf = lf.with_row_index("row_index")
 
     # Special case: unique rule - add duplicate count, sort by worst offenders
     if _is_unique_rule(rule):
@@ -83,7 +86,7 @@ def _build_unique_sample_query_sql(
     Build SQL query for sampling unique rule violations.
 
     Returns query that finds duplicate values, orders by worst offenders,
-    and includes _duplicate_count and _row_index.
+    and includes _duplicate_count and row_index.
 
     Args:
         table: Fully qualified table name
@@ -99,7 +102,7 @@ def _build_unique_sample_query_sql(
     if dialect == "mssql":
         return f"""
             SELECT t.*, dup._duplicate_count,
-                   ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS _row_index
+                   ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS row_index
             FROM {table} t
             JOIN (
                 SELECT {col}, COUNT(*) as _duplicate_count
@@ -113,7 +116,7 @@ def _build_unique_sample_query_sql(
     else:
         return f"""
             SELECT t.*, dup._duplicate_count,
-                   ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS _row_index
+                   ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS row_index
             FROM {table} t
             JOIN (
                 SELECT {col}, COUNT(*) as _duplicate_count
@@ -144,6 +147,7 @@ class FailureSamples:
         to_dict(): Convert to list of dicts
         to_json(): Convert to JSON string
         to_llm(): Token-optimized format for LLM context
+        to_dataframe(): Convert to Polars DataFrame for analysis
     """
 
     def __init__(self, samples: List[Dict[str, Any]], rule_id: str):
@@ -199,7 +203,7 @@ class FailureSamples:
 
         for i, row in enumerate(self._samples[:10]):  # Limit to 10 for token efficiency
             # Extract special columns for prefix
-            row_idx = row.get("_row_index")
+            row_idx = row.get("row_index")
             dup_count = row.get("_duplicate_count")
 
             # Build prefix with metadata
@@ -214,7 +218,7 @@ class FailureSamples:
             parts = []
             for k, v in row.items():
                 # Skip special columns (already in prefix)
-                if k in ("_row_index", "_duplicate_count"):
+                if k in ("row_index", "_duplicate_count"):
                     continue
                 if v is None:
                     parts.append(f"{k}=None")
@@ -228,6 +232,23 @@ class FailureSamples:
             lines.append(f"... +{len(self._samples) - 10} more rows")
 
         return "\n".join(lines)
+
+    def to_dataframe(self) -> "pl.DataFrame":
+        """
+        Convert samples to a Polars DataFrame.
+
+        Returns:
+            Polars DataFrame with sample rows
+
+        Example:
+            >>> samples = result.sample_failures("COL:email:not_null")
+            >>> df = samples.to_dataframe()
+            >>> df.filter(pl.col("status") == "active")
+        """
+        import polars as pl
+        if not self._samples:
+            return pl.DataFrame()
+        return pl.DataFrame(self._samples)
 
 
 class SampleReason:
@@ -435,7 +456,7 @@ class RuleResult:
             parts.append(f"\n  Samples ({len(self.samples)}):")
             for i, row in enumerate(self.samples[:5]):
                 # Extract metadata
-                row_idx = row.get("_row_index")
+                row_idx = row.get("row_index")
                 dup_count = row.get("_duplicate_count")
                 prefix_parts = []
                 if row_idx is not None:
@@ -447,7 +468,7 @@ class RuleResult:
                 # Format data columns
                 data_parts = []
                 for k, v in row.items():
-                    if k in ("_row_index", "_duplicate_count"):
+                    if k in ("row_index", "_duplicate_count"):
                         continue
                     if v is None:
                         data_parts.append(f"{k}=None")
@@ -568,6 +589,22 @@ class ValidationResult:
                 print("Validation passed")
         """
         return self.passed
+
+    def __iter__(self) -> Iterator[RuleResult]:
+        """Iterate over rule results.
+
+        Enables natural iteration:
+            for rule in result:
+                print(rule.rule_id, rule.passed)
+        """
+        return iter(self.rules)
+
+    def __len__(self) -> int:
+        """Return number of rules.
+
+        Enables len(result) to return the number of rules.
+        """
+        return len(self.rules)
 
     @property
     def blocking_failures(self) -> List[RuleResult]:
@@ -885,7 +922,11 @@ class ValidationResult:
                         from kontra.connectors.postgres import get_connection
                         db_conn = get_connection(handle.db_params)
                         owns_connection = True  # We need to close this
-                    except Exception:
+                    except ImportError as e:
+                        _logger.debug(f"PostgreSQL driver not available: {e}")
+                        db_conn = None
+                    except (OSError, ConnectionError) as e:
+                        _logger.debug(f"Could not connect to PostgreSQL for sampling: {e}")
                         db_conn = None
                 # Get table reference from handle or db_params
                 if handle.table_ref:
@@ -904,7 +945,11 @@ class ValidationResult:
                         from kontra.connectors.sqlserver import get_connection
                         db_conn = get_connection(handle.db_params)
                         owns_connection = True  # We need to close this
-                    except Exception:
+                    except ImportError as e:
+                        _logger.debug(f"SQL Server driver not available: {e}")
+                        db_conn = None
+                    except (OSError, ConnectionError) as e:
+                        _logger.debug(f"Could not connect to SQL Server for sampling: {e}")
                         db_conn = None
                 # Get table reference from handle or db_params
                 if handle.table_ref:
@@ -958,7 +1003,8 @@ class ValidationResult:
                                 samples, src = self._collect_samples_for_rule(rule_obj, pred_obj.expr, n, cols_to_include)
                                 results[rule_result.rule_id] = samples
                                 samples_source = src
-                            except Exception:
+                            except (ValueError, TypeError, KeyError, OSError) as e:
+                                _logger.debug(f"Could not collect samples for rule {rule_result.rule_id}: {e}")
                                 results[rule_result.rule_id] = []
 
             # Distribute results to rule_result objects
@@ -982,8 +1028,8 @@ class ValidationResult:
             if owns_connection and db_conn is not None:
                 try:
                     db_conn.close()
-                except Exception:
-                    pass
+                except (OSError, AttributeError):
+                    pass  # Connection cleanup is best-effort
 
     def _can_sample_source(self) -> bool:
         """
@@ -1127,7 +1173,7 @@ class ValidationResult:
         """
         Apply column projection to a DataFrame before converting to dicts.
 
-        Always includes _row_index if present.
+        Always includes row_index if present.
 
         Args:
             df: Polars DataFrame
@@ -1139,10 +1185,10 @@ class ValidationResult:
         if columns is None:
             return df.to_dicts()
 
-        # Always include _row_index and _duplicate_count if present
+        # Always include row_index and _duplicate_count if present
         cols_to_select = set(columns)
-        if "_row_index" in df.columns:
-            cols_to_select.add("_row_index")
+        if "row_index" in df.columns:
+            cols_to_select.add("row_index")
         if "_duplicate_count" in df.columns:
             cols_to_select.add("_duplicate_count")
 
@@ -1239,6 +1285,17 @@ class ValidationResult:
         # Passed summary
         lines.append(f"PASSED: {self.passed_count} rules")
 
+        # Context metadata from rules (if any rules have context)
+        rules_with_context = [(r, r.context) for r in self.rules if r.context]
+        if rules_with_context:
+            ctx_parts = []
+            for rule, ctx in rules_with_context[:5]:
+                ctx_str = ", ".join(f"{k}={v}" for k, v in ctx.items())
+                ctx_parts.append(f"{rule.rule_id}: {ctx_str}")
+            lines.append("CONTEXT: " + "; ".join(ctx_parts))
+            if len(rules_with_context) > 5:
+                lines.append(f"  ... +{len(rules_with_context) - 5} more rules with context")
+
         # Run-level annotations
         if self.annotations:
             lines.append(f"ANNOTATIONS ({len(self.annotations)}):")
@@ -1274,7 +1331,7 @@ class ValidationResult:
                 tier to get actual samples. Required for preplan rules.
 
         Returns:
-            FailureSamples: Collection of failing rows with "_row_index" field.
+            FailureSamples: Collection of failing rows with "row_index" field.
             Supports to_dict(), to_json(), to_llm() methods.
             Empty if the rule passed (no failures).
 
@@ -1288,7 +1345,7 @@ class ValidationResult:
             if not result.passed:
                 samples = result.sample_failures("COL:email:not_null", n=5)
                 for row in samples:
-                    print(f"Row {row['_row_index']}: {row}")
+                    print(f"Row {row['row_index']}: {row}")
 
             # For metadata-tier rules, use upgrade_tier to get samples:
             samples = result.sample_failures("COL:id:not_null", upgrade_tier=True)
@@ -1427,11 +1484,11 @@ class ValidationResult:
                 # Try parquet first, then CSV
                 try:
                     return self._load_parquet_with_filter(source, rule, n)
-                except Exception:
+                except (OSError, IOError, ValueError) as parquet_err:
                     try:
                         return pl.read_csv(source), "polars"
-                    except Exception:
-                        raise RuntimeError(f"Cannot load data from: {source}")
+                    except (OSError, IOError, ValueError) as csv_err:
+                        raise RuntimeError(f"Cannot load data from: {source} (parquet: {parquet_err}, csv: {csv_err})")
 
         # Polars DataFrame (was passed directly)
         if isinstance(source, pl.DataFrame):
@@ -1551,7 +1608,7 @@ class ValidationResult:
             if dialect == "mssql":
                 # SQL Server syntax
                 query = f"""
-                    SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS _row_index
+                    SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS row_index
                     FROM {table}
                     WHERE {sql_filter}
                     ORDER BY (SELECT NULL)
@@ -1560,7 +1617,7 @@ class ValidationResult:
             else:
                 # PostgreSQL / DuckDB syntax
                 query = f"""
-                    SELECT *, ROW_NUMBER() OVER () - 1 AS _row_index
+                    SELECT *, ROW_NUMBER() OVER () - 1 AS row_index
                     FROM {table}
                     WHERE {sql_filter}
                     LIMIT {n}
@@ -1596,7 +1653,8 @@ class ValidationResult:
             if sql_filter:
                 try:
                     return self._query_parquet_with_duckdb(path, sql_filter, n), "sql"
-                except Exception:
+                except (ImportError, OSError, ValueError) as e:
+                    _logger.debug(f"DuckDB query failed, falling back to Polars: {e}")
                     pass  # Fall through to Polars
 
         # For local files, just return the raw data - caller will filter
@@ -1648,7 +1706,7 @@ class ValidationResult:
 
         # Build query with filter and row number
         query = f"""
-            SELECT {col_list}, ROW_NUMBER() OVER () - 1 AS _row_index
+            SELECT {col_list}, ROW_NUMBER() OVER () - 1 AS row_index
             FROM read_parquet('{escaped_path}')
             WHERE {sql_filter}
             LIMIT {n}
@@ -1718,7 +1776,7 @@ class ValidationResult:
         for rule_id, sql_filter, limit, columns in rules_to_sample:
             escaped_rule_id = rule_id.replace("'", "''")
             subquery = f"""(
-                SELECT '{escaped_rule_id}' AS _rule_id, {col_list}, ROW_NUMBER() OVER () - 1 AS _row_index
+                SELECT '{escaped_rule_id}' AS _rule_id, {col_list}, ROW_NUMBER() OVER () - 1 AS row_index
                 FROM read_parquet('{escaped_path}')
                 WHERE {sql_filter}
                 LIMIT {limit}
@@ -1786,7 +1844,7 @@ class ValidationResult:
                 escaped_rule_id = rule_id.replace("'", "''")
                 subquery = f"""(
                     SELECT TOP {limit} '{escaped_rule_id}' AS _rule_id, {col_list},
-                           ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS _row_index
+                           ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS row_index
                     FROM {table}
                     WHERE {sql_filter}
                 )"""
@@ -1803,7 +1861,7 @@ class ValidationResult:
                 escaped_rule_id = rule_id.replace("'", "''")
                 subquery = f"""(
                     SELECT '{escaped_rule_id}' AS _rule_id, {col_list},
-                           ROW_NUMBER() OVER () - 1 AS _row_index
+                           ROW_NUMBER() OVER () - 1 AS row_index
                     FROM {table}
                     WHERE {sql_filter}
                     LIMIT {limit}

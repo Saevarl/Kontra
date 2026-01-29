@@ -1,6 +1,8 @@
 # Transformation Probes
 
-Kontra provides two probes for measuring transformation effects:
+> **Experimental.** DataFrame input only. API may change.
+
+Two probes for measuring transformation effects:
 
 - `compare()` - Measure differences between before/after datasets
 - `profile_relationship()` - Measure JOIN structure between two datasets
@@ -91,18 +93,36 @@ result.to_dict()  # Returns:
 | `change_stats.changed_rows` | Rows where non-key columns differ |
 | `column_stats.modified_fraction` | Per-column: fraction of rows where value changed |
 
-### Usage
+### Property Access
 
 ```python
 result = kontra.compare(before, after, key="user_id")
 
-# Access structured output
-print(result.to_llm())  # JSON for LLM context
+# Direct attributes
+result.before_rows           # 1000
+result.after_rows            # 1200
+result.row_delta             # 200
+result.row_ratio             # 1.2
+result.preserved             # 1000
+result.dropped               # 0
+result.added                 # 0
+result.duplicated_after      # 50
+result.changed_rows          # 200
+result.unchanged_rows        # 800
+result.columns_added         # ["new_col"]
+result.columns_removed       # []
+result.columns_modified      # ["amount"]
+result.modified_fraction     # {"amount": 0.15}
 
-# Access specific fields
-print(result.row_delta)
-print(result.duplicated_after)
-print(result.samples_duplicated_keys)
+# Samples
+result.samples_duplicated_keys   # ["A123", "B456"]
+result.samples_dropped_keys      # []
+result.samples_changed_rows      # [{"key": ..., "before": ..., "after": ...}]
+
+# Output formats
+result.to_dict()   # Nested dict
+result.to_json()   # JSON string
+result.to_llm()    # Compact text for LLM context
 ```
 
 ---
@@ -184,31 +204,43 @@ profile.to_dict()  # Returns:
 | `coverage.left_keys_with_match` | Left keys that exist in right |
 | `coverage.left_keys_without_match` | Left keys not in right |
 
-### Usage
+### Property Access
 
 ```python
 profile = kontra.profile_relationship(orders, customers, on="customer_id")
 
-# Access structured output
-print(profile.to_llm())  # JSON for LLM context
+# Direct attributes
+profile.left_rows              # 10000
+profile.right_rows             # 500
+profile.left_unique_keys       # 10000
+profile.right_unique_keys      # 450
+profile.left_duplicate_keys    # 0
+profile.right_duplicate_keys   # 50
+profile.left_null_rate         # 0.0
+profile.right_null_rate        # 0.02
 
-# Access specific fields
-print(profile.right_key_multiplicity_max)
-print(profile.left_keys_without_match)
-print(profile.samples_right_duplicates)
+# Cardinality
+profile.left_key_multiplicity_min    # 1
+profile.left_key_multiplicity_max    # 1
+profile.right_key_multiplicity_min   # 1
+profile.right_key_multiplicity_max   # 3
+
+# Coverage
+profile.left_keys_with_match      # 9800
+profile.left_keys_without_match   # 200
+profile.right_keys_with_match     # 450
+profile.right_keys_without_match  # 0
+
+# Samples
+profile.samples_left_unmatched     # ["C991", "C882"]
+profile.samples_right_unmatched    # []
+profile.samples_right_duplicates   # ["C123", "C456"]
+
+# Output formats
+profile.to_dict()   # Nested dict
+profile.to_json()   # JSON string
+profile.to_llm()    # Compact text for LLM context
 ```
-
----
-
-## Output Methods
-
-Both probes support:
-
-| Method | Description |
-|--------|-------------|
-| `.to_dict()` | Nested dictionary matching schema above |
-| `.to_json()` | JSON string |
-| `.to_llm()` | JSON string (same as to_json, for LLM context) |
 
 ---
 

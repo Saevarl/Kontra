@@ -248,7 +248,7 @@ def validate_sql(
     # SQL is safe - return normalized version
     try:
         normalized = stmt.sql(dialect=sqlglot_dialect)
-    except Exception:
+    except (AttributeError, ValueError):
         normalized = sql  # Fallback to original if normalization fails
 
     return ValidationResult(
@@ -277,7 +277,7 @@ def _check_forbidden_functions(stmt: exp.Expression) -> Optional[str]:
                 sql_name = node.sql_name().lower() if hasattr(node, "sql_name") else ""
                 if sql_name in FORBIDDEN_FUNCTIONS:
                     return sql_name
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
 
             # Check class name directly for specific types

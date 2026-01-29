@@ -1,0 +1,1467 @@
+{
+  "metadata": {
+    "sizes": [
+      10000,
+      100000,
+      1000000
+    ],
+    "rule_counts": [
+      1,
+      5,
+      10,
+      20
+    ],
+    "violation_rates": [
+      0.0,
+      0.01
+    ],
+    "scenarios": [
+      "not_null",
+      "unique",
+      "mixed"
+    ],
+    "timestamp": "2026-01-27 17:31:19"
+  },
+  "results": [
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.6605839589610696,
+      "rules_per_second": 1513.8121149244155,
+      "rows_per_second": 15138121.149244154
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.6995419971644878,
+      "rules_per_second": 1429.5067402005652,
+      "rows_per_second": 14295067.402005652
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 8.008625009097159,
+      "rules_per_second": 124.86537937087574,
+      "rows_per_second": 1248653.7937087575
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 8.779458934441209,
+      "rules_per_second": 113.90223560099693,
+      "rows_per_second": 1139022.3560099693
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.49595802556723356,
+      "rules_per_second": 2016.2996633763253,
+      "rows_per_second": 20162996.633763254
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.43566699605435133,
+      "rules_per_second": 2295.3310878642865,
+      "rows_per_second": 22953310.878642865
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.4938329802826047,
+      "rules_per_second": 10124.880677549445,
+      "rows_per_second": 20249761.35509889
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.45375002082437277,
+      "rules_per_second": 11019.283240838211,
+      "rows_per_second": 22038566.481676422
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 9.695791057310998,
+      "rules_per_second": 515.6876804012611,
+      "rows_per_second": 1031375.3608025223
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 9.749457938596606,
+      "rules_per_second": 512.849025196136,
+      "rows_per_second": 1025698.0503922722
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 11.483208043500781,
+      "rules_per_second": 435.41839362824044,
+      "rows_per_second": 870836.7872564809
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 14.984624926000834,
+      "rules_per_second": 333.6753522154674,
+      "rows_per_second": 667350.7044309347
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.8647090289741755,
+      "rules_per_second": 11564.583767401196,
+      "rows_per_second": 11564583.767401196
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 1.6216249205172062,
+      "rules_per_second": 6166.654121725367,
+      "rows_per_second": 6166654.121725366
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 36.53633303474635,
+      "rules_per_second": 273.70015459651955,
+      "rows_per_second": 273700.15459651954
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 36.85729205608368,
+      "rules_per_second": 271.3167311582077,
+      "rows_per_second": 271316.7311582077
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 11.767375050112605,
+      "rules_per_second": 849.8071963725085,
+      "rows_per_second": 849807.1963725085
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 11.79633301217109,
+      "rules_per_second": 847.7210663417446,
+      "rows_per_second": 847721.0663417446
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 8.035833947360516,
+      "rules_per_second": 2488.8518268311514,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 6.93320797290653,
+      "rules_per_second": 2884.6675418010905,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 24.63395893573761,
+      "rules_per_second": 811.8873645999745,
+      "rows_per_second": 405943.68229998724
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 22.956125088967383,
+      "rules_per_second": 871.2271745553397,
+      "rows_per_second": 435613.58727766987
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 11.742417002096772,
+      "rules_per_second": 1703.2268566538492,
+      "rows_per_second": 851613.4283269246
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 12.548499973490834,
+      "rules_per_second": 1593.815997310494,
+      "rows_per_second": 796907.9986552469
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.5000409437343478,
+      "rules_per_second": 1999.8362384726256,
+      "rows_per_second": 19998362.384726256
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.45895890798419714,
+      "rules_per_second": 2178.844298702297,
+      "rows_per_second": 21788442.98702297
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 8.066999958828092,
+      "rules_per_second": 123.96182039218355,
+      "rows_per_second": 1239618.2039218354
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 8.370624971576035,
+      "rules_per_second": 119.46539277481432,
+      "rows_per_second": 1194653.9277481432
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.4582499386742711,
+      "rules_per_second": 2182.215240209362,
+      "rows_per_second": 21822152.402093623
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.4289590287953615,
+      "rules_per_second": 2331.224972250341,
+      "rows_per_second": 23312249.722503413
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.47333294060081244,
+      "rules_per_second": 10563.389046309316,
+      "rows_per_second": 21126778.092618633
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.4420829936861992,
+      "rules_per_second": 11310.093515040564,
+      "rows_per_second": 22620187.030081127
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 9.701792034320533,
+      "rules_per_second": 515.3687053187979,
+      "rows_per_second": 1030737.4106375958
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 9.096625028178096,
+      "rules_per_second": 549.6544030903533,
+      "rows_per_second": 1099308.8061807067
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 9.120250004343688,
+      "rules_per_second": 548.2305855232759,
+      "rows_per_second": 1096461.1710465518
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 8.70674999896437,
+      "rules_per_second": 574.2670916926211,
+      "rows_per_second": 1148534.1833852422
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.6615000311285257,
+      "rules_per_second": 15117.157262925444,
+      "rows_per_second": 15117157.262925444
+    },
+    {
+      "scenario": "not_null",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.6167910760268569,
+      "rules_per_second": 16212.945337044031,
+      "rows_per_second": 16212945.33704403
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 28.68133399169892,
+      "rules_per_second": 348.65881771378713,
+      "rows_per_second": 348658.8177137871
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 28.499625041149557,
+      "rules_per_second": 350.8818093417499,
+      "rows_per_second": 350881.80934174993
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 10.875958018004894,
+      "rules_per_second": 919.4592314024414,
+      "rows_per_second": 919459.2314024414
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 11.366707971319556,
+      "rules_per_second": 879.7621989789806,
+      "rows_per_second": 879762.1989789805
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 6.807459052652121,
+      "rules_per_second": 2937.9537717833487,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 7.747458061203361,
+      "rules_per_second": 2581.4918702371824,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 22.98445801716298,
+      "rules_per_second": 870.153213317694,
+      "rows_per_second": 435076.606658847
+    },
+    {
+      "scenario": "unique",
+      "rows": 10000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 22.11541694123298,
+      "rules_per_second": 904.3465042122313,
+      "rows_per_second": 452173.25210611563
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 13.23808403685689,
+      "rules_per_second": 1510.792645243593,
+      "rows_per_second": 755396.3226217964
+    },
+    {
+      "scenario": "mixed",
+      "rows": 10000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 12.477999902330339,
+      "rules_per_second": 1602.82097744406,
+      "rows_per_second": 801410.4887220301
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.4987079882994294,
+      "rules_per_second": 2005.1814357535209,
+      "rows_per_second": 200518143.5753521
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.42325002141296864,
+      "rules_per_second": 2362.669697361436,
+      "rows_per_second": 236266969.73614362
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 9.179417043924332,
+      "rules_per_second": 108.93937983369865,
+      "rows_per_second": 10893937.983369865
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 7.908083964139223,
+      "rules_per_second": 126.45288094242531,
+      "rows_per_second": 12645288.094242532
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.4872919525951147,
+      "rules_per_second": 2052.1578381797913,
+      "rows_per_second": 205215783.81797913
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.44733297545462847,
+      "rules_per_second": 2235.471237021351,
+      "rows_per_second": 223547123.70213512
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.5045420257374644,
+      "rules_per_second": 9909.9772564867,
+      "rows_per_second": 198199545.129734
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.560915912501514,
+      "rules_per_second": 8913.992077175213,
+      "rows_per_second": 178279841.54350424
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 8.947917027398944,
+      "rules_per_second": 558.7892673445411,
+      "rows_per_second": 11175785.346890822
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 9.223208064213395,
+      "rules_per_second": 542.1107238597709,
+      "rows_per_second": 10842214.477195418
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 8.84637504350394,
+      "rules_per_second": 565.2032584433094,
+      "rows_per_second": 11304065.168866187
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 9.223041939549148,
+      "rules_per_second": 542.1204883130366,
+      "rows_per_second": 10842409.766260732
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.6106250220909715,
+      "rules_per_second": 16376.662662392815,
+      "rows_per_second": 163766626.62392816
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.5369579885154963,
+      "rules_per_second": 18623.430908713275,
+      "rows_per_second": 186234309.08713275
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 29.98049999587238,
+      "rules_per_second": 333.55014097085666,
+      "rows_per_second": 3335501.409708567
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 28.288082918152213,
+      "rules_per_second": 353.5057511296776,
+      "rows_per_second": 3535057.5112967757
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 11.783541063778102,
+      "rules_per_second": 848.6413333543173,
+      "rows_per_second": 8486413.333543174
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 11.871459078975022,
+      "rules_per_second": 842.3564393790924,
+      "rows_per_second": 8423564.393790925
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 6.958874990232289,
+      "rules_per_second": 2874.0277743274128,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 7.256750017404556,
+      "rules_per_second": 2756.0547010758387,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 55.203250027261674,
+      "rules_per_second": 362.2975094785753,
+      "rows_per_second": 1811487.5473928766
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 53.940208978019655,
+      "rules_per_second": 370.78091425544704,
+      "rows_per_second": 1853904.5712772352
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 11.880500009283423,
+      "rules_per_second": 1683.4308307202557,
+      "rows_per_second": 8417154.15360128
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 18.972499994561076,
+      "rules_per_second": 1054.1573332841472,
+      "rows_per_second": 5270786.666420735
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.472750049084425,
+      "rules_per_second": 2115.2826994660286,
+      "rows_per_second": 211528269.94660285
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.41749991942197084,
+      "rules_per_second": 2395.2100431168974,
+      "rows_per_second": 239521004.31168973
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 9.121957933530211,
+      "rules_per_second": 109.62558776161758,
+      "rows_per_second": 10962558.776161758
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 8.0282500712201,
+      "rules_per_second": 124.5601458759772,
+      "rows_per_second": 12456014.58759772
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.4533330211415887,
+      "rules_per_second": 2205.883872041326,
+      "rows_per_second": 220588387.20413262
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.4362500039860606,
+      "rules_per_second": 2292.2635893705406,
+      "rows_per_second": 229226358.93705407
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.4683330189436674,
+      "rules_per_second": 10676.163750481612,
+      "rows_per_second": 213523275.00963223
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.513250008225441,
+      "rules_per_second": 9741.841051863734,
+      "rows_per_second": 194836821.0372747
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 10.941458982415497,
+      "rules_per_second": 456.9774477092791,
+      "rows_per_second": 9139548.954185583
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 9.712708066217601,
+      "rules_per_second": 514.7894867128585,
+      "rows_per_second": 10295789.73425717
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 8.817791938781738,
+      "rules_per_second": 567.0353796860848,
+      "rows_per_second": 11340707.593721693
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 9.396333014592528,
+      "rules_per_second": 532.122477165825,
+      "rows_per_second": 10642449.5433165
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.60374999884516,
+      "rules_per_second": 16563.14702961124,
+      "rows_per_second": 165631470.2961124
+    },
+    {
+      "scenario": "not_null",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.5509170005097985,
+      "rules_per_second": 18151.554573096062,
+      "rows_per_second": 181515545.73096064
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 30.910582980141044,
+      "rules_per_second": 323.5137948198727,
+      "rows_per_second": 3235137.9481987273
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 30.642832978628576,
+      "rules_per_second": 326.34058368475144,
+      "rows_per_second": 3263405.8368475144
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 12.967291986569762,
+      "rules_per_second": 771.1710363549313,
+      "rows_per_second": 7711710.3635493135
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 12.3602079693228,
+      "rules_per_second": 809.0478756360187,
+      "rows_per_second": 8090478.756360186
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 7.29195901658386,
+      "rules_per_second": 2742.747175966659,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 6.929583032615483,
+      "rules_per_second": 2886.176542782727,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 67.07420793827623,
+      "rules_per_second": 298.17720722702563,
+      "rows_per_second": 1490886.0361351282
+    },
+    {
+      "scenario": "unique",
+      "rows": 100000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 51.50620802305639,
+      "rules_per_second": 388.30270694839624,
+      "rows_per_second": 1941513.5347419812
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 15.152708045206964,
+      "rules_per_second": 1319.8960832830346,
+      "rows_per_second": 6599480.416415174
+    },
+    {
+      "scenario": "mixed",
+      "rows": 100000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 14.438874903135002,
+      "rules_per_second": 1385.1494755770448,
+      "rows_per_second": 6925747.377885223
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.5947910249233246,
+      "rules_per_second": 1681.262759687592,
+      "rows_per_second": 1681262759.687592
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.5375000182539225,
+      "rules_per_second": 1860.4650530962142,
+      "rows_per_second": 1860465053.0962143
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 9.486208902671933,
+      "rules_per_second": 105.41618999327909,
+      "rows_per_second": 105416189.99327908
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 8.387166075408459,
+      "rules_per_second": 119.22978405447869,
+      "rows_per_second": 119229784.05447868
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.5745419766753912,
+      "rules_per_second": 1740.5168649060904,
+      "rows_per_second": 1740516864.9060905
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.49408304039388895,
+      "rules_per_second": 2023.9512758883363,
+      "rows_per_second": 2023951275.8883364
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.608125003054738,
+      "rules_per_second": 8221.993792203844,
+      "rows_per_second": 1644398758.440769
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.6424159510061145,
+      "rules_per_second": 7783.119320386256,
+      "rows_per_second": 1556623864.0772512
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 12.372125056572258,
+      "rules_per_second": 404.13429197791083,
+      "rows_per_second": 80826858.39558217
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 11.011042050085962,
+      "rules_per_second": 454.0896290520447,
+      "rows_per_second": 90817925.81040893
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 9.706999990157783,
+      "rules_per_second": 515.0922020263366,
+      "rows_per_second": 103018440.40526731
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 14.252832974307239,
+      "rules_per_second": 350.8074506319699,
+      "rows_per_second": 70161490.12639399
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 0.6953750271350145,
+      "rules_per_second": 14380.729260871763,
+      "rows_per_second": 1438072926.0871763
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 0.6215829635038972,
+      "rules_per_second": 16087.957018045432,
+      "rows_per_second": 1608795701.804543
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 36.07849997933954,
+      "rules_per_second": 277.17338597021853,
+      "rows_per_second": 27717338.597021855
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 33.142332918941975,
+      "rules_per_second": 301.7289104076514,
+      "rows_per_second": 30172891.040765144
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 12.880833935923874,
+      "rules_per_second": 776.3472497002386,
+      "rows_per_second": 77634724.97002387
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 19.973291899077594,
+      "rules_per_second": 500.6685953686893,
+      "rows_per_second": 50066859.53686893
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 7.37700005993247,
+      "rules_per_second": 2711.1291632798334,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 7.191415992565453,
+      "rules_per_second": 2781.093462077033,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 469.50829203706235,
+      "rules_per_second": 42.59775671527699,
+      "rows_per_second": 2129887.8357638493
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 419.1095409914851,
+      "rules_per_second": 47.72022119249805,
+      "rows_per_second": 2386011.059624903
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.0,
+      "duration_ms": 15.108791994862258,
+      "rules_per_second": 1323.7325662303774,
+      "rows_per_second": 66186628.31151887
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.0,
+      "duration_ms": 34.0120829641819,
+      "rules_per_second": 588.0263205597254,
+      "rows_per_second": 29401316.02798627
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.5856659263372421,
+      "rules_per_second": 1707.4580490861154,
+      "rows_per_second": 1707458049.0861154
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.7277920376509428,
+      "rules_per_second": 1374.0188793870966,
+      "rows_per_second": 1374018879.3870966
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 12.025165953673422,
+      "rules_per_second": 83.15893550679208,
+      "rows_per_second": 83158935.50679208
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 11.14229194354266,
+      "rules_per_second": 89.74814203998078,
+      "rows_per_second": 89748142.03998077
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.5843749968335032,
+      "rules_per_second": 1711.2299557965418,
+      "rows_per_second": 1711229955.7965417
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 1,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.6422089645639062,
+      "rules_per_second": 1557.1255699911521,
+      "rows_per_second": 1557125569.991152
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.7145419949665666,
+      "rules_per_second": 6997.489350131129,
+      "rows_per_second": 1399497870.0262258
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.6192919099703431,
+      "rules_per_second": 8073.736988166763,
+      "rows_per_second": 1614747397.6333525
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 19.84491595067084,
+      "rules_per_second": 251.95370000198866,
+      "rows_per_second": 50390740.000397734
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 15.32016706187278,
+      "rules_per_second": 326.36719820395916,
+      "rows_per_second": 65273439.640791826
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 11.513707926496863,
+      "rules_per_second": 434.2649676298754,
+      "rows_per_second": 86852993.52597508
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 5,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 17.52958307042718,
+      "rules_per_second": 285.23211190545186,
+      "rows_per_second": 57046422.38109037
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 0.8600829169154167,
+      "rules_per_second": 11626.785979965502,
+      "rows_per_second": 1162678597.99655
+    },
+    {
+      "scenario": "not_null",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 0.7237499812617898,
+      "rules_per_second": 13816.926091750556,
+      "rows_per_second": 1381692609.1750557
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 52.10095795337111,
+      "rules_per_second": 191.93505057910295,
+      "rows_per_second": 19193505.057910297
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 40.739124990068376,
+      "rules_per_second": 245.4642804045953,
+      "rows_per_second": 24546428.040459532
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 17.472416977398098,
+      "rules_per_second": 572.3306634071155,
+      "rows_per_second": 57233066.34071154
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 10,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 29.2602910194546,
+      "rules_per_second": 341.7601005181799,
+      "rows_per_second": 34176010.05181799
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 7.436917047016323,
+      "rules_per_second": 2689.2864171483484,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "not_null",
+      "rows": 0,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 6.950124981813133,
+      "rules_per_second": 2877.6460930321928,
+      "rows_per_second": 0.0
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 345.31074995175004,
+      "rules_per_second": 57.91884556966321,
+      "rows_per_second": 2895942.278483161
+    },
+    {
+      "scenario": "unique",
+      "rows": 1000000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 347.4265410332009,
+      "rules_per_second": 57.56612589390156,
+      "rows_per_second": 2878306.294695078
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 20,
+      "tally": false,
+      "violation_rate": 0.01,
+      "duration_ms": 22.512874915264547,
+      "rules_per_second": 888.3805411471137,
+      "rows_per_second": 44419027.05735569
+    },
+    {
+      "scenario": "mixed",
+      "rows": 1000000,
+      "num_rules": 20,
+      "tally": true,
+      "violation_rate": 0.01,
+      "duration_ms": 41.40400001779199,
+      "rules_per_second": 483.0451162063005,
+      "rows_per_second": 24152255.810315028
+    }
+  ]
+}

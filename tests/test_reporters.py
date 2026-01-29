@@ -28,7 +28,7 @@ class TestJSONReporter:
         )
 
         assert payload["dataset_name"] == "test.parquet"
-        assert payload["validation_passed"] is True
+        assert payload["passed"] is True
         assert payload["schema_version"] == SCHEMA_VERSION
         assert "timestamp_utc" in payload
         assert "statistics" in payload
@@ -45,7 +45,7 @@ class TestJSONReporter:
             ],
         )
 
-        assert payload["validation_passed"] is False
+        assert payload["passed"] is False
         assert payload["statistics"]["rules_failed"] == 1
         assert payload["statistics"]["rules_passed"] == 1
 
@@ -196,6 +196,7 @@ class TestJSONReporter:
             dataset_name="test.parquet",
             summary={"passed": True},
             results=[],
+            pretty=False,  # Request compact output
         )
 
         # Should not have pretty-print whitespace
