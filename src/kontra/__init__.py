@@ -171,7 +171,7 @@ from kontra.config.settings import (
 
 
 def validate(
-    data: Union[str, "pl.DataFrame", "pd.DataFrame", List[Dict[str, Any]], Dict[str, Any], Any],
+    data: Union[str, "pl.DataFrame", "pd.DataFrame", List[Dict[str, Any]], Dict[str, Any], Any, None] = None,
     contract: Optional[str] = None,
     *,
     table: Optional[str] = None,
@@ -294,6 +294,11 @@ def validate(
     # Input validation - catch invalid data types early with clear errors
     # ==========================================================================
 
+    # Auto-detect: if data looks like a YAML contract file and contract is None, use it as contract
+    if isinstance(data, str) and (data.endswith('.yaml') or data.endswith('.yml')) and contract is None:
+        contract = data
+        data = None  # Will be extracted from contract's datasource field
+
     # Validate inputs
     if contract is None and rules is None:
         raise ValueError("Either contract or rules must be provided")
@@ -385,9 +390,28 @@ def validate(
     # Input validation for actual validation (not dry_run)
     # ==========================================================================
 
+    # If data is None but contract is provided, try to extract datasource from contract
+    if data is None and contract is not None:
+        from kontra.config.loader import ContractLoader
+        try:
+            contract_obj = ContractLoader.from_path(contract)
+            # "inline" is the default when no datasource specified
+            if contract_obj.datasource and contract_obj.datasource != "inline":
+                data = contract_obj.datasource
+            else:
+                raise ValueError(
+                    f"Contract '{contract}' has no 'datasource:' field.\n"
+                    "Either add 'datasource: path/to/file.parquet' to your contract YAML,\n"
+                    "or provide data explicitly: kontra.validate(data, contract='...')"
+                )
+        except ContractNotFoundError:
+            raise  # Re-raise contract not found
+        except ValueError:
+            raise  # Re-raise our custom error
+
     # Check for None
     if data is None:
-        raise InvalidDataError("NoneType", detail="Data cannot be None")
+        raise InvalidDataError("NoneType", detail="Data cannot be None. Provide a file path, DataFrame, or datasource name.")
 
     # Check for cursor instead of connection (common mistake)
     if is_cursor_object(data):

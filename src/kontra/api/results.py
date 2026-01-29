@@ -2239,7 +2239,7 @@ class Suggestions:
         """
         contract = {
             "name": contract_name,
-            "dataset": self.source,
+            "datasource": self.source,
             "rules": self.to_dict(),
         }
         return yaml.dump(contract, default_flow_style=False, sort_keys=False)
