@@ -294,6 +294,7 @@ def preplan_single_parquet(
 
     # Decide each rule at dataset-level (PASS/FAIL/UNKNOWN by metadata)
     rule_decisions: Dict[str, Decision] = {}
+    fail_details: Dict[str, Dict[str, Any]] = {}
     for rule_id, col, op, val in predicates:
         # Handle dtype checks via schema (no row-group stats needed)
         if op == "dtype":
@@ -305,6 +306,7 @@ def preplan_single_parquet(
                 rule_decisions[rule_id] = "pass_meta"
             else:
                 rule_decisions[rule_id] = "fail_meta"
+                fail_details[rule_id] = {"expected": val, "actual": actual_type}
             continue
 
         # Handle row-group stats-based predicates
@@ -351,5 +353,6 @@ def preplan_single_parquet(
             "rg_kept": len(keep_rg),
             "total_rows": md.num_rows,
         },
+        fail_details=fail_details,
     )
     return preplan

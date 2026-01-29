@@ -864,6 +864,10 @@ class ValidationEngine:
         #   3. API tally= parameter (tally_is_override=False)
         #   4. Default (False for speed)
         def _effective_tally(rule) -> bool:
+            # Schema-level rules (dtype) ignore tally - they're binary, not countable
+            # Always return False so preplan can handle them
+            if rule.name == "dtype":
+                return False
             # CLI tally override beats everything
             if self.tally_is_override and self.tally is not None:
                 return self.tally
@@ -978,11 +982,18 @@ class ValidationEngine:
                         handled_ids_meta.add(rid)
                         pass_meta += 1
                     elif decision == "fail_meta":
+                        # Build appropriate message based on rule type
+                        details = pre.fail_details.get(rid, {})
+                        if details.get("expected") and details.get("actual"):
+                            # dtype mismatch - compact format
+                            msg = f"{details['expected']} ≠ {details['actual']}"
+                        else:
+                            msg = "Failed: violation proven by Parquet metadata"
                         meta_results_by_id[rid] = {
                             "rule_id": rid,
                             "passed": False,
                             "failed_count": 1,
-                            "message": "Failed: violation proven by Parquet metadata (null values detected)",
+                            "message": msg,
                             "execution_source": "metadata",
                             "severity": rule_severity_map.get(rid, "blocking"),
                             "tally": rule_tally_map.get(rid, False),
@@ -1076,13 +1087,32 @@ class ValidationEngine:
                                 "rule_id": rid,
                                 "passed": True,
                                 "failed_count": 0,
-                                "message": "Proven by metadata (pg_stats)",
+                                "message": "Proven by metadata (PostgreSQL catalog)",
                                 "execution_source": "metadata",
                                 "severity": rule_severity_map.get(rid, "blocking"),
                                 "tally": rule_tally_map.get(rid, False),
                             }
                             handled_ids_meta.add(rid)
                             pass_meta += 1
+                        elif decision == "fail_meta":
+                            # Build appropriate message based on rule type
+                            details = pre.fail_details.get(rid, {})
+                            if details.get("expected") and details.get("actual"):
+                                # dtype mismatch - compact format
+                                msg = f"{details['expected']} ≠ {details['actual']}"
+                            else:
+                                msg = "Failed: violation proven by PostgreSQL catalog metadata"
+                            meta_results_by_id[rid] = {
+                                "rule_id": rid,
+                                "passed": False,
+                                "failed_count": 1,
+                                "message": msg,
+                                "execution_source": "metadata",
+                                "severity": rule_severity_map.get(rid, "blocking"),
+                                "tally": rule_tally_map.get(rid, False),
+                            }
+                            handled_ids_meta.add(rid)
+                            fail_meta += 1
                         else:
                             unknown += 1
 
@@ -1124,13 +1154,32 @@ class ValidationEngine:
                                 "rule_id": rid,
                                 "passed": True,
                                 "failed_count": 0,
-                                "message": "Proven by metadata (SQL Server constraints)",
+                                "message": "Proven by metadata (SQL Server catalog)",
                                 "execution_source": "metadata",
                                 "severity": rule_severity_map.get(rid, "blocking"),
                                 "tally": rule_tally_map.get(rid, False),
                             }
                             handled_ids_meta.add(rid)
                             pass_meta += 1
+                        elif decision == "fail_meta":
+                            # Build appropriate message based on rule type
+                            details = pre.fail_details.get(rid, {})
+                            if details.get("expected") and details.get("actual"):
+                                # dtype mismatch - compact format
+                                msg = f"{details['expected']} ≠ {details['actual']}"
+                            else:
+                                msg = "Failed: violation proven by SQL Server catalog metadata"
+                            meta_results_by_id[rid] = {
+                                "rule_id": rid,
+                                "passed": False,
+                                "failed_count": 1,
+                                "message": msg,
+                                "execution_source": "metadata",
+                                "severity": rule_severity_map.get(rid, "blocking"),
+                                "tally": rule_tally_map.get(rid, False),
+                            }
+                            handled_ids_meta.add(rid)
+                            fail_meta += 1
                         else:
                             unknown += 1
 
@@ -1488,9 +1537,12 @@ class ValidationEngine:
                 msg = r.get("message", "Failed")
                 failed_count = r.get("failed_count", 0)
                 is_tally = r.get("tally", True)
-                # Include failure count if available
-                detail = f": {msg}"
-                if failed_count > 0:
+
+                # dtype is binary (schema-level) - show message directly, no count
+                is_dtype_rule = rule_id.endswith(":dtype")
+                if is_dtype_rule:
+                    detail = f": {msg}"
+                elif failed_count > 0:
                     failure_word = "failure" if failed_count == 1 else "failures"
                     if is_tally:
                         detail = f": {failed_count:,} {failure_word}"
@@ -1500,6 +1552,8 @@ class ValidationEngine:
                         if not hasattr(self, '_tally_hint_shown'):
                             detail += " (use --tally for exact count)"
                             self._tally_hint_shown = True
+                else:
+                    detail = f": {msg}"
 
                 # Use different icon for warning/info
                 icon = "❌" if severity == "blocking" else ("⚠️" if severity == "warning" else "ℹ️")

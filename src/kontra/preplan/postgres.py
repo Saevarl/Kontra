@@ -19,6 +19,57 @@ from .types import PrePlan, Decision
 Predicate = Tuple[str, str, str, Any]
 
 
+def _pg_dtype_matches(pg_type: str, udt_name: str, expected: str) -> bool:
+    """
+    Check if PostgreSQL data type matches expected dtype specification.
+
+    Args:
+        pg_type: data_type from information_schema (e.g., 'integer', 'character varying')
+        udt_name: udt_name from information_schema (e.g., 'int4', 'varchar')
+        expected: User's expected dtype (e.g., 'int', 'string', 'int64')
+    """
+    pg_type = (pg_type or "").lower()
+    udt_name = (udt_name or "").lower()
+    expected = expected.lower()
+
+    # Integer family
+    if expected in ("int", "integer"):
+        return pg_type in ("integer", "smallint", "bigint") or udt_name in ("int2", "int4", "int8")
+    if expected == "int8" or expected == "int16":
+        return pg_type == "smallint" or udt_name == "int2"
+    if expected == "int32":
+        return pg_type == "integer" or udt_name == "int4"
+    if expected == "int64":
+        return pg_type == "bigint" or udt_name == "int8"
+
+    # Float family
+    if expected in ("float", "float64", "double"):
+        return pg_type in ("double precision", "real", "numeric") or udt_name in ("float4", "float8", "numeric")
+    if expected == "float32":
+        return pg_type == "real" or udt_name == "float4"
+    if expected == "numeric":
+        return pg_type in ("integer", "smallint", "bigint", "double precision", "real", "numeric")
+
+    # String family
+    if expected in ("string", "str", "utf8", "text"):
+        return pg_type in ("character varying", "text", "character", "varchar", "char") or udt_name in ("varchar", "text", "bpchar")
+
+    # Boolean
+    if expected in ("bool", "boolean"):
+        return pg_type == "boolean" or udt_name == "bool"
+
+    # Date/time
+    if expected == "date":
+        return pg_type == "date" or udt_name == "date"
+    if expected == "datetime":
+        return pg_type.startswith("timestamp") or udt_name.startswith("timestamp")
+    if expected == "time":
+        return pg_type.startswith("time") or udt_name.startswith("time")
+
+    # Exact match fallback
+    return expected == pg_type or expected == udt_name
+
+
 def fetch_pg_stats_for_preplan(
     params: PostgresConnectionParams,
 ) -> Dict[str, Dict[str, Any]]:
@@ -55,26 +106,35 @@ def fetch_pg_stats_for_preplan(
                 "page_count": row[1] if row else 0,
             }
 
-            # Column-level stats from pg_stats
+            # Column-level stats from pg_stats joined with column types
             cur.execute(
                 """
-                SELECT attname AS column_name,
-                       null_frac,
-                       n_distinct,
-                       most_common_vals::text
-                FROM pg_stats
-                WHERE schemaname = %s AND tablename = %s
+                SELECT
+                    c.column_name,
+                    s.null_frac,
+                    s.n_distinct,
+                    s.most_common_vals::text,
+                    c.data_type,
+                    c.udt_name
+                FROM information_schema.columns c
+                LEFT JOIN pg_stats s
+                    ON s.schemaname = c.table_schema
+                    AND s.tablename = c.table_name
+                    AND s.attname = c.column_name
+                WHERE c.table_schema = %s AND c.table_name = %s
                 """,
                 (params.schema, params.table),
             )
 
             result: Dict[str, Dict[str, Any]] = {"__table__": table_stats}
             for col_row in cur.fetchall():
-                col_name, null_frac, n_distinct, mcv = col_row
+                col_name, null_frac, n_distinct, mcv, data_type, udt_name = col_row
                 result[col_name] = {
                     "null_frac": null_frac,
                     "n_distinct": n_distinct,
                     "most_common_vals": mcv,
+                    "data_type": data_type,
+                    "udt_name": udt_name,
                 }
 
             return result
@@ -110,6 +170,7 @@ def preplan_postgres(
     row_estimate = table_stats.get("row_estimate", 0)
 
     rule_decisions: Dict[str, Decision] = {}
+    fail_details: Dict[str, Dict[str, Any]] = {}
 
     for rule_id, column, op, value in predicates:
         col_stats = pg_stats.get(column)
@@ -158,6 +219,21 @@ def preplan_postgres(
             else:
                 rule_decisions[rule_id] = "unknown"
 
+        elif op == "dtype":
+            # Check column type from information_schema
+            data_type = col_stats.get("data_type")
+            udt_name = col_stats.get("udt_name")
+            if data_type is not None:
+                if _pg_dtype_matches(data_type, udt_name, value):
+                    rule_decisions[rule_id] = "pass_meta"
+                else:
+                    rule_decisions[rule_id] = "fail_meta"
+                    # Use udt_name if available, else data_type for actual
+                    actual = udt_name if udt_name else data_type
+                    fail_details[rule_id] = {"expected": value, "actual": actual}
+            else:
+                rule_decisions[rule_id] = "unknown"
+
         else:
             # Other ops (>=, <=, ==, etc.) - pg_stats doesn't have min/max for general use
             # (histogram_bounds could be used but it's complex)
@@ -172,6 +248,7 @@ def preplan_postgres(
             "row_estimate": row_estimate,  # Keep for backwards compatibility
             "columns_with_stats": len([k for k in pg_stats if k != "__table__"]),
         },
+        fail_details=fail_details,
     )
 
 
