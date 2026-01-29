@@ -7,7 +7,7 @@ from kontra.rule_defs.base import BaseRule
 
 # (rule_id, column, op, value)  -- op ∈ ALLOWED_OPS
 PredicateT = Tuple[str, str, str, Any]
-ALLOWED_OPS = {"==", "!=", ">=", ">", "<=", "<", "^=", "not_null"}
+ALLOWED_OPS = {"==", "!=", ">=", ">", "<=", "<", "^=", "not_null", "dtype"}
 
 
 def _normalize(pairs: Iterable[PredicateT]) -> List[PredicateT]:
@@ -108,6 +108,13 @@ def _conservative_builtin_mapping(rule: BaseRule) -> List[PredicateT]:
             body = pat[1:]
             if body and all(ch.isalnum() or ch in {"_", "-", ".", "@"} for ch in body):
                 out.append((rid, col, "^=", body))
+
+    # dtype(column, type) → schema check
+    if name == "dtype":
+        col = params.get("column")
+        dtype = params.get("type") or params.get("dtype")
+        if isinstance(col, str) and col and isinstance(dtype, str) and dtype:
+            out.append((rid, col, "dtype", dtype))
 
     return out
 
