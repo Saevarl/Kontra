@@ -1251,8 +1251,13 @@ class ValidationResult:
         if blocking:
             parts = []
             for r in blocking[:5]:
-                count = f"({r.failed_count:,})" if r.failed_count > 0 else ""
-                parts.append(f"{r.rule_id} {count}".strip())
+                # dtype is binary - show message instead of count
+                if r.rule_id.endswith(":dtype"):
+                    parts.append(f"{r.rule_id} ({r.message})")
+                elif r.failed_count > 0:
+                    parts.append(f"{r.rule_id} ({r.failed_count:,})")
+                else:
+                    parts.append(r.rule_id)
             line = "BLOCKING: " + ", ".join(parts)
             if len(blocking) > 5:
                 line += f" ... +{len(blocking) - 5} more"
@@ -1263,8 +1268,13 @@ class ValidationResult:
         if warnings:
             parts = []
             for r in warnings[:5]:
-                count = f"({r.failed_count:,})" if r.failed_count > 0 else ""
-                parts.append(f"{r.rule_id} {count}".strip())
+                # dtype is binary - show message instead of count
+                if r.rule_id.endswith(":dtype"):
+                    parts.append(f"{r.rule_id} ({r.message})")
+                elif r.failed_count > 0:
+                    parts.append(f"{r.rule_id} ({r.failed_count:,})")
+                else:
+                    parts.append(r.rule_id)
             line = "WARNING: " + ", ".join(parts)
             if len(warnings) > 5:
                 line += f" ... +{len(warnings) - 5} more"
@@ -1275,8 +1285,13 @@ class ValidationResult:
         if info:
             parts = []
             for r in info[:5]:
-                count = f"({r.failed_count:,})" if r.failed_count > 0 else ""
-                parts.append(f"{r.rule_id} {count}".strip())
+                # dtype is binary - show message instead of count
+                if r.rule_id.endswith(":dtype"):
+                    parts.append(f"{r.rule_id} ({r.message})")
+                elif r.failed_count > 0:
+                    parts.append(f"{r.rule_id} ({r.failed_count:,})")
+                else:
+                    parts.append(r.rule_id)
             line = "INFO: " + ", ".join(parts)
             if len(info) > 5:
                 line += f" ... +{len(info) - 5} more"

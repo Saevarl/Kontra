@@ -25,6 +25,55 @@ from .types import PrePlan, Decision
 Predicate = Tuple[str, str, str, Any]
 
 
+def _sqlserver_dtype_matches(sql_type: str, expected: str) -> bool:
+    """
+    Check if SQL Server data type matches expected dtype specification.
+
+    Args:
+        sql_type: Type name from sys.types (e.g., 'int', 'varchar', 'bigint')
+        expected: User's expected dtype (e.g., 'int', 'string', 'int64')
+    """
+    sql_type = (sql_type or "").lower()
+    expected = expected.lower()
+
+    # Integer family
+    if expected in ("int", "integer"):
+        return sql_type in ("tinyint", "smallint", "int", "bigint")
+    if expected in ("int8", "int16"):
+        return sql_type in ("tinyint", "smallint")
+    if expected == "int32":
+        return sql_type == "int"
+    if expected == "int64":
+        return sql_type == "bigint"
+
+    # Float family
+    if expected in ("float", "float64", "double"):
+        return sql_type in ("float", "real", "decimal", "numeric", "money", "smallmoney")
+    if expected == "float32":
+        return sql_type == "real"
+    if expected == "numeric":
+        return sql_type in ("tinyint", "smallint", "int", "bigint", "float", "real", "decimal", "numeric")
+
+    # String family
+    if expected in ("string", "str", "utf8", "text"):
+        return sql_type in ("char", "varchar", "text", "nchar", "nvarchar", "ntext")
+
+    # Boolean
+    if expected in ("bool", "boolean"):
+        return sql_type == "bit"
+
+    # Date/time
+    if expected == "date":
+        return sql_type == "date"
+    if expected == "datetime":
+        return sql_type in ("datetime", "datetime2", "smalldatetime", "datetimeoffset")
+    if expected == "time":
+        return sql_type == "time"
+
+    # Exact match fallback
+    return expected == sql_type
+
+
 def fetch_sqlserver_metadata(
     params: SqlServerConnectionParams,
 ) -> Dict[str, Dict[str, Any]]:
@@ -63,16 +112,18 @@ def fetch_sqlserver_metadata(
             "page_count": int(row[1]) if row and row[1] else 0,
         }
 
-        # Column-level metadata
+        # Column-level metadata with type information
         cursor.execute(
             """
             SELECT
                 c.name AS column_name,
                 c.is_nullable,
-                c.is_identity
+                c.is_identity,
+                t.name AS type_name
             FROM sys.columns c
             JOIN sys.objects o ON c.object_id = o.object_id
             JOIN sys.schemas s ON o.schema_id = s.schema_id
+            JOIN sys.types t ON c.user_type_id = t.user_type_id
             WHERE s.name = %s AND o.name = %s
             """,
             (params.schema, params.table),
@@ -80,11 +131,12 @@ def fetch_sqlserver_metadata(
 
         result: Dict[str, Dict[str, Any]] = {"__table__": table_stats}
         for col_row in cursor.fetchall():
-            col_name, is_nullable, is_identity = col_row
+            col_name, is_nullable, is_identity, type_name = col_row
             result[col_name] = {
                 "is_nullable": bool(is_nullable),
                 "is_identity": bool(is_identity),
                 "has_unique_constraint": False,  # Will be updated below
+                "type_name": type_name,
             }
 
         # Check for unique constraints/indexes
@@ -143,6 +195,7 @@ def preplan_sqlserver(
     row_estimate = table_stats.get("row_estimate", 0)
 
     rule_decisions: Dict[str, Decision] = {}
+    fail_details: Dict[str, Dict[str, Any]] = {}
 
     for rule_id, column, op, value in predicates:
         col_meta = metadata.get(column)
@@ -171,6 +224,18 @@ def preplan_sqlserver(
             else:
                 rule_decisions[rule_id] = "unknown"
 
+        elif op == "dtype":
+            # Check column type from sys.types
+            type_name = col_meta.get("type_name")
+            if type_name is not None:
+                if _sqlserver_dtype_matches(type_name, value):
+                    rule_decisions[rule_id] = "pass_meta"
+                else:
+                    rule_decisions[rule_id] = "fail_meta"
+                    fail_details[rule_id] = {"expected": value, "actual": type_name}
+            else:
+                rule_decisions[rule_id] = "unknown"
+
         else:
             # Other ops - would need actual data statistics
             rule_decisions[rule_id] = "unknown"
@@ -184,6 +249,7 @@ def preplan_sqlserver(
             "row_estimate": row_estimate,  # Keep for backwards compatibility
             "columns_with_metadata": len([k for k in metadata if k != "__table__"]),
         },
+        fail_details=fail_details,
     )
 
 
