@@ -35,6 +35,94 @@ def _schema_names(md_schema) -> List[str]:
             return []
 
 
+def _get_schema_types(md_schema) -> Dict[str, str]:
+    """
+    Extract column name -> normalized type string from Parquet schema.
+    Maps PyArrow types to our dtype family names.
+    """
+    type_map: Dict[str, str] = {}
+    try:
+        arrow_schema = md_schema.to_arrow_schema()
+        for field in arrow_schema:
+            pa_type = str(field.type)
+            # Normalize to our dtype families
+            normalized = _normalize_arrow_type(pa_type)
+            type_map[field.name] = normalized
+    except (AttributeError, TypeError):
+        pass
+    return type_map
+
+
+def _normalize_arrow_type(pa_type: str) -> str:
+    """Map PyArrow type string to our dtype names."""
+    pa_type = pa_type.lower()
+
+    # Integer types
+    if pa_type in ("int8", "int16", "int32", "int64"):
+        return pa_type
+    if pa_type in ("uint8", "uint16", "uint32", "uint64"):
+        return pa_type
+
+    # Float types
+    if pa_type in ("float", "float32", "halffloat"):
+        return "float32"
+    if pa_type in ("double", "float64"):
+        return "float64"
+
+    # String types
+    if pa_type in ("string", "utf8", "large_string", "large_utf8"):
+        return "string"
+
+    # Boolean
+    if pa_type in ("bool", "boolean"):
+        return "boolean"
+
+    # Date/time
+    if pa_type.startswith("date"):
+        return "date"
+    if pa_type.startswith("timestamp") or pa_type.startswith("datetime"):
+        return "datetime"
+    if pa_type.startswith("time"):
+        return "time"
+
+    return pa_type
+
+
+def _dtype_matches(actual: str, expected: str) -> bool:
+    """Check if actual Parquet type matches expected dtype specification."""
+    actual = actual.lower()
+    expected = expected.lower()
+
+    # Exact match
+    if actual == expected:
+        return True
+
+    # Family matching for "int" / "integer"
+    if expected in ("int", "integer"):
+        return actual in ("int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64")
+
+    # Family matching for "float" / "numeric"
+    if expected == "float":
+        return actual in ("float32", "float64", "float", "double")
+    if expected == "numeric":
+        return actual in ("int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+                         "float32", "float64", "float", "double")
+
+    # String family
+    if expected in ("string", "str", "utf8", "text"):
+        return actual in ("string", "utf8", "large_string", "large_utf8")
+
+    # Boolean aliases
+    if expected in ("bool", "boolean"):
+        return actual in ("bool", "boolean")
+
+    # DateTime aliases
+    if expected == "datetime":
+        return actual in ("datetime", "timestamp")
+
+    return False
+
+
 def _rg_col_stats(rg, j) -> Optional[Dict[str, Any]]:
     """Return a safe dict of min/max/null_count for a row-group column j."""
     col = rg.column(j)
@@ -189,6 +277,7 @@ def preplan_single_parquet(
     pf = pq.ParquetFile(path, filesystem=filesystem)  # <-- Updated
     md = pf.metadata
     schema_names = _schema_names(md.schema)
+    schema_types = _get_schema_types(md.schema)  # For dtype checks
 
     # Pre-extract per-RG per-column stats into a simple map:
     # rg_stats[i][col_name] -> {"min":..., "max":..., "null_count":...}
@@ -206,6 +295,19 @@ def preplan_single_parquet(
     # Decide each rule at dataset-level (PASS/FAIL/UNKNOWN by metadata)
     rule_decisions: Dict[str, Decision] = {}
     for rule_id, col, op, val in predicates:
+        # Handle dtype checks via schema (no row-group stats needed)
+        if op == "dtype":
+            actual_type = schema_types.get(col)
+            if actual_type is None:
+                # Column not found in schema - unknown
+                rule_decisions[rule_id] = "unknown"
+            elif _dtype_matches(actual_type, val):
+                rule_decisions[rule_id] = "pass_meta"
+            else:
+                rule_decisions[rule_id] = "fail_meta"
+            continue
+
+        # Handle row-group stats-based predicates
         stats_iter = (rgc.get(col) for rgc in rg_stats)
         if _decide_fail(op, val, stats_iter):
             rule_decisions[rule_id] = "fail_meta"
