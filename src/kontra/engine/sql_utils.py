@@ -65,10 +65,15 @@ def agg_not_null(col: str, rule_id: str, dialect: Dialect = "duckdb") -> str:
 
 
 def agg_unique(col: str, rule_id: str, dialect: Dialect = "duckdb") -> str:
-    """Count duplicate values in a column."""
+    """Count duplicate values (extra rows beyond one per unique value).
+
+    Uses COUNT(col) - COUNT(DISTINCT col) to exclude NULLs from the count.
+    NULLs are not considered duplicates (NULL != NULL in SQL).
+    """
     c = esc_ident(col, dialect)
     r = esc_ident(rule_id, dialect)
-    return f"(COUNT(*) - COUNT(DISTINCT {c})) AS {r}"
+    # COUNT(col) excludes NULLs, matching Polars semantics
+    return f"(COUNT({c}) - COUNT(DISTINCT {c})) AS {r}"
 
 
 def agg_min_rows(threshold: int, rule_id: str, dialect: Dialect = "duckdb") -> str:

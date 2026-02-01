@@ -97,6 +97,30 @@ def _compute_compare(
         if k not in after.columns:
             raise ValueError(f"Key column '{k}' not found in after dataset")
 
+    # Handle empty DataFrames: cast columns to match schema
+    # Empty DataFrames have Null dtype columns which break joins
+    if len(after) == 0 and len(before) > 0:
+        # Cast after columns to match before schema for common columns
+        cast_exprs = []
+        for col in after.columns:
+            if col in before.columns:
+                cast_exprs.append(pl.col(col).cast(before[col].dtype))
+            else:
+                cast_exprs.append(pl.col(col))
+        if cast_exprs:
+            after = after.select(cast_exprs)
+
+    if len(before) == 0 and len(after) > 0:
+        # Cast before columns to match after schema for common columns
+        cast_exprs = []
+        for col in before.columns:
+            if col in after.columns:
+                cast_exprs.append(pl.col(col).cast(after[col].dtype))
+            else:
+                cast_exprs.append(pl.col(col))
+        if cast_exprs:
+            before = before.select(cast_exprs)
+
     # ==========================================================================
     # 1. Row stats
     # ==========================================================================

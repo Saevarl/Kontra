@@ -61,7 +61,7 @@ from kontra.logging import get_logger, log_exception
 _logger = get_logger(__name__)
 
 # Preplan (metadata-only) + static predicate extraction
-from kontra.preplan.planner import preplan_single_parquet
+from kontra.preplan.planner import preplan_single_parquet, preplan_parquet_glob, is_glob_pattern
 from kontra.preplan.types import PrePlan
 from kontra.rule_defs.static_predicates import extract_static_predicates
 
@@ -942,21 +942,33 @@ class ValidationEngine:
             try:
                 t0 = now_ms()
                 static_preds = extract_static_predicates(rules=rules)
-                # PyArrow filesystems expect specific path formats:
-                # - S3: 'bucket/key' (not 's3://bucket/key')
-                # - Azure: 'container/path' (not 'abfss://container@account/path')
-                if _is_s3_uri(handle.uri) and preplan_fs:
-                    preplan_path = _s3_uri_to_path(handle.uri)
-                elif _is_azure_uri(handle.uri) and preplan_fs:
-                    preplan_path = _azure_uri_to_path(handle.uri)
+
+                # Check for glob patterns - use different preplan strategy
+                if is_glob_pattern(handle.uri):
+                    # Glob patterns: use DuckDB-based expansion, schema-only preplan
+                    pre: PrePlan = preplan_parquet_glob(
+                        glob_path=handle.uri,
+                        required_columns=compiled_full.required_cols,
+                        predicates=static_preds,
+                        fs_opts=handle.fs_opts,
+                    )
                 else:
-                    preplan_path = handle.uri
-                pre: PrePlan = preplan_single_parquet(
-                    path=preplan_path,
-                    required_columns=compiled_full.required_cols,  # DC-driven columns
-                    predicates=static_preds,
-                    filesystem=preplan_fs,
-                )
+                    # Single file: use pyarrow with full metadata preplan
+                    # PyArrow filesystems expect specific path formats:
+                    # - S3: 'bucket/key' (not 's3://bucket/key')
+                    # - Azure: 'container/path' (not 'abfss://container@account/path')
+                    if _is_s3_uri(handle.uri) and preplan_fs:
+                        preplan_path = _s3_uri_to_path(handle.uri)
+                    elif _is_azure_uri(handle.uri) and preplan_fs:
+                        preplan_path = _azure_uri_to_path(handle.uri)
+                    else:
+                        preplan_path = handle.uri
+                    pre: PrePlan = preplan_single_parquet(
+                        path=preplan_path,
+                        required_columns=compiled_full.required_cols,  # DC-driven columns
+                        predicates=static_preds,
+                        filesystem=preplan_fs,
+                    )
                 preplan_analyze_ms = now_ms() - t0
 
                 # Register metadata-based rule decisions (pass/fail), unknowns remain

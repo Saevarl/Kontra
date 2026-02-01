@@ -224,8 +224,17 @@ def allowed_values(
 
     Returns:
         Rule dict for use with kontra.validate()
+
+    Raises:
+        TypeError: If values is a string instead of a list
     """
     _validate_column(column, "allowed_values")
+    if isinstance(values, str):
+        raise TypeError(
+            f"allowed_values() expects a list of values, not a string. "
+            f"Use: rules.allowed_values('{column}', ['{values}']) instead of "
+            f"rules.allowed_values('{column}', '{values}')"
+        )
     return _build_rule("allowed_values", {"column": column, "values": values}, severity, id, tally, context)
 
 
@@ -562,8 +571,17 @@ def disallowed_values(
 
     Example:
         rules.disallowed_values("status", ["deleted", "banned", "spam"])
+
+    Raises:
+        TypeError: If values is a string instead of a list
     """
     _validate_column(column, "disallowed_values")
+    if isinstance(values, str):
+        raise TypeError(
+            f"disallowed_values() expects a list of values, not a string. "
+            f"Use: rules.disallowed_values('{column}', ['{values}']) instead of "
+            f"rules.disallowed_values('{column}', '{values}')"
+        )
     return _build_rule("disallowed_values", {"column": column, "values": values}, severity, id, tally, context)
 
 

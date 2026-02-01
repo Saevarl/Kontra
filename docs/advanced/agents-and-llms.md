@@ -237,7 +237,7 @@ result = kontra.validate("data.parquet", rules=rules)
 from kontra.errors import (
     KontraError,           # base class
     ContractNotFoundError,
-    DataNotFoundError,
+    InvalidDataError,
     ConnectionError,
 )
 
@@ -245,8 +245,11 @@ try:
     result = kontra.validate("data.parquet", "contract.yml")
 except ContractNotFoundError as e:
     return {"error": "contract_not_found", "message": str(e)}
-except DataNotFoundError as e:
-    return {"error": "data_not_found", "message": str(e)}
+except InvalidDataError as e:
+    return {"error": "invalid_data", "message": str(e)}
+except RuntimeError as e:
+    # File access errors (missing files, permissions)
+    return {"error": "data_access_error", "message": str(e)}
 except KontraError as e:
     return {"error": "kontra_error", "message": str(e)}
 ```

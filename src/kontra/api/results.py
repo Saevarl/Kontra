@@ -1578,7 +1578,7 @@ class ValidationResult:
                         conn.close()
 
             elif handle.scheme in ("file", None) or (handle.uri and not handle.scheme):
-                # File-based
+                # File-based (local)
                 uri = handle.uri
                 if uri.lower().endswith(".parquet"):
                     return self._load_parquet_with_filter(uri, rule, n)
@@ -1586,6 +1586,10 @@ class ValidationResult:
                     return pl.read_csv(uri), "polars"
                 else:
                     return self._load_parquet_with_filter(uri, rule, n)
+
+            elif handle.scheme in ("s3", "abfss", "abfs", "az"):
+                # S3 or Azure - use DuckDB for cloud parquet
+                return self._load_cloud_parquet_with_filter(handle, rule, n)
 
         raise RuntimeError(f"Unsupported data source type: {type(source)}")
 
@@ -1675,6 +1679,86 @@ class ValidationResult:
         # For local files, just return the raw data - caller will filter
         # (Don't filter here to avoid double-filtering in _collect_samples_for_rule)
         return pl.read_parquet(path), "polars"
+
+    def _load_cloud_parquet_with_filter(
+        self,
+        handle: Any,
+        rule: Any,
+        n: int,
+    ) -> Tuple["pl.DataFrame", str]:
+        """
+        Load cloud Parquet file (S3/Azure) with predicate pushdown.
+
+        Uses handle.fs_opts for credentials instead of environment variables.
+        """
+        import duckdb
+        import polars as pl
+
+        path = handle.uri
+        fs_opts = handle.fs_opts or {}
+
+        con = duckdb.connect()
+
+        try:
+            # Configure S3 credentials from fs_opts (keys are s3_* prefixed per handle.py)
+            if handle.scheme == "s3":
+                con.execute("INSTALL httpfs; LOAD httpfs;")
+                if fs_opts.get("s3_access_key_id"):
+                    con.execute(f"SET s3_access_key_id='{fs_opts['s3_access_key_id']}';")
+                if fs_opts.get("s3_secret_access_key"):
+                    con.execute(f"SET s3_secret_access_key='{fs_opts['s3_secret_access_key']}';")
+                if fs_opts.get("s3_endpoint"):
+                    raw_endpoint = fs_opts["s3_endpoint"]
+                    endpoint = raw_endpoint.replace("http://", "").replace("https://", "")
+                    con.execute(f"SET s3_endpoint='{endpoint}';")
+                    # Check if SSL should be disabled (http:// means no SSL)
+                    if raw_endpoint.startswith("http://"):
+                        con.execute("SET s3_use_ssl=false;")
+                    # Path-style access for custom endpoints (MinIO, etc.)
+                    con.execute("SET s3_url_style='path';")
+                if fs_opts.get("s3_region"):
+                    con.execute(f"SET s3_region='{fs_opts['s3_region']}';")
+                if fs_opts.get("s3_use_ssl") == "false":
+                    con.execute("SET s3_use_ssl=false;")
+                if fs_opts.get("s3_url_style"):
+                    con.execute(f"SET s3_url_style='{fs_opts['s3_url_style']}';")
+
+            # Configure Azure credentials from fs_opts
+            elif handle.scheme in ("abfss", "abfs", "az"):
+                if fs_opts.get("azure_account_name"):
+                    con.execute(f"SET azure_storage_account_name='{fs_opts['azure_account_name']}';")
+                if fs_opts.get("azure_account_key"):
+                    con.execute(f"SET azure_storage_account_key='{fs_opts['azure_account_key']}';")
+
+            # Escape path for SQL
+            escaped_path = path.replace("'", "''")
+
+            # Check if rule supports SQL filter
+            sql_filter = None
+            if rule is not None and hasattr(rule, "to_sql_filter"):
+                sql_filter = rule.to_sql_filter("duckdb")
+
+            if sql_filter:
+                # Use SQL filter with pushdown
+                query = f"""
+                    SELECT *, ROW_NUMBER() OVER () - 1 AS row_index
+                    FROM read_parquet('{escaped_path}')
+                    WHERE {sql_filter}
+                    LIMIT {n}
+                """
+            else:
+                # No filter - just load with limit
+                query = f"""
+                    SELECT *, ROW_NUMBER() OVER () - 1 AS row_index
+                    FROM read_parquet('{escaped_path}')
+                    LIMIT {n}
+                """
+
+            result = con.execute(query).pl()
+            return result, "sql"
+
+        finally:
+            con.close()
 
     def _query_parquet_with_duckdb(
         self,
@@ -2136,9 +2220,11 @@ class Suggestions:
         self,
         rules: List[SuggestedRule],
         source: str = "unknown",
+        profile: Optional["DatasetProfile"] = None,
     ):
         self._rules = rules
         self.source = source
+        self._profile = profile  # Used for nice YAML generation
 
     def __repr__(self) -> str:
         return f"Suggestions({len(self._rules)} rules from {self.source})"
@@ -2175,7 +2261,7 @@ class Suggestions:
         if name is not None:
             filtered = [r for r in filtered if r.name == name]
 
-        return Suggestions(filtered, self.source)
+        return Suggestions(filtered, self.source, self._profile)
 
     def to_dict(self) -> List[Dict[str, Any]]:
         """Convert to list of rule dicts (usable with kontra.validate(rules=...))."""
@@ -2235,8 +2321,14 @@ class Suggestions:
             contract_name: Name for the contract
 
         Returns:
-            YAML string
+            YAML string with comments and nice formatting
         """
+        # Use shared generator for nice output with comments
+        if self._profile is not None:
+            from kontra.scout.suggest import generate_rules_yaml
+            return generate_rules_yaml(self._profile)
+
+        # Fallback for Suggestions created without profile
         contract = {
             "name": contract_name,
             "datasource": self.source,
@@ -2346,4 +2438,4 @@ class Suggestions:
         # Filter by confidence
         filtered = [r for r in rules if r.confidence >= min_confidence]
 
-        return cls(filtered, source=profile.source_uri)
+        return cls(filtered, source=profile.source_uri, profile=profile)

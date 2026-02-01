@@ -93,6 +93,10 @@ def _detect_path_from_uri(uri: str) -> ExecutionPath:
         # Check for file extensions
         if _has_file_extension(uri_lower):
             return "file"
+        # If it looks like a file path (has / or \), treat as file
+        # even if extension is unknown - will error later with clear message
+        if "/" in uri or "\\" in uri:
+            return "file"
         # Assume named datasource - will be resolved later
         # For lazy loading purposes, we need to resolve this
         return _resolve_named_datasource_path(uri)

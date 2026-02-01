@@ -57,7 +57,9 @@ print(profile)
 
 ```
 DatasetProfile(users.parquet)
+  Preset: scan
   Rows: 50,000 | Columns: 5
+  Duration: 245ms
   Columns:
     - user_id: int, 50,000 distinct, [identifier]
     - email: string, 2% null, 49,000 distinct

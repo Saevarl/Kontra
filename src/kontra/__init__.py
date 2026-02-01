@@ -311,6 +311,10 @@ def validate(
         from kontra.config.loader import ContractLoader
         from kontra.rule_defs.factory import RuleFactory
         from kontra.rule_defs.execution_plan import RuleExecutionPlan
+        from kontra.engine.engine import _ensure_builtin_rules_registered
+
+        # Ensure builtin rules are registered before building rules
+        _ensure_builtin_rules_registered()
 
         errors: List[str] = []
         contract_name: Optional[str] = None
@@ -492,13 +496,22 @@ def validate(
             df = pl.DataFrame(data)
         engine = ValidationEngine(dataframe=df, **engine_kwargs)
     elif isinstance(data, dict) and not isinstance(data, pl.DataFrame):
-        # Single dict - convert to 1-row DataFrame
+        # Dict input - could be single-row or columnar format
         # Note: check for pl.DataFrame first since it's also dict-like in some contexts
         if not data:
             # Empty dict - create empty DataFrame
             df = pl.DataFrame()
         else:
-            df = pl.DataFrame([data])
+            # Detect format: columnar {"a": [1,2], "b": [3,4]} vs single-row {"a": 1, "b": 2}
+            # If all values are lists/tuples, treat as columnar (dict-of-lists)
+            first_val = next(iter(data.values()))
+            is_columnar = isinstance(first_val, (list, tuple))
+            if is_columnar:
+                # Dict-of-lists format - pass directly to DataFrame
+                df = pl.DataFrame(data)
+            else:
+                # Single-row dict - wrap in list
+                df = pl.DataFrame([data])
         engine = ValidationEngine(dataframe=df, **engine_kwargs)
     elif isinstance(data, pl.DataFrame):
         # Polars DataFrame
@@ -641,7 +654,13 @@ def profile(
         if not data:
             data = pl.DataFrame()
         else:
-            data = pl.DataFrame([data])
+            # Detect format: columnar {"a": [1,2], "b": [3,4]} vs single-row {"a": 1, "b": 2}
+            first_val = next(iter(data.values()))
+            is_columnar = isinstance(first_val, (list, tuple))
+            if is_columnar:
+                data = pl.DataFrame(data)
+            else:
+                data = pl.DataFrame([data])
     elif hasattr(data, "__dataframe__"):
         # Pandas DataFrame (or any dataframe-protocol compatible)
         import pandas as pd
@@ -707,23 +726,38 @@ def profile(
 
 
 def draft(
-    profile: DatasetProfile,
+    data: Any,
     min_confidence: float = 0.5,
+    *,
+    preset: str = "interrogate",
+    storage_options: Optional[Dict[str, Any]] = None,
 ) -> Suggestions:
     """
-    Draft validation rules from a profile.
+    Draft validation rules from data or a profile.
 
-    Analyzes the profile and suggests rules based on observed patterns.
+    Analyzes the data and suggests rules based on observed patterns.
     These are starting points - refine them based on domain knowledge.
 
     Args:
-        profile: DatasetProfile from kontra.profile()
+        data: DatasetProfile, DataFrame, file path, or any data source.
+              If not a DatasetProfile, will profile the data first using
+              the specified preset.
         min_confidence: Minimum confidence score (0.0-1.0)
+        preset: Profile preset when profiling data ("scout", "scan", "interrogate").
+                Defaults to "interrogate" for thorough rule suggestions.
+        storage_options: Cloud storage credentials (for S3/Azure paths)
 
     Returns:
         Suggestions with .to_yaml(), .save(), .filter()
 
     Example:
+        # From file path (profiles internally)
+        suggestions = kontra.draft("data/users.parquet")
+
+        # From DataFrame
+        suggestions = kontra.draft(df)
+
+        # From profile (explicit)
         profile = kontra.profile(df, preset="interrogate")
         suggestions = kontra.draft(profile)
 
@@ -736,7 +770,13 @@ def draft(
         # Or use directly
         result = kontra.validate(df, rules=suggestions.to_dict())
     """
-    return Suggestions.from_profile(profile, min_confidence=min_confidence)
+    # If already a DatasetProfile, use directly
+    if isinstance(data, DatasetProfile):
+        return Suggestions.from_profile(data, min_confidence=min_confidence)
+
+    # Otherwise, profile the data first
+    data_profile = profile(data, preset=preset, storage_options=storage_options)
+    return Suggestions.from_profile(data_profile, min_confidence=min_confidence)
 
 
 def get_history(
@@ -1882,7 +1922,11 @@ def health() -> Dict[str, Any]:
     """
     from kontra.rule_defs.registry import RULE_REGISTRY
     from kontra.config.settings import find_config_file
+    from kontra.engine.engine import _ensure_builtin_rules_registered
     from pathlib import Path
+
+    # Ensure builtin rules are registered before checking the registry
+    _ensure_builtin_rules_registered()
 
     result: Dict[str, Any] = {
         "version": __version__,

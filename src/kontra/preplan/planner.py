@@ -11,9 +11,74 @@ from .types import PrePlan, Decision
 
 # NOTE: The preplan consumes simple, metadata-usable predicates only.
 # Shape: (rule_id, column, op, value)
-#   op ∈ {"==","!=",">=",">","<=","<","^=","not_null"}
+#   op ∈ {"==","!=",">=",">","<=","<","^=","not_null","dtype"}
 #   "^=" means "string prefix"
 Predicate = Tuple[str, str, str, Any]  # (rule_id, column, op, value)
+
+# Glob pattern characters
+_GLOB_CHARS = set("*?[]")
+
+
+def is_glob_pattern(path: str) -> bool:
+    """Check if path contains glob pattern characters."""
+    return any(c in path for c in _GLOB_CHARS)
+
+
+def _expand_glob_first_file(
+    glob_path: str,
+    fs_opts: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """
+    Expand glob pattern and return the first matching file.
+
+    Uses DuckDB's glob() function which handles local, S3, and ADLS.
+    Returns None if no files match.
+
+    Args:
+        glob_path: Path with glob pattern (e.g., "s3://bucket/*.parquet")
+        fs_opts: Filesystem options (S3 credentials, etc.)
+    """
+    import duckdb
+
+    con = duckdb.connect()
+
+    # Configure S3 if needed (keys are s3_* prefixed per handle.py normalization)
+    if fs_opts:
+        if fs_opts.get("s3_endpoint"):
+            endpoint = fs_opts["s3_endpoint"]
+            # Remove http:// or https:// prefix for DuckDB
+            raw_endpoint = endpoint
+            endpoint = endpoint.replace("https://", "").replace("http://", "")
+            con.execute(f"SET s3_endpoint='{endpoint}'")
+            # Check if SSL should be disabled (http:// means no SSL)
+            if raw_endpoint.startswith("http://"):
+                con.execute("SET s3_use_ssl=false")
+            # Path-style access for custom endpoints (MinIO, etc.)
+            con.execute("SET s3_url_style='path'")
+        if fs_opts.get("s3_access_key_id"):
+            con.execute(f"SET s3_access_key_id='{fs_opts['s3_access_key_id']}'")
+        if fs_opts.get("s3_secret_access_key"):
+            con.execute(f"SET s3_secret_access_key='{fs_opts['s3_secret_access_key']}'")
+        if fs_opts.get("s3_region"):
+            con.execute(f"SET s3_region='{fs_opts['s3_region']}'")
+        if fs_opts.get("s3_use_ssl") == "false":
+            con.execute("SET s3_use_ssl=false")
+        if fs_opts.get("s3_url_style"):
+            con.execute(f"SET s3_url_style='{fs_opts['s3_url_style']}'")
+
+        # Azure ADLS configuration
+        if fs_opts.get("azure_account_name"):
+            con.execute(f"SET azure_storage_account_name='{fs_opts['azure_account_name']}'")
+        if fs_opts.get("azure_account_key"):
+            con.execute(f"SET azure_storage_account_key='{fs_opts['azure_account_key']}'")
+
+    try:
+        result = con.execute(f"SELECT file FROM glob('{glob_path}') LIMIT 1").fetchone()
+        return result[0] if result else None
+    except Exception:
+        return None
+    finally:
+        con.close()
 
 
 # ---------- small helpers ----------
@@ -356,3 +421,110 @@ def preplan_single_parquet(
         fail_details=fail_details,
     )
     return preplan
+
+
+def preplan_parquet_glob(
+    glob_path: str,
+    required_columns: List[str],
+    predicates: List[Predicate],
+    fs_opts: Optional[Dict[str, str]] = None,
+) -> PrePlan:
+    """
+    Metadata-only pre-planner for glob patterns (multiple Parquet files).
+
+    For globs, we can only do schema-based preplan (dtype checks) because
+    row-group statistics from one file don't represent the entire dataset.
+
+    Args:
+        glob_path: Glob pattern (e.g., "s3://bucket/*.parquet")
+        required_columns: Columns needed for all rules
+        predicates: Metadata-usable predicates
+        fs_opts: Filesystem options (S3/Azure credentials)
+
+    Returns:
+        PrePlan with dtype decisions; other rules marked as "unknown"
+    """
+    # Expand glob to get first file
+    first_file = _expand_glob_first_file(glob_path, fs_opts)
+    if not first_file:
+        # No files match - return unknown for all rules
+        return PrePlan(
+            manifest_columns=list(required_columns) if required_columns else [],
+            manifest_row_groups=[],
+            rule_decisions={rid: "unknown" for rid, _, _, _ in predicates},
+            stats={"glob": True, "first_file": None},
+        )
+
+    # Read schema from first file
+    # For S3/Azure, we need to configure pyarrow filesystem
+    filesystem = None
+    if glob_path.startswith("s3://") and fs_opts:
+        from pyarrow import fs as pafs
+        # Map s3_endpoint to endpoint_override format (strip scheme for pyarrow)
+        endpoint = fs_opts.get("s3_endpoint")
+        if endpoint:
+            endpoint = endpoint.replace("https://", "").replace("http://", "")
+        filesystem = pafs.S3FileSystem(
+            access_key=fs_opts.get("s3_access_key_id"),
+            secret_key=fs_opts.get("s3_secret_access_key"),
+            region=fs_opts.get("s3_region"),
+            endpoint_override=endpoint,
+        )
+        # Convert s3://bucket/path to bucket/path for pyarrow
+        first_file_path = first_file.replace("s3://", "")
+    elif glob_path.startswith("abfss://") and fs_opts:
+        from pyarrow import fs as pafs
+        filesystem = pafs.AzureFileSystem(
+            account_name=fs_opts.get("azure_account_name"),
+            account_key=fs_opts.get("azure_account_key"),
+        )
+        # Keep path as-is for Azure
+        first_file_path = first_file
+    else:
+        first_file_path = first_file
+
+    try:
+        pf = pq.ParquetFile(first_file_path, filesystem=filesystem)
+        schema_types = _get_schema_types(pf.metadata.schema)
+        total_rows_first_file = pf.metadata.num_rows
+    except Exception:
+        # Can't read first file - return unknown for all rules
+        return PrePlan(
+            manifest_columns=list(required_columns) if required_columns else [],
+            manifest_row_groups=[],
+            rule_decisions={rid: "unknown" for rid, _, _, _ in predicates},
+            stats={"glob": True, "first_file": first_file, "error": "failed_to_read"},
+        )
+
+    # Only allow dtype decisions (schema-based)
+    # Mark all other predicates as "unknown" - they must execute via DuckDB/Polars
+    rule_decisions: Dict[str, Decision] = {}
+    fail_details: Dict[str, Dict[str, Any]] = {}
+
+    for rule_id, col, op, val in predicates:
+        if op == "dtype":
+            # dtype is safe for globs - schema must be consistent across files
+            actual_type = schema_types.get(col)
+            if actual_type is None:
+                rule_decisions[rule_id] = "unknown"
+            elif _dtype_matches(actual_type, val):
+                rule_decisions[rule_id] = "pass_meta"
+            else:
+                rule_decisions[rule_id] = "fail_meta"
+                fail_details[rule_id] = {"expected": val, "actual": actual_type}
+        else:
+            # Stats-based predicates (not_null, range, etc.) are NOT safe for globs
+            # First file's stats don't represent the entire dataset
+            rule_decisions[rule_id] = "unknown"
+
+    return PrePlan(
+        manifest_columns=list(required_columns) if required_columns else [],
+        manifest_row_groups=[],  # No row-group pruning for globs
+        rule_decisions=rule_decisions,
+        stats={
+            "glob": True,
+            "first_file": first_file,
+            "total_rows_first_file": total_rows_first_file,
+        },
+        fail_details=fail_details,
+    )

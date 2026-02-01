@@ -100,11 +100,21 @@ The `storage_options` parameter also works with `profile()`.
 
 ### Dicts and Lists
 
+Two formats are supported:
+
 ```python
+# List of dicts (row-oriented)
 data = [
     {"id": 1, "email": "alice@example.com", "status": "active"},
     {"id": 2, "email": "bob@example.com", "status": "pending"},
 ]
+
+# Dict of lists (columnar)
+data = {
+    "id": [1, 2],
+    "email": ["alice@example.com", "bob@example.com"],
+    "status": ["active", "pending"],
+}
 
 result = kontra.validate(data, rules=[
     rules.not_null("email"),
@@ -112,7 +122,7 @@ result = kontra.validate(data, rules=[
 ])
 ```
 
-Data must be flat (list of dicts or single dict).
+Both formats produce identical results. Single-row dicts like `{"id": 1, "email": "a@b.com"}` are also supported.
 
 ---
 
@@ -593,9 +603,11 @@ from kontra.errors import (
     KontraError,           # base class
     ContractNotFoundError,
     ContractParseError,
-    DataNotFoundError,
+    InvalidDataError,      # invalid data type or format
     ConnectionError,
     DuplicateRuleIdError,
 )
 from kontra import ValidationError  # from @validate_decorator
 ```
+
+Note: Missing files raise `RuntimeError` with a descriptive message. Use a try/except block to handle file access errors.
