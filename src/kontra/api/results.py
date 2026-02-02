@@ -1070,7 +1070,11 @@ class ValidationResult:
             if hasattr(source, "external_conn") and source.external_conn is not None:
                 return True
 
-            # Database without connection - can't sample
+            # Database with db_params - we can create a connection for sampling
+            if hasattr(source, "db_params") and source.db_params is not None:
+                return True
+
+            # Database without connection or db_params - can't sample
             if scheme in ("postgres", "postgresql", "mssql"):
                 return False
 

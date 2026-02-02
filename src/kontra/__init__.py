@@ -178,8 +178,8 @@ def validate(
     rules: Optional[List[Dict[str, Any]]] = None,
     emit_report: bool = False,
     save: bool = True,
-    preplan: str = "auto",
-    pushdown: str = "auto",
+    preplan: str = "on",
+    pushdown: str = "on",
     tally: Optional[bool] = None,
     projection: bool = True,
     csv_mode: str = "auto",
@@ -209,8 +209,8 @@ def validate(
         rules: List of inline rule dicts (optional if contract provided)
         emit_report: Print validation report to console
         save: Save result to history (default: True)
-        preplan: "on" | "off" | "auto"
-        pushdown: "on" | "off" | "auto"
+        preplan: "on" | "off" - Use metadata for fast validation (default: on)
+        pushdown: "on" | "off" - Push validation to SQL engine (default: on)
         tally: Global tally override. None = use per-rule settings (default),
             True = count all violations (exact), False = early-stop (fast, ≥1)
         projection: Enable column pruning
@@ -442,13 +442,6 @@ def validate(
 
     # Resolve config (always, for severity_weights and other settings)
     cfg = resolve_effective_config(env_name=env)
-
-    # Apply config defaults (CLI args take precedence)
-    if env:
-        if preplan == "auto" and cfg.preplan:
-            preplan = cfg.preplan
-        if pushdown == "auto" and cfg.pushdown:
-            pushdown = cfg.pushdown
 
     # Detect execution path early (enables lazy loading optimization in engine)
     execution_path = detect_execution_path(data, table=table)
@@ -1351,7 +1344,7 @@ def config(env: Optional[str] = None) -> KontraConfig:
     Example:
         cfg = kontra.config()
         cfg = kontra.config(env="production")
-        print(cfg.preplan)  # "auto"
+        print(cfg.preplan)  # "on"
     """
     return resolve_effective_config(env_name=env)
 

@@ -387,7 +387,7 @@ class ConfigValidationError(ConfigError):
             context=path,
             suggestions=[
                 "Check field names and types",
-                "Valid preplan/pushdown values: on, off, auto",
+                "Valid preplan/pushdown values: on, off",
                 "Valid projection values: on, off",
                 "Run 'kontra init --force' to see valid structure",
             ],

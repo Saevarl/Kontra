@@ -264,8 +264,8 @@ kontra validate contract.yml --stats summary    # show execution stats
 result = kontra.validate(
     "data.parquet",
     rules=[...],
-    preplan="auto",   # "on" | "off" | "auto"
-    pushdown="auto",  # "on" | "off" | "auto"
+    preplan="on",     # "on" | "off"
+    pushdown="on",    # "on" | "off"
     tally=False,      # True for exact counts
 )
 ```

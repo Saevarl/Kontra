@@ -72,13 +72,21 @@ def _pg_dtype_matches(pg_type: str, udt_name: str, expected: str) -> bool:
 
 def fetch_pg_stats_for_preplan(
     params: PostgresConnectionParams,
+    *,
+    check_unique_constraints: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Fetch PostgreSQL statistics for preplan decisions.
 
+    Args:
+        params: PostgreSQL connection parameters
+        check_unique_constraints: If True, also check for UNIQUE indexes/constraints.
+            Only set this if you have unique rules to check - avoids extra query.
+
     Returns:
         {
             "__table__": {"row_estimate": int, "page_count": int},
+            "__unique_columns__": set[str],  # Only if check_unique_constraints=True
             "column_name": {
                 "null_frac": float,      # 0.0-1.0 fraction of nulls
                 "n_distinct": float,     # -1 = unique, >0 = count, <0 = fraction
@@ -137,6 +145,24 @@ def fetch_pg_stats_for_preplan(
                     "udt_name": udt_name,
                 }
 
+            # Only check unique constraints if requested (when there are unique rules)
+            if check_unique_constraints:
+                cur.execute(
+                    """
+                    SELECT a.attname
+                    FROM pg_index i
+                    JOIN pg_class c ON c.oid = i.indrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = i.indkey[0]
+                    WHERE n.nspname = %s
+                      AND c.relname = %s
+                      AND i.indisunique = true
+                      AND array_length(i.indkey, 1) = 1
+                    """,
+                    (params.schema, params.table),
+                )
+                result["__unique_columns__"] = {row[0] for row in cur.fetchall()}
+
             return result
 
 
@@ -150,7 +176,9 @@ def preplan_postgres(
 
     Supports decisions for:
       - not_null: if null_frac == 0 -> pass_meta
-      - unique: if n_distinct == -1 -> pass_meta (PostgreSQL's way of saying "all unique")
+      - unique: if UNIQUE constraint exists -> pass_meta (guaranteed by DB)
+                else if n_distinct == -1 -> pass_meta (pg_stats hint)
+      - dtype: check column type from information_schema
 
     Args:
         handle: DatasetHandle with db_params
@@ -164,10 +192,17 @@ def preplan_postgres(
         raise ValueError("PostgreSQL handle missing db_params")
 
     params: PostgresConnectionParams = handle.db_params
-    pg_stats = fetch_pg_stats_for_preplan(params)
+
+    # Only fetch unique constraints if there are unique rules to check
+    has_unique_rules = any(op == "unique" for _, _, op, _ in predicates)
+    pg_stats = fetch_pg_stats_for_preplan(
+        params,
+        check_unique_constraints=has_unique_rules,
+    )
 
     table_stats = pg_stats.get("__table__", {})
     row_estimate = table_stats.get("row_estimate", 0)
+    unique_columns: set = pg_stats.get("__unique_columns__", set())
 
     rule_decisions: Dict[str, Decision] = {}
     fail_details: Dict[str, Dict[str, Any]] = {}
@@ -196,8 +231,14 @@ def preplan_postgres(
                 rule_decisions[rule_id] = "unknown"
 
         elif op == "unique":
+            # Priority 1: UNIQUE constraint/index is a database GUARANTEE
+            # This is instant proof - no need to check stats
+            if column in unique_columns:
+                rule_decisions[rule_id] = "pass_meta"
+                continue
+
+            # Priority 2: Fall back to pg_stats hints (can be stale, but often accurate)
             # n_distinct == -1 means PostgreSQL detected all values are unique
-            # n_distinct < 0 (other than -1) means n_distinct is a fraction of rows
             if n_distinct is not None:
                 if n_distinct == -1:
                     # All values are unique AND no nulls (unique constraint behavior)

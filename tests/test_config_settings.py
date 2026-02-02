@@ -90,8 +90,8 @@ class TestPydanticModels:
     def test_defaults_config_defaults(self):
         """DefaultsConfig has sensible defaults."""
         config = DefaultsConfig()
-        assert config.preplan == "auto"
-        assert config.pushdown == "auto"
+        assert config.preplan == "on"
+        assert config.pushdown == "on"
         assert config.projection == "on"
         assert config.output_format == "rich"
         assert config.stats == "none"
@@ -207,8 +207,8 @@ class TestConfigResolution:
         """Defaults are used when no config file exists."""
         monkeypatch.chdir(tmp_path)
         config = resolve_effective_config()
-        assert config.preplan == "auto"
-        assert config.pushdown == "auto"
+        assert config.preplan == "on"
+        assert config.pushdown == "on"
         assert config.projection == "on"
 
     def test_config_file_overrides_defaults(self, tmp_path, monkeypatch):
@@ -234,7 +234,7 @@ defaults:
         (tmp_path / ".kontra" / "config.yml").write_text("""
 version: "1"
 defaults:
-  preplan: "auto"
+  preplan: "off"
   state_backend: local
 environments:
   production:
@@ -283,12 +283,12 @@ class TestEffectiveConfig:
         """to_dict produces serializable output."""
         config = EffectiveConfig(
             preplan="on",
-            pushdown="auto",
+            pushdown="on",
             scout_preset="deep",
         )
         d = config.to_dict()
         assert d["preplan"] == "on"
-        assert d["pushdown"] == "auto"
+        assert d["pushdown"] == "on"
         assert d["profile"]["preset"] == "deep"
 
 
@@ -309,7 +309,7 @@ class TestConfigTemplate:
         config_path.write_text(DEFAULT_CONFIG_TEMPLATE)
         config = load_config_file(config_path)
         assert config.version == "1"
-        assert config.defaults.preplan == "auto"
+        assert config.defaults.preplan == "on"
 
     def test_template_has_datasources_section(self):
         """Template includes datasources section."""

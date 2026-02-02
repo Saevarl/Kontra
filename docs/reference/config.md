@@ -51,8 +51,8 @@ version: "1"
 
 defaults:
   # Execution controls
-  preplan: "auto"        # on | off | auto
-  pushdown: "auto"       # on | off | auto
+  preplan: "on"          # on | off
+  pushdown: "on"         # on | off
   projection: "on"       # on | off
 
   # Output
@@ -302,8 +302,8 @@ kontra validate contract.yml
 
 | Setting | Values | Default | Description |
 |---------|--------|---------|-------------|
-| `preplan` | on, off, auto | auto | Metadata preflight (Parquet stats, pg_stats) |
-| `pushdown` | on, off, auto | auto | SQL execution in database engine |
+| `preplan` | on, off | on | Metadata preflight (Parquet stats, pg_stats) |
+| `pushdown` | on, off | on | SQL execution in database engine |
 | `projection` | on, off | on | Column pruning at source |
 
 See [Performance](../advanced/performance.md) for execution details.

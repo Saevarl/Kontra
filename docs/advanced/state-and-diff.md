@@ -20,8 +20,8 @@ The config file contains documented defaults and examples:
 version: "1"
 
 defaults:
-  preplan: "auto"       # on | off | auto
-  pushdown: "auto"      # on | off | auto
+  preplan: "on"         # on | off
+  pushdown: "on"        # on | off
   projection: "on"      # on | off
   output_format: "rich" # rich | json
   state_backend: "local"

@@ -126,8 +126,8 @@ DatasourceConfig = PostgresDatasourceConfig | FilesDatasourceConfig | S3Datasour
 class DefaultsConfig(BaseModel):
     """Default values for CLI options."""
 
-    preplan: Literal["on", "off", "auto"] = "auto"
-    pushdown: Literal["on", "off", "auto"] = "auto"
+    preplan: Literal["on", "off"] = "on"
+    pushdown: Literal["on", "off"] = "on"
     projection: Literal["on", "off"] = "on"
     output_format: Literal["rich", "json"] = "rich"
     stats: Literal["none", "summary", "profile"] = "none"
@@ -153,8 +153,8 @@ class EnvironmentConfig(BaseModel):
     All fields are optional - only specified fields override defaults.
     """
 
-    preplan: Optional[Literal["on", "off", "auto"]] = None
-    pushdown: Optional[Literal["on", "off", "auto"]] = None
+    preplan: Optional[Literal["on", "off"]] = None
+    pushdown: Optional[Literal["on", "off"]] = None
     projection: Optional[Literal["on", "off"]] = None
     output_format: Optional[Literal["rich", "json"]] = None
     stats: Optional[Literal["none", "summary", "profile"]] = None
@@ -227,8 +227,8 @@ class EffectiveConfig:
     """
 
     # Execution controls
-    preplan: str = "auto"
-    pushdown: str = "auto"
+    preplan: str = "on"
+    pushdown: str = "on"
     projection: str = "on"
 
     # Output
@@ -720,8 +720,8 @@ version: "1"
 
 defaults:
   # Execution controls
-  preplan: "auto"       # on | off | auto - Parquet metadata preflight
-  pushdown: "auto"      # on | off | auto - SQL pushdown to DuckDB
+  preplan: "on"         # on | off - Parquet metadata preflight
+  pushdown: "on"        # on | off - SQL pushdown to DuckDB
   projection: "on"      # on | off - Column pruning at source
 
   # Output

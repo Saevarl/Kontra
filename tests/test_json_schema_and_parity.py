@@ -10,7 +10,7 @@ def test_json_minimum_fields_and_parity(write_contract, small_clean_users, run_e
         {"name": "dtype", "params": {"column": "age", "type": "int16"}},
     ]
     cpath = write_contract(dataset=small_clean_users, rules=RULES)
-    out, _ = run_engine(cpath, pushdown="auto", stats_mode="summary")
+    out, _ = run_engine(cpath, pushdown="on", stats_mode="summary")
 
     # shape: top-level keys present
     for key in ("dataset", "results", "summary"):

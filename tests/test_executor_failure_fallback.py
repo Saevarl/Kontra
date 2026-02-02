@@ -22,7 +22,7 @@ def test_executor_failure_falls_back_to_polars(monkeypatch, write_contract, smal
     monkeypatch.setattr(exec_registry, "pick_executor", lambda handle, sql_rules: BoomExecutor())
 
     # Run with pushdown auto — the executor will blow up; engine should recover
-    out, label = run_engine(cpath, pushdown="auto", stats_mode="summary")
+    out, label = run_engine(cpath, pushdown="on", stats_mode="summary")
     # Engine label should still mention polars; pushdown may show 'on' (executor selected)
     assert "polars" in label
     # Results should still exist; not crash

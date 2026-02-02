@@ -304,8 +304,8 @@ result = kontra.validate(
     "contract.yml",
 
     # Execution control
-    preplan="auto",      # "on" | "off" | "auto"
-    pushdown="auto",     # "on" | "off" | "auto"
+    preplan="on",        # "on" | "off"
+    pushdown="on",       # "on" | "off"
     tally=False,         # exact counts vs fail-fast
     projection=True,     # column pruning
 

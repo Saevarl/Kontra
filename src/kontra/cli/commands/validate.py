@@ -207,15 +207,15 @@ def register(app: typer.Typer) -> None:
             help="Attach run statistics (default: from config or 'none').",
         ),
         # Independent execution controls
-        preplan: Optional[Literal["on", "off", "auto"]] = typer.Option(
+        preplan: Optional[Literal["on", "off"]] = typer.Option(
             None,
             "--preplan",
-            help="Metadata preflight (default: from config or 'auto').",
+            help="Metadata preflight (default: from config or 'on').",
         ),
-        pushdown: Optional[Literal["on", "off", "auto"]] = typer.Option(
+        pushdown: Optional[Literal["on", "off"]] = typer.Option(
             None,
             "--pushdown",
-            help="SQL pushdown (default: from config or 'auto').",
+            help="SQL pushdown (default: from config or 'on').",
         ),
         tally: Optional[bool] = typer.Option(
             None,
@@ -370,14 +370,14 @@ def register(app: typer.Typer) -> None:
                 )
 
             # Effective SQL pushdown: explicit flag wins; back-compat maps sql_engine=none → off
-            effective_pushdown: Literal["on", "off", "auto"]
+            effective_pushdown: Literal["on", "off"]
             if sql_engine == "none":
                 effective_pushdown = "off"
             else:
                 effective_pushdown = config.pushdown  # type: ignore
 
             # Effective preplan
-            effective_preplan: Literal["on", "off", "auto"]
+            effective_preplan: Literal["on", "off"]
             effective_preplan = config.preplan  # type: ignore
 
             # Effective projection

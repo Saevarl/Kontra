@@ -351,8 +351,8 @@ class ValidationEngine:
         emit_report: bool = True,
         stats_mode: Literal["none", "summary", "profile"] = "none",
         # Independent toggles
-        preplan: Literal["on", "off", "auto"] = "auto",
-        pushdown: Literal["on", "off", "auto"] = "auto",
+        preplan: Literal["on", "off"] = "on",
+        pushdown: Literal["on", "off"] = "on",
         tally: Optional[bool] = None,  # Global tally setting (None = use per-rule)
         tally_is_override: bool = False,  # True = tally overrides per-rule (CLI), False = per-rule wins (API)
         enable_projection: bool = True,
@@ -382,7 +382,7 @@ class ValidationEngine:
                 f"Must be one of: {', '.join(sorted(valid_csv_modes))}"
             )
 
-        valid_toggles = {"on", "off", "auto"}
+        valid_toggles = {"on", "off"}
         if preplan not in valid_toggles:
             raise ValueError(
                 f"Invalid preplan '{preplan}'. "
@@ -912,7 +912,7 @@ class ValidationEngine:
         preplan_analyze_ms = 0
         preplan_total_rows: Optional[int] = None  # Track row count from preplan metadata
         preplan_summary: Dict[str, Any] = {
-            "enabled": self.preplan in {"on", "auto"},
+            "enabled": self.preplan == "on",
             "effective": False,
             "rules_pass_meta": 0,
             "rules_fail_meta": 0,
@@ -938,7 +938,7 @@ class ValidationEngine:
                 # If Azure libs aren't available or creds invalid, fall back to no preplan
                 log_exception(_logger, "Could not create Azure filesystem for preplan", e)
 
-        if self.preplan in {"on", "auto"} and _is_parquet(handle.uri):
+        if self.preplan == "on" and _is_parquet(handle.uri):
             try:
                 t0 = now_ms()
                 static_preds = extract_static_predicates(rules=rules)
@@ -1073,7 +1073,7 @@ class ValidationEngine:
                 preplan_effective = False  # leave summary with effective=False
 
         # PostgreSQL preplan (uses pg_stats metadata)
-        elif self.preplan in {"on", "auto"} and handle.scheme in ("postgres", "postgresql"):
+        elif self.preplan == "on" and handle.scheme in ("postgres", "postgresql"):
             try:
                 from kontra.preplan.postgres import preplan_postgres, can_preplan_postgres
                 if can_preplan_postgres(handle):
@@ -1140,7 +1140,7 @@ class ValidationEngine:
                     print(f"[INFO] PostgreSQL preplan skipped: {e}")
 
         # SQL Server preplan (uses sys.columns metadata)
-        elif self.preplan in {"on", "auto"} and handle.scheme in ("mssql", "sqlserver"):
+        elif self.preplan == "on" and handle.scheme in ("mssql", "sqlserver"):
             try:
                 from kontra.preplan.sqlserver import preplan_sqlserver, can_preplan_sqlserver
                 if can_preplan_sqlserver(handle):
@@ -1223,7 +1223,7 @@ class ValidationEngine:
         push_compile_ms = push_execute_ms = push_introspect_ms = 0
 
         executor = None
-        if self.pushdown in {"on", "auto"}:
+        if self.pushdown == "on":
             # Exclude rules already decided by preplan
             sql_rules_remaining = [s for s in compiled_full.sql_rules if s.get("rule_id") not in handled_ids_meta]
             executor = pick_executor(handle, sql_rules_remaining)
@@ -1423,7 +1423,7 @@ class ValidationEngine:
             }
 
             push = {
-                "enabled": self.pushdown in {"on", "auto"},
+                "enabled": self.pushdown == "on",
                 "effective": bool(pushdown_effective),
                 "executor": executor_name,
                 "rules_pushed": len(sql_results_by_id),

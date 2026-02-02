@@ -20,7 +20,7 @@ def test_sql_wins_on_overlap(write_contract, small_nulls_only, run_engine):
         {"name": "unique", "params": {"column": "user_id"}},
     ]
     cpath = write_contract(dataset=small_nulls_only, rules=RULES)
-    out, _ = run_engine(cpath, pushdown="auto", stats_mode="summary")
+    out, _ = run_engine(cpath, pushdown="on", stats_mode="summary")
     ridx = by_rule_id(out)
 
     # 1) Ensure unique rule appears exactly once

@@ -133,8 +133,8 @@ def run_engine():
     def _run(
         contract_path: str,
         data_override: Optional[str] = None,
-        pushdown: Literal["on", "off", "auto"] = "auto",
-        preplan: Literal["on", "off", "auto"] = "auto",
+        pushdown: Literal["on", "off"] = "on",
+        preplan: Literal["on", "off"] = "on",
         stats_mode: Literal["none", "summary", "profile"] = "summary",
         csv_mode: Literal["auto", "duckdb", "parquet"] = "auto",
         enable_projection: bool = True,

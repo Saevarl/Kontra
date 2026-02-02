@@ -10,8 +10,8 @@ def test_identical_runs_identical_outputs(write_contract, small_clean_users, run
     ]
     cpath = write_contract(dataset=small_clean_users, rules=RULES)
 
-    out1, _ = run_engine(cpath, pushdown="auto", stats_mode="summary")
-    out2, _ = run_engine(cpath, pushdown="auto", stats_mode="summary")
+    out1, _ = run_engine(cpath, pushdown="on", stats_mode="summary")
+    out2, _ = run_engine(cpath, pushdown="on", stats_mode="summary")
 
     # Remove volatile timing fields before compare
     def strip(o):

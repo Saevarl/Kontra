@@ -7,7 +7,7 @@ from kontra.rule_defs.base import BaseRule
 
 # (rule_id, column, op, value)  -- op ∈ ALLOWED_OPS
 PredicateT = Tuple[str, str, str, Any]
-ALLOWED_OPS = {"==", "!=", ">=", ">", "<=", "<", "^=", "not_null", "dtype"}
+ALLOWED_OPS = {"==", "!=", ">=", ">", "<=", "<", "^=", "not_null", "dtype", "unique"}
 
 
 def _normalize(pairs: Iterable[PredicateT]) -> List[PredicateT]:
@@ -115,6 +115,12 @@ def _conservative_builtin_mapping(rule: BaseRule) -> List[PredicateT]:
         dtype = params.get("type") or params.get("dtype")
         if isinstance(col, str) and col and isinstance(dtype, str) and dtype:
             out.append((rid, col, "dtype", dtype))
+
+    # unique(column) → unique check (can be proven via UNIQUE index/constraint)
+    if name == "unique":
+        col = params.get("column")
+        if isinstance(col, str) and col:
+            out.append((rid, col, "unique", True))
 
     return out
 
