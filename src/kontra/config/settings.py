@@ -249,6 +249,7 @@ class MSSQLDatasourceConfig:
                 "entra_mi",
                 "entra_service_principal",
                 "entra_interactive",
+                "entra_password",
             ),
             "auth",
         )

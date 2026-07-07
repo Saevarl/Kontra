@@ -275,6 +275,7 @@ Auth modes and their resolution:
 | `entra_mi` | `ActiveDirectoryMsi` | Managed identity. Add `client_id` for user-assigned. |
 | `entra_service_principal` | `ActiveDirectoryServicePrincipal` | Uses `client_id`/`client_secret`. |
 | `entra_interactive` | `ActiveDirectoryInteractive` | Browser login, for dev workstations. |
+| `entra_password` | `ActiveDirectoryPassword` | Entra username (UPN) + password via the normal user/password fields. Not usable with MFA-required accounts. |
 
 The auth mode is resolved with priority: URI query string
 (`?auth=…&client_id=…`) > datasource config > env vars (`MSSQL_AUTH`,

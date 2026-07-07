@@ -25,6 +25,10 @@ and Azure SQL Managed Instance:
       so ``tenant_id`` / AZURE_TENANT_ID is carried but not injected.
     - "entra_interactive": interactive browser login via the ODBC driver
       (Authentication=ActiveDirectoryInteractive). For dev workstations.
+    - "entra_password": Entra username/password via the ODBC driver
+      (Authentication=ActiveDirectoryPassword). The Entra UPN and password ride
+      the normal user/password fields. Legacy flow; does not work for accounts
+      requiring MFA.
 
 The ``auth`` (and optional ``client_id``) values are resolved with priority:
     URI query string (``?auth=entra_mi&client_id=...``)
@@ -61,6 +65,7 @@ AUTH_ENTRA_DEFAULT = "entra_default"
 AUTH_ENTRA_MI = "entra_mi"
 AUTH_ENTRA_SERVICE_PRINCIPAL = "entra_service_principal"
 AUTH_ENTRA_INTERACTIVE = "entra_interactive"
+AUTH_ENTRA_PASSWORD = "entra_password"
 
 ALLOWED_AUTH_MODES = (
     AUTH_SQL,
@@ -68,6 +73,7 @@ ALLOWED_AUTH_MODES = (
     AUTH_ENTRA_MI,
     AUTH_ENTRA_SERVICE_PRINCIPAL,
     AUTH_ENTRA_INTERACTIVE,
+    AUTH_ENTRA_PASSWORD,
 )
 
 # Map Kontra auth mode -> ODBC "Authentication=" keyword.
@@ -76,6 +82,7 @@ _ENTRA_ODBC_AUTH = {
     AUTH_ENTRA_MI: "ActiveDirectoryMsi",
     AUTH_ENTRA_SERVICE_PRINCIPAL: "ActiveDirectoryServicePrincipal",
     AUTH_ENTRA_INTERACTIVE: "ActiveDirectoryInteractive",
+    AUTH_ENTRA_PASSWORD: "ActiveDirectoryPassword",
 }
 
 
@@ -331,6 +338,19 @@ def build_entra_connection_string(
             parts.append(f"UID={_odbc_escape(params.client_id)}")
         if params.client_secret:
             parts.append(f"PWD={_odbc_escape(params.client_secret)}")
+
+    # Entra username/password (ActiveDirectoryPassword): the Entra UPN and
+    # password ride the ordinary user/password fields (URI userinfo,
+    # MSSQL_USER/MSSQL_PASSWORD, or datasource config).
+    if auth == AUTH_ENTRA_PASSWORD:
+        if not params.user or not params.password:
+            raise ValueError(
+                "auth='entra_password' requires a username (Entra UPN, e.g. "
+                "user@tenant.com) and password — set them in the URI, the "
+                "datasource config, or MSSQL_USER/MSSQL_PASSWORD"
+            )
+        parts.append(f"UID={_odbc_escape(params.user)}")
+        parts.append(f"PWD={_odbc_escape(params.password)}")
 
     return ";".join(parts) + ";"
 

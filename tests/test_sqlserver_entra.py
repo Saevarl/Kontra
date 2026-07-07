@@ -131,6 +131,18 @@ class TestEntraConnectionString:
         # tenant_id is carried but NOT injected (msodbcsql18 has no such keyword)
         assert "tenant" not in cs.lower()
 
+    def test_entra_password(self, fake_pyodbc):
+        p = _params(auth="entra_password", user="user@tenant.com", password="p;w{d}")
+        ss.get_connection(p)
+        cs = fake_pyodbc["conn_str"]
+        assert "Authentication=ActiveDirectoryPassword;" in cs
+        # UPN passes through; password with ; { } gets brace-escaped, } doubled
+        assert cs.endswith("UID=user@tenant.com;PWD={p;w{d}}};")
+
+    def test_entra_password_requires_user_and_password(self, fake_pyodbc):
+        with pytest.raises(ValueError, match="entra_password"):
+            ss.get_connection(_params(auth="entra_password", user="", password=None))
+
     def test_entra_interactive(self, fake_pyodbc):
         p = _params(auth="entra_interactive")
         ss.get_connection(p)
