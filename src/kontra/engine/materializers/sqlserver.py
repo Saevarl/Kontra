@@ -17,7 +17,11 @@ if TYPE_CHECKING:
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams
 from kontra.connectors.detection import parse_table_reference, get_default_schema, SQLSERVER
-from kontra.connectors.db_utils import get_connection_ctx, ss_quote_ident as _esc_ident
+from kontra.connectors.db_utils import (
+    get_connection_ctx,
+    execute_with_params,
+    ss_quote_ident as _esc_ident,
+)
 
 from .base import BaseMaterializer
 from .registry import register_materializer
@@ -70,8 +74,9 @@ class SqlServerMaterializer(BaseMaterializer):
         """Return column names without loading data."""
         with _get_connection_ctx(self.handle) as conn:
             cursor = conn.cursor()
-            # pymssql uses %s as placeholder (pyodbc uses ?)
-            cursor.execute(
+            # %s placeholders; adapted to ? automatically for pyodbc connections
+            execute_with_params(
+                cursor,
                 """
                 SELECT column_name
                 FROM information_schema.columns

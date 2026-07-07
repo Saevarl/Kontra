@@ -202,6 +202,96 @@ Usage:
 kontra profile warehouse.sales
 ```
 
+#### Entra ID (Azure AD) authentication
+
+On Azure compute (VMs, App Service, Container Apps, AKS, Azure ML) Kontra can
+authenticate to **Azure SQL Managed Instance** and **Azure SQL Database** with
+Entra ID instead of a password. The Microsoft ODBC driver acquires the token, so
+no secrets live in your config.
+
+Managed Instance with the environment's default credential (recommended):
+
+```yaml
+datasources:
+  mi:
+    type: mssql
+    host: mymi.abcd1234.database.windows.net  # MI private endpoint (port 1433)
+    port: 1433
+    database: sales
+    auth: entra_default        # DefaultAzureCredential: env SP -> managed identity -> az cli
+    tables:
+      orders: dbo.orders
+```
+
+```bash
+kontra validate contract.yml --data mi.orders
+```
+
+Azure SQL Database with a managed identity:
+
+```yaml
+datasources:
+  prod:
+    type: mssql
+    host: myserver.database.windows.net
+    database: appdb
+    auth: entra_mi             # system-assigned managed identity
+    tables:
+      users: dbo.users
+```
+
+User-assigned managed identity — set `client_id` to the identity's client id:
+
+```yaml
+    auth: entra_mi
+    client_id: 11111111-2222-3333-4444-555555555555
+```
+
+Service principal (app registration):
+
+```yaml
+    auth: entra_service_principal
+    client_id: ${AZURE_CLIENT_ID}
+    client_secret: ${AZURE_CLIENT_SECRET}
+    tenant_id: ${AZURE_TENANT_ID}
+```
+
+Equivalent direct-URI forms (the query string carries the auth mode):
+
+```bash
+# Managed Instance, public endpoint on port 3342
+kontra profile "mssql://mymi.abcd1234.database.windows.net:3342/sales/dbo.orders?auth=entra_default"
+
+# User-assigned managed identity
+kontra profile "mssql://myserver.database.windows.net/appdb/dbo.users?auth=entra_mi&client_id=<id>"
+```
+
+Auth modes and their resolution:
+
+| `auth` value | ODBC `Authentication` | Notes |
+|--------------|-----------------------|-------|
+| `sql` (default) | — | Username/password via pymssql. Unchanged. |
+| `entra_default` | `ActiveDirectoryDefault` | Env service principal → managed identity → az cli. Recommended. |
+| `entra_mi` | `ActiveDirectoryMsi` | Managed identity. Add `client_id` for user-assigned. |
+| `entra_service_principal` | `ActiveDirectoryServicePrincipal` | Uses `client_id`/`client_secret`. |
+| `entra_interactive` | `ActiveDirectoryInteractive` | Browser login, for dev workstations. |
+
+The auth mode is resolved with priority: URI query string
+(`?auth=…&client_id=…`) > datasource config > env vars (`MSSQL_AUTH`,
+`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`) > default (`sql`).
+
+**Requirements and notes:**
+
+- Install the extra: `pip install kontra[sqlserver-entra]` (adds `pyodbc`).
+- Install a Microsoft ODBC driver on the host — **msodbcsql18** (or 17). Kontra
+  picks the newest `ODBC Driver NN for SQL Server` it finds.
+- All Entra modes emit `Encrypt=yes` (mandatory for Managed Instance and Azure SQL).
+- The identity must be mapped to a database user with the needed permissions.
+- For `entra_service_principal`, the tenant is the directory of the SQL resource.
+  msodbcsql18 has no dedicated tenant connection keyword, so `tenant_id` /
+  `AZURE_TENANT_ID` is accepted for completeness but not injected into the
+  connection string.
+
 ### Local Files
 
 ```yaml

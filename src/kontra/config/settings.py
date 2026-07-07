@@ -229,11 +229,29 @@ class MSSQLDatasourceConfig:
     user: str = "sa"
     password: str = ""
     database: str = ""
+    # Entra ID (Azure AD) authentication. "sql" (default) = user/password.
+    # Other values authenticate via the ODBC driver: entra_default, entra_mi,
+    # entra_service_principal, entra_interactive.
+    auth: str = "sql"
+    client_id: str = ""      # user-assigned MI / service principal app id
+    client_secret: str = ""  # service principal secret
+    tenant_id: str = ""      # service principal tenant (carried; see connector docs)
     # Tables: map alias -> schema.table
     tables: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_literal(self.type, ("mssql",), "type")
+        _validate_literal(
+            self.auth,
+            (
+                "sql",
+                "entra_default",
+                "entra_mi",
+                "entra_service_principal",
+                "entra_interactive",
+            ),
+            "auth",
+        )
         self.port = _coerce_int(self.port, "port")
         if self.tables is None:
             self.tables = {}
@@ -900,14 +918,37 @@ def resolve_datasource(
         port = ds.port
         database = ds.database
 
-        if user and password:
-            auth = f"{user}:{password}@"
-        elif user:
-            auth = f"{user}@"
+        # For Entra ID auth, no password is used and the user is not part of
+        # the credential (the ODBC driver acquires a token). Only include a
+        # user:pass prefix for classic SQL auth.
+        is_entra = ds.auth and ds.auth != "sql"
+        if not is_entra and user and password:
+            userinfo = f"{user}:{password}@"
+        elif not is_entra and user:
+            userinfo = f"{user}@"
         else:
-            auth = ""
+            userinfo = ""
 
-        return f"mssql://{auth}{host}:{port}/{database}/{table_ref}"
+        uri = f"mssql://{userinfo}{host}:{port}/{database}/{table_ref}"
+
+        # Bake Entra auth settings into the URI query string so they flow
+        # through resolve_connection_params() -> get_connection().
+        query: Dict[str, str] = {}
+        if is_entra:
+            query["auth"] = ds.auth
+        if ds.client_id:
+            query["client_id"] = ds.client_id
+        if ds.client_secret:
+            query["client_secret"] = ds.client_secret
+        if ds.tenant_id:
+            query["tenant_id"] = ds.tenant_id
+
+        if query:
+            from urllib.parse import urlencode
+
+            uri += "?" + urlencode(query)
+
+        return uri
 
     raise ValueError(f"Unknown datasource type for '{ds_name}'")
 

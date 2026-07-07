@@ -324,6 +324,52 @@ def get_connection_ctx(handle: "DatasetHandle", dialect: str):
 
 
 # --------------------------------------------------------------------------- #
+# Paramstyle compatibility shim
+# --------------------------------------------------------------------------- #
+
+def _is_pyodbc(obj: Any) -> bool:
+    """
+    True if a connection/cursor belongs to the pyodbc driver.
+
+    Uses the same module-name trick as connectors/detection.py. pyodbc's
+    cursor/connection classes both live in the top-level ``pyodbc`` module.
+    """
+    return type(obj).__module__.split(".")[0] == "pyodbc"
+
+
+def execute_with_params(cursor: Any, sql: str, params: Any = None) -> Any:
+    """
+    Execute a parameterized *static catalog query*, adapting paramstyle.
+
+    pymssql uses ``%s`` placeholders; pyodbc uses ``?``. When the cursor belongs
+    to pyodbc (the Entra ID path, or a BYOC pyodbc connection), rewrite ``%s`` to
+    ``?`` so the same query text works on both drivers.
+
+    IMPORTANT: This performs a literal ``%s`` -> ``?`` substitution and is ONLY
+    safe for the fixed, internal catalog/metadata queries it is applied to. Those
+    queries contain no literal ``%s`` outside of parameter placeholders. Do NOT
+    use this helper for arbitrary or user-supplied SQL.
+
+    postgres (psycopg) uses ``%s`` natively and must never be routed here.
+
+    Args:
+        cursor: A DBAPI cursor (pymssql or pyodbc).
+        sql: The query text using ``%s`` placeholders.
+        params: Parameter tuple/sequence, or None for no parameters.
+
+    Returns:
+        The cursor (for convenience / chaining).
+    """
+    if _is_pyodbc(cursor) and "%s" in sql:
+        sql = sql.replace("%s", "?")
+    if params is None:
+        cursor.execute(sql)
+    else:
+        cursor.execute(sql, params)
+    return cursor
+
+
+# --------------------------------------------------------------------------- #
 # Identifier quoting
 # --------------------------------------------------------------------------- #
 

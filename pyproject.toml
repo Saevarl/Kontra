@@ -47,10 +47,15 @@ kontra = "kontra.cli.main:main"
 s3 = ["s3fs>=2024.6.0"]
 postgres = ["psycopg[binary]>=3.0.0"]
 sqlserver = ["pymssql>=2.2.0"]
+# Entra ID (Azure AD) auth for Azure SQL / Managed Instance. Requires a
+# Microsoft ODBC driver (msodbcsql18) installed on the host; the driver
+# acquires the token, so azure-identity is NOT a dependency.
+sqlserver-entra = ["pyodbc>=5.0.0"]
 all = [
     "s3fs>=2024.6.0",
     "psycopg[binary]>=3.0.0",
     "pymssql>=2.2.0",
+    "pyodbc>=5.0.0",
 ]
 dev = [
     "pytest>=8.0.0",

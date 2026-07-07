@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
+from kontra.connectors.db_utils import execute_with_params
 
 from .types import PrePlan, Decision
 from .dtype_utils import ss_dtype_matches as _sqlserver_dtype_matches
@@ -47,7 +48,8 @@ def fetch_sqlserver_metadata(
         cursor = conn.cursor()
 
         # Table-level stats from sys.dm_db_partition_stats
-        cursor.execute(
+        execute_with_params(
+            cursor,
             """
             SELECT SUM(row_count) AS row_estimate,
                    SUM(used_page_count) AS page_count
@@ -65,7 +67,8 @@ def fetch_sqlserver_metadata(
         }
 
         # Column-level metadata with type information
-        cursor.execute(
+        execute_with_params(
+            cursor,
             """
             SELECT
                 c.name AS column_name,
@@ -92,7 +95,8 @@ def fetch_sqlserver_metadata(
             }
 
         # Check for unique constraints/indexes
-        cursor.execute(
+        execute_with_params(
+            cursor,
             """
             SELECT c.name AS column_name
             FROM sys.indexes i

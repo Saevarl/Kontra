@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
+from kontra.connectors.db_utils import execute_with_params
 from kontra.scout.dtype_mapping import normalize_dtype
 
 _logger = logging.getLogger(__name__)
@@ -73,7 +74,8 @@ class SqlServerBackend:
 
         cursor = self._conn.cursor()
         try:
-            cursor.execute(
+            execute_with_params(
+                cursor,
                 """
                 SELECT column_name, data_type
                 FROM information_schema.columns
@@ -97,7 +99,8 @@ class SqlServerBackend:
         cursor = self._conn.cursor()
         try:
             # Try partition stats estimate first (instant, no scan)
-            cursor.execute(
+            execute_with_params(
+                cursor,
                 """
                 SELECT SUM(row_count) AS row_estimate
                 FROM sys.dm_db_partition_stats ps
@@ -133,7 +136,8 @@ class SqlServerBackend:
         """Estimate size from sys.dm_db_partition_stats."""
         cursor = self._conn.cursor()
         try:
-            cursor.execute(
+            execute_with_params(
+                cursor,
                 """
                 SELECT SUM(used_page_count) * 8 * 1024 AS size_bytes
                 FROM sys.dm_db_partition_stats ps
@@ -253,7 +257,8 @@ class SqlServerBackend:
         """Get the object_id for the table."""
         cursor = self._conn.cursor()
         try:
-            cursor.execute(
+            execute_with_params(
+                cursor,
                 """
                 SELECT o.object_id
                 FROM sys.objects o
@@ -305,7 +310,8 @@ class SqlServerBackend:
         try:
             # Query column statistics
             try:
-                cursor.execute(
+                execute_with_params(
+                    cursor,
                     """
                     SELECT
                         c.name AS column_name,
@@ -331,7 +337,8 @@ class SqlServerBackend:
 
             # Get distinct counts from histogram
             try:
-                cursor.execute(
+                execute_with_params(
+                    cursor,
                     """
                     SELECT
                         c.name AS column_name,
@@ -443,7 +450,8 @@ class SqlServerBackend:
 
         cursor = self._conn.cursor()
         try:
-            cursor.execute(
+            execute_with_params(
+                cursor,
                 """
                 SELECT TOP 1
                     sp.last_updated,

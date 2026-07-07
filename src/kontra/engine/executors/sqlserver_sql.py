@@ -28,6 +28,7 @@ from typing import Any, Dict, Tuple
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
 from kontra.connectors.detection import parse_table_reference, get_default_schema, SQLSERVER
+from kontra.connectors.db_utils import execute_with_params
 
 from .database_base import DatabaseSqlExecutor
 from .registry import register_executor
@@ -144,8 +145,9 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
                 row_count = cursor.fetchone()
                 n = int(row_count[0]) if row_count else 0
 
-                # Get column names (pymssql uses %s for parameters)
-                cursor.execute(
+                # Get column names (%s placeholders; adapted to ? for pyodbc)
+                execute_with_params(
+                    cursor,
                     """
                     SELECT column_name
                     FROM information_schema.columns
