@@ -52,6 +52,10 @@ class DuckDBBackend:
         self.con: Optional[duckdb.DuckDBPyConnection] = None
         self._parquet_metadata: Optional[Any] = None
         self._view_name = "_scout"
+        # DuckDB row counts are exact (Parquet footer num_rows or COUNT(*)),
+        # never statistics estimates. Exposed for provenance parity with the
+        # database backends.
+        self.row_count_estimated: bool = False
 
     def connect(self) -> None:
         """Create DuckDB connection and source view."""
@@ -371,6 +375,10 @@ class DuckDBBackend:
                 "has_statistics": has_stats,
                 "is_estimate": True,  # Flag that distinct_count is estimated
                 "is_upper_bound": True,  # Parquet doesn't track distinct, this is always upper bound
+                # Parquet null_count is exact; distinct is an upper-bound estimate
+                # (discarded by the profiler, so its flag rarely surfaces).
+                "null_count_estimated": False,
+                "distinct_count_estimated": True,
             }
 
         return result

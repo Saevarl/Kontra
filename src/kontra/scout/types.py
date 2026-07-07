@@ -97,6 +97,12 @@ class ColumnProfile:
     distinct_count: int = 0
     uniqueness_ratio: float = 0.0  # distinct / non_null_count
 
+    # Provenance: True when the metric is a statistics-based estimate rather than
+    # an exact aggregate. Estimates may come from pg_stats, SQL Server histograms,
+    # or sampled scans, and can lag the live table.
+    null_count_estimated: bool = False
+    distinct_count_estimated: bool = False
+
     # Cardinality analysis
     is_low_cardinality: bool = False
     values: Optional[List[Any]] = None  # All values if low cardinality
@@ -122,8 +128,10 @@ class ColumnProfile:
             "counts": {
                 "rows": self.row_count,
                 "nulls": self.null_count,
+                "nulls_estimated": self.null_count_estimated,
                 "null_rate": round(self.null_rate, 4),
                 "distinct": self.distinct_count,
+                "distinct_estimated": self.distinct_count_estimated,
                 "uniqueness_ratio": round(self.uniqueness_ratio, 4),
             },
             "cardinality": {
@@ -151,8 +159,14 @@ class ColumnProfile:
         parts = [f"{self.name} ({self.dtype})"]
         parts.append(f"rows={self.row_count}")
         if self.null_count > 0:
-            parts.append(f"nulls={self.null_count} ({self.null_rate:.1%})")
-        parts.append(f"distinct={self.distinct_count}")
+            if self.null_count_estimated:
+                parts.append(f"nulls=~{self.null_count} ({self.null_rate:.1%}) (estimated)")
+            else:
+                parts.append(f"nulls={self.null_count} ({self.null_rate:.1%})")
+        if self.distinct_count_estimated:
+            parts.append(f"distinct=~{self.distinct_count} (estimated)")
+        else:
+            parts.append(f"distinct={self.distinct_count}")
         if self.is_low_cardinality and self.values:
             vals = [str(v) for v in self.values[:10]]
             parts.append(f"values=[{', '.join(vals)}]")
@@ -183,6 +197,10 @@ class DatasetProfile:
     row_count: int = 0
     column_count: int = 0
     estimated_size_bytes: Optional[int] = None
+
+    # Provenance: True when row_count is a statistics-based estimate (pg_class
+    # reltuples, sys.dm_db_partition_stats) rather than an exact COUNT(*).
+    row_count_estimated: bool = False
 
     # Sampling info
     sampled: bool = False
@@ -236,6 +254,7 @@ class DatasetProfile:
             "preset": self.preset,
             "dataset": {
                 "row_count": self.row_count,
+                "row_count_estimated": self.row_count_estimated,
                 "column_count": self.column_count,
                 "estimated_size_bytes": self.estimated_size_bytes,
                 "sampled": self.sampled,
@@ -265,7 +284,10 @@ class DatasetProfile:
 
         lines = []
         lines.append(f"PROFILE: {mask_credentials(self.source_uri)}")
-        lines.append(f"rows={self.row_count:,} cols={self.column_count}")
+        if self.row_count_estimated:
+            lines.append(f"rows=~{self.row_count:,} (estimated) cols={self.column_count}")
+        else:
+            lines.append(f"rows={self.row_count:,} cols={self.column_count}")
         if self.sampled:
             lines.append(f"(sampled: {self.sample_size:,} rows)")
         if self.warnings:
@@ -281,10 +303,16 @@ class DatasetProfile:
             type_tag = f" [{col.semantic_type}]" if col.semantic_type else ""
             parts = [f"  {col.name} ({col.dtype}){type_tag}"]
             if col.null_count > 0:
-                parts.append(f"nulls={col.null_count:,} ({col.null_rate:.1%})")
+                if col.null_count_estimated:
+                    parts.append(f"nulls=~{col.null_count:,} ({col.null_rate:.1%}) (estimated)")
+                else:
+                    parts.append(f"nulls={col.null_count:,} ({col.null_rate:.1%})")
             # Only show distinct_count if actually computed (not 0 in metadata-only mode)
             if col.distinct_count > 0 or not is_metadata_only:
-                parts.append(f"distinct={col.distinct_count:,}")
+                if col.distinct_count_estimated:
+                    parts.append(f"distinct=~{col.distinct_count:,} (estimated)")
+                else:
+                    parts.append(f"distinct={col.distinct_count:,}")
             if col.numeric:
                 if col.numeric.min is not None and col.numeric.max is not None:
                     parts.append(f"range=[{col.numeric.min}, {col.numeric.max}]")
@@ -362,6 +390,9 @@ class DatasetProfile:
                 null_rate=counts.get("null_rate", 0.0),
                 distinct_count=counts.get("distinct", 0),
                 uniqueness_ratio=counts.get("uniqueness_ratio", 0.0),
+                # Backward compat: old profiles lack these keys -> default False
+                null_count_estimated=counts.get("nulls_estimated", False),
+                distinct_count_estimated=counts.get("distinct_estimated", False),
                 is_low_cardinality=card.get("is_low", False),
                 values=card.get("values"),
                 top_values=top_values,
@@ -379,6 +410,7 @@ class DatasetProfile:
             engine_version=d.get("engine_version", ""),
             preset=d.get("preset", "scan"),
             row_count=ds.get("row_count", 0),
+            row_count_estimated=ds.get("row_count_estimated", False),
             column_count=ds.get("column_count", 0),
             estimated_size_bytes=ds.get("estimated_size_bytes"),
             sampled=ds.get("sampled", False),
@@ -387,6 +419,64 @@ class DatasetProfile:
             warnings=d.get("warnings", []),
             profile_duration_ms=d.get("profile_duration_ms", 0),
         )
+
+
+def enforce_profile_invariants(profile: "DatasetProfile") -> List[str]:
+    """
+    Enforce measurement invariants on an assembled profile so it never reports
+    impossible facts (e.g. null_count > row_count, distinct_count > row_count).
+
+    Rules:
+    - null_count <= row_count and distinct_count <= row_count per column.
+    - If a violating value involves an ESTIMATE (the metric itself is estimated,
+      or row_count is estimated), clamp it to the bound and mark it estimated.
+      An estimate contradicting a firmer value is a stats artifact, not a fact.
+    - If BOTH the value and row_count are exact, DO NOT clamp: that is a real
+      measurement contradiction (should not happen) — leave it and warn so it
+      surfaces instead of being silently hidden.
+
+    Returns a list of advisory warning strings (for exact-vs-exact conflicts).
+    Mutates the profile in place. Idempotent.
+    """
+    warnings: List[str] = []
+    row_count = profile.row_count
+    row_est = profile.row_count_estimated
+
+    if row_count <= 0:
+        # Nothing meaningful to clamp against.
+        return warnings
+
+    for col in profile.columns:
+        # --- null_count <= row_count ---
+        if col.null_count > row_count:
+            if col.null_count_estimated or row_est:
+                col.null_count = row_count
+                col.null_count_estimated = True
+                col.null_rate = 1.0
+            else:
+                warnings.append(
+                    f"{col.name}: null_count ({col.null_count:,}) exceeds "
+                    f"row_count ({row_count:,}); both are exact measurements "
+                    f"(not clamped)"
+                )
+
+        # --- distinct_count <= row_count ---
+        if col.distinct_count > row_count:
+            if col.distinct_count_estimated or row_est:
+                col.distinct_count = row_count
+                col.distinct_count_estimated = True
+                non_null = row_count - col.null_count
+                col.uniqueness_ratio = (
+                    col.distinct_count / non_null if non_null > 0 else 0.0
+                )
+            else:
+                warnings.append(
+                    f"{col.name}: distinct_count ({col.distinct_count:,}) exceeds "
+                    f"row_count ({row_count:,}); both are exact measurements "
+                    f"(not clamped)"
+                )
+
+    return warnings
 
 
 @dataclass

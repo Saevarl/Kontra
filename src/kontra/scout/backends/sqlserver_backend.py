@@ -57,6 +57,9 @@ class SqlServerBackend:
         self.sample_size = sample_size
         self._conn = None
         self._schema: Optional[List[Tuple[str, str]]] = None
+        # True when get_row_count returned a sys.dm_db_partition_stats estimate
+        # rather than an exact COUNT(*). Read by the profiler for provenance.
+        self.row_count_estimated: bool = False
 
     def connect(self) -> None:
         """Establish connection to SQL Server."""
@@ -117,17 +120,20 @@ class SqlServerBackend:
             if estimate <= 0:
                 cursor.execute(f"SELECT COUNT(*) FROM {self._qualified_table()}")
                 row = cursor.fetchone()
+                self.row_count_estimated = False
                 return int(row[0]) if row else 0
 
             # If sample_size is set, we need exact count for accuracy
             if self.sample_size:
                 cursor.execute(f"SELECT COUNT(*) FROM {self._qualified_table()}")
                 row = cursor.fetchone()
+                self.row_count_estimated = False
                 return int(row[0]) if row else 0
 
             # Use estimate for large tables
             if os.getenv("KONTRA_VERBOSE"):
                 _logger.info("sys.dm_db_partition_stats estimate: %d rows", estimate)
+            self.row_count_estimated = True
             return estimate
         finally:
             cursor.close()
@@ -304,7 +310,16 @@ class SqlServerBackend:
                 "null_count": 0,
                 "distinct_count": 0,
                 "is_estimate": True,
+                # Per-metric provenance. Default: histogram/stats estimates.
+                # Flipped to False below where an exact aggregate is computed.
+                "null_count_estimated": True,
+                "distinct_count_estimated": True,
             }
+
+        # Same-moment exact row count, captured whenever we run a full-table
+        # scan below. Lets the profiler pair exact aggregates with an exact
+        # COUNT(*) from the same query instead of a stale partition estimate.
+        exact_row_count: Optional[int] = None
 
         cursor = self._conn.cursor()
         try:
@@ -368,11 +383,14 @@ class SqlServerBackend:
             ]
             if cols_without_stats:
                 try:
-                    # Batch COUNT(DISTINCT) for all columns without stats
+                    # Batch COUNT(DISTINCT) for all columns without stats.
+                    # Include COUNT(*) in the SAME scan so the row count is
+                    # same-moment with these exact distinct counts.
                     distinct_exprs = [
                         f"COUNT(DISTINCT {self.esc_ident(col)}) AS [{col}_distinct]"
                         for col in cols_without_stats
                     ]
+                    distinct_exprs.append("COUNT(*) AS [__total_rows__]")
                     table = self._qualified_table()
                     sql = f"SELECT {', '.join(distinct_exprs)} FROM {table}"
                     cursor.execute(sql)
@@ -381,6 +399,8 @@ class SqlServerBackend:
                         for i, col_name in enumerate(cols_without_stats):
                             stats_info[col_name]["distinct_count"] = int(row[i] or 0)
                             stats_info[col_name]["is_estimate"] = False
+                            stats_info[col_name]["distinct_count_estimated"] = False
+                        exact_row_count = int(row[len(cols_without_stats)] or 0)
                 except _get_db_error() as e:
                     _logger.debug(f"Could not get distinct counts: {e}")
 
@@ -396,8 +416,10 @@ class SqlServerBackend:
 
                 table = self._qualified_table()
 
-                # For small tables (< 100K rows), full count is fast enough
+                # For small tables (< 100K rows), full count is fast enough.
+                # Add COUNT(*) so nulls pair with a same-moment exact row count.
                 if row_count < 100000:
+                    null_exprs.append("COUNT(*) AS [__total_rows__]")
                     sql = f"SELECT {', '.join(null_exprs)} FROM {table}"
                     cursor.execute(sql)
                     row = cursor.fetchone()
@@ -405,8 +427,11 @@ class SqlServerBackend:
                         for i, (col_name, _) in enumerate(schema):
                             stats_info[col_name]["null_count"] = int(row[i] or 0)
                             stats_info[col_name]["is_estimate"] = False
+                            stats_info[col_name]["null_count_estimated"] = False
+                        exact_row_count = int(row[len(schema)] or 0)
                 else:
-                    # For large tables, use 1% sample and extrapolate
+                    # For large tables, use 1% sample and extrapolate.
+                    # These null counts are estimates of the live table.
                     sql = f"""
                         SELECT {', '.join(null_exprs)}
                         FROM {table}
@@ -419,10 +444,17 @@ class SqlServerBackend:
                             sample_nulls = row[i] or 0
                             stats_info[col_name]["null_count"] = int(sample_nulls * 100)
                             stats_info[col_name]["is_estimate"] = True
+                            stats_info[col_name]["null_count_estimated"] = True
             except _get_db_error() as e:
                 _logger.debug(f"Could not get null counts: {e}")
         finally:
             cursor.close()
+
+        # Surface the same-moment exact row count (if captured) on every column
+        # so the profiler can adopt it in place of the partition-stats estimate.
+        if exact_row_count is not None:
+            for col_name in stats_info:
+                stats_info[col_name]["exact_row_count"] = exact_row_count
 
         return stats_info
 

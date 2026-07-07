@@ -35,6 +35,7 @@ from .types import (
     StringStats,
     TemporalStats,
     TopValue,
+    enforce_profile_invariants,
 )
 from .dtype_mapping import normalize_dtype
 
@@ -277,6 +278,14 @@ class ScoutProfiler:
             # 2. Get row count (backend handles optimization)
             row_count = self.backend.get_row_count()
 
+            # Track effective row count + provenance. Column-profiling paths may
+            # replace an estimate with a same-moment exact COUNT(*) when they
+            # scan the table anyway (see _profile_columns and the metadata paths).
+            self._effective_row_count = row_count
+            self._row_count_estimated = bool(
+                getattr(self.backend, "row_count_estimated", False)
+            )
+
             # 3. Get estimated size (if available)
             estimated_size = self.backend.get_estimated_size_bytes()
 
@@ -291,6 +300,10 @@ class ScoutProfiler:
             # 5. Profile each column (single-pass aggregation)
             column_profiles = self._profile_columns(schema, row_count)
 
+            # A profiling path may have upgraded the estimate to an exact,
+            # same-moment count. Use the effective values from here on.
+            row_count = self._effective_row_count
+
             # 6. Optionally detect patterns (sampling-based, efficient)
             if self.include_patterns:
                 self._detect_patterns(column_profiles)
@@ -300,13 +313,14 @@ class ScoutProfiler:
 
             duration_ms = int((time.perf_counter() - t0) * 1000)
 
-            return DatasetProfile(
+            profile = DatasetProfile(
                 source_uri=self.source_uri,
                 source_format=self.backend.source_format,
                 profiled_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 engine_version=VERSION,
                 preset=self.preset_name,
                 row_count=row_count,
+                row_count_estimated=self._row_count_estimated,
                 column_count=len(column_profiles),
                 estimated_size_bytes=estimated_size,
                 sampled=self.sample_size is not None,
@@ -315,6 +329,17 @@ class ScoutProfiler:
                 warnings=warnings,
                 profile_duration_ms=duration_ms,
             )
+
+            # 8. Consistency guard: clamp estimated metrics that violate bounds
+            # (null_count/distinct_count <= row_count) so the profile never
+            # reports impossible facts. Exact-vs-exact conflicts are surfaced
+            # as warnings instead of being silently hidden.
+            inv_warnings = enforce_profile_invariants(profile)
+            for w in inv_warnings:
+                _logger.warning(w)
+            profile.warnings.extend(inv_warnings)
+
+            return profile
         finally:
             if self.backend:
                 self.backend.close()
@@ -350,6 +375,16 @@ class ScoutProfiler:
         exprs: List[str] = []
         col_info: List[Tuple[str, str, str]] = []  # (name, raw_type, normalized_type)
 
+        # Same-moment exact row count: this path scans the table for exact
+        # aggregates (null/distinct counts), so compute COUNT(*) in the SAME
+        # batch and use it as the authoritative row count. This prevents pairing
+        # exact aggregates with a stale partition-stats/reltuples estimate.
+        # When sampling, COUNT(*) would return the sample size, not the table
+        # size, so skip the override and mark aggregates as sample estimates.
+        count_alias = "__total_rows__"
+        if self.sample_size is None:
+            exprs.append(f"COUNT(*) AS {self.backend.esc_ident(count_alias)}")
+
         for col_name, raw_type in schema:
             dtype = normalize_dtype(raw_type)
             col_info.append((col_name, raw_type, dtype))
@@ -359,12 +394,23 @@ class ScoutProfiler:
         # Execute single aggregate query via backend
         results = self.backend.execute_stats_query(exprs)
 
+        if self.sample_size is None:
+            scanned = results.get(count_alias)
+            if scanned is not None:
+                row_count = int(scanned)
+                self._effective_row_count = row_count
+                self._row_count_estimated = False
+
         # Build ColumnProfile objects
         profiles: List[ColumnProfile] = []
         for col_name, raw_type, dtype in col_info:
             profile = self._build_column_profile(
                 col_name, raw_type, dtype, results, row_count
             )
+            # Aggregates over a sample are estimates of the full table.
+            if self.sample_size is not None:
+                profile.null_count_estimated = True
+                profile.distinct_count_estimated = True
             profiles.append(profile)
 
         # Fetch top values and low-cardinality values
@@ -387,6 +433,11 @@ class ScoutProfiler:
         # Get metadata from backend
         metadata = self.backend.profile_metadata_only(schema, row_count)
 
+        # If the backend captured a same-moment exact COUNT(*) while scanning
+        # (e.g. SQL Server's exact null/distinct path), adopt it as the row count
+        # so estimates aren't paired with a stale partition estimate.
+        row_count = self._adopt_exact_row_count(metadata, row_count)
+
         profiles: List[ColumnProfile] = []
         for col_name, raw_type in schema:
             dtype = normalize_dtype(raw_type)
@@ -395,6 +446,13 @@ class ScoutProfiler:
             null_count = col_meta.get("null_count", 0)
             non_null_count = row_count - null_count
 
+            null_est = col_meta.get(
+                "null_count_estimated", col_meta.get("is_estimate", False)
+            )
+            distinct_est = col_meta.get(
+                "distinct_count_estimated", col_meta.get("is_estimate", False)
+            )
+
             # Handle distinct_count estimates:
             # - Parquet upper-bound estimates (is_upper_bound=True) are unreliable
             # - pg_stats estimates are reliable even if they equal non_null_count
@@ -402,6 +460,7 @@ class ScoutProfiler:
             if col_meta.get("is_upper_bound", False):
                 # Discard unreliable upper-bound estimates (e.g., Parquet without stats)
                 distinct_count = 0
+                distinct_est = False
 
             null_rate = null_count / row_count if row_count > 0 else 0.0
             uniqueness_ratio = (
@@ -417,6 +476,8 @@ class ScoutProfiler:
                 null_rate=null_rate,
                 distinct_count=distinct_count,
                 uniqueness_ratio=uniqueness_ratio,
+                null_count_estimated=null_est,
+                distinct_count_estimated=distinct_est if distinct_count > 0 else False,
                 # Only classify as low cardinality if we have meaningful distinct count
                 is_low_cardinality=distinct_count > 0 and distinct_count <= self.list_values_threshold,
             )
@@ -458,6 +519,11 @@ class ScoutProfiler:
         metadata = self.backend.profile_metadata_only(schema, row_count)
         classification = self.backend.classify_columns(schema, row_count)
 
+        # Adopt a same-moment exact COUNT(*) if the backend captured one while
+        # scanning for exact null/distinct counts (avoids pairing exact
+        # aggregates with a stale partition/reltuples estimate).
+        row_count = self._adopt_exact_row_count(metadata, row_count)
+
         # Step 3: Build profile objects with metadata
         profiles: List[ColumnProfile] = []
         numeric_cols = []
@@ -470,6 +536,13 @@ class ScoutProfiler:
 
             null_count = col_meta.get("null_count", 0)
             distinct_count = col_meta.get("distinct_count", 0)
+
+            null_est = col_meta.get(
+                "null_count_estimated", col_meta.get("is_estimate", False)
+            )
+            distinct_est = col_meta.get(
+                "distinct_count_estimated", col_meta.get("is_estimate", False)
+            )
 
             non_null_count = row_count - null_count
             null_rate = null_count / row_count if row_count > 0 else 0.0
@@ -486,6 +559,8 @@ class ScoutProfiler:
                 null_rate=null_rate,
                 distinct_count=distinct_count,
                 uniqueness_ratio=uniqueness_ratio,
+                null_count_estimated=null_est,
+                distinct_count_estimated=distinct_est,
                 is_low_cardinality=distinct_count <= self.list_values_threshold,
             )
 
@@ -595,6 +670,23 @@ class ScoutProfiler:
                     _logger.debug(f"Could not fetch top values for {col_name}: {e}")
 
         return profiles
+
+    def _adopt_exact_row_count(
+        self, metadata: Dict[str, Dict[str, Any]], row_count: int
+    ) -> int:
+        """
+        If a backend captured a same-moment exact COUNT(*) in its metadata scan,
+        adopt it as the effective row count and clear the estimate flag.
+
+        Returns the row count to use (exact if captured, else the original).
+        """
+        for col_meta in metadata.values():
+            exact = col_meta.get("exact_row_count")
+            if exact is not None:
+                self._effective_row_count = int(exact)
+                self._row_count_estimated = False
+                return int(exact)
+        return row_count
 
     def _build_column_agg_exprs(self, col: str, dtype: str) -> List[str]:
         """Generate SQL expressions for a single column's statistics."""

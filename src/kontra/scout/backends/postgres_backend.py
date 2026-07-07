@@ -58,6 +58,9 @@ class PostgreSQLBackend:
         self._conn = None
         self._pg_stats: Optional[Dict[str, Dict[str, Any]]] = None
         self._schema: Optional[List[Tuple[str, str]]] = None
+        # True when get_row_count returned a pg_class reltuples estimate rather
+        # than an exact COUNT(*). Read by the profiler for provenance flagging.
+        self.row_count_estimated: bool = False
 
     def connect(self) -> None:
         """Establish connection to PostgreSQL."""
@@ -107,20 +110,24 @@ class PostgreSQLBackend:
             row = cur.fetchone()
             estimate = row[0] if row else 0
 
-            # If estimate is 0 or negative (stats not updated), use COUNT
+            # If estimate is 0 or negative, use exact COUNT. reltuples is -1 on
+            # PostgreSQL 14+ for tables that have never been ANALYZEd/VACUUMed.
             if estimate <= 0:
                 cur.execute(f"SELECT COUNT(*) FROM {self._qualified_table()}")
                 row = cur.fetchone()
+                self.row_count_estimated = False
                 return int(row[0]) if row else 0
 
             # If sample_size is set, we need exact count for accuracy
             if self.sample_size:
                 cur.execute(f"SELECT COUNT(*) FROM {self._qualified_table()}")
                 row = cur.fetchone()
+                self.row_count_estimated = False
                 return int(row[0]) if row else 0
 
             # Use estimate for large tables
             _logger.info(f"pg_class estimate: {estimate} rows")
+            self.row_count_estimated = True
             return int(estimate)
 
     def get_estimated_size_bytes(self) -> Optional[int]:
@@ -317,6 +324,9 @@ class PostgreSQLBackend:
                 "n_distinct_raw": n_distinct,
                 "most_common_vals": most_common_vals,
                 "is_estimate": True,  # Flag that these are estimates
+                # Per-metric provenance: pg_stats gives estimates for both.
+                "null_count_estimated": True,
+                "distinct_count_estimated": True,
             }
 
         return result

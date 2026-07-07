@@ -26,7 +26,8 @@ def render_markdown(profile: DatasetProfile) -> str:
     lines.append("## Summary")
     lines.append("")
     lines.append(f"- **Format:** {profile.source_format}")
-    lines.append(f"- **Rows:** {profile.row_count:,}")
+    rows_str = f"~{profile.row_count:,}" if profile.row_count_estimated else f"{profile.row_count:,}"
+    lines.append(f"- **Rows:** {rows_str}")
     lines.append(f"- **Columns:** {profile.column_count}")
     if profile.estimated_size_bytes:
         size_mb = profile.estimated_size_bytes / (1024 * 1024)
@@ -47,12 +48,14 @@ def render_markdown(profile: DatasetProfile) -> str:
 
     for col in profile.columns:
         null_pct = f"{col.null_rate * 100:.1f}%"
+        if col.null_count_estimated:
+            null_pct = f"~{null_pct}"
         # Show "—" for distinct count if not computed (metadata-only preset)
         if is_metadata_only and col.distinct_count == 0:
             distinct = "—"
             card = "—"
         else:
-            distinct = f"{col.distinct_count:,}"
+            distinct = f"~{col.distinct_count:,}" if col.distinct_count_estimated else f"{col.distinct_count:,}"
             card = _cardinality_label(col)
         lines.append(f"| {col.name} | {col.dtype} | {null_pct} | {distinct} | {card} |")
 

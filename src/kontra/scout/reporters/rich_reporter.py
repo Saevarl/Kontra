@@ -55,8 +55,9 @@ def _print_to_console(console: Console, profile: DatasetProfile) -> None:
             size_str = f" | Size: {size_mb:.1f} MB"
     sample_str = f" (sampled: {profile.sample_size:,} rows)" if profile.sampled else ""
 
+    rows_str = f"~{profile.row_count:,}" if profile.row_count_estimated else f"{profile.row_count:,}"
     header = (
-        f"Rows: [bold]{profile.row_count:,}[/bold] | "
+        f"Rows: [bold]{rows_str}[/bold] | "
         f"Columns: [bold]{profile.column_count}[/bold]{size_str} | "
         f"Duration: [bold]{profile.profile_duration_ms}[/bold] ms{sample_str}"
     )
@@ -75,10 +76,14 @@ def _print_to_console(console: Console, profile: DatasetProfile) -> None:
 
     for col in profile.columns:
         null_pct = f"{col.null_rate * 100:.1f}%"
+        if col.null_count_estimated:
+            null_pct = f"~{null_pct}"
 
         # Show "—" for distinct count if not computed (metadata-only preset)
         if is_metadata_only and col.distinct_count == 0:
             distinct_str = "[dim]—[/dim]"
+        elif col.distinct_count_estimated:
+            distinct_str = f"~{col.distinct_count:,}"
         else:
             distinct_str = f"{col.distinct_count:,}"
 

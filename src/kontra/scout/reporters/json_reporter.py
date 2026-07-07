@@ -83,18 +83,20 @@ def render_llm(profile: DatasetProfile) -> str:
         # Null rate (only if > 0)
         if col.null_rate > 0:
             null_pct = col.null_rate * 100
+            null_mark = "~" if col.null_count_estimated else ""
             if null_pct < 0.1:
-                parts.append("nulls=<0.1%")
+                parts.append(f"nulls={null_mark}<0.1%")
             else:
-                parts.append(f"nulls={null_pct:.1f}%")
+                parts.append(f"nulls={null_mark}{null_pct:.1f}%")
 
         # Distinct count with uniqueness hint
+        dm = "~" if col.distinct_count_estimated else ""
         if col.uniqueness_ratio >= 0.99 and col.distinct_count > 100:
-            parts.append(f"distinct={col.distinct_count:,} (unique)")
+            parts.append(f"distinct={dm}{col.distinct_count:,} (unique)")
         elif col.distinct_count <= 20:
-            parts.append(f"distinct={col.distinct_count}")
+            parts.append(f"distinct={dm}{col.distinct_count}")
         else:
-            parts.append(f"distinct={col.distinct_count:,}")
+            parts.append(f"distinct={dm}{col.distinct_count:,}")
 
         # Semantic type
         if col.semantic_type:

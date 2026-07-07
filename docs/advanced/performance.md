@@ -246,6 +246,31 @@ Full table scan. Gets everything including median, percentiles, and exact distri
 | median/percentiles | ❌ | ❌ | ✅ |
 | top_values | limited | ✅ | ✅ |
 
+### Estimated values and the `~` marker
+
+On databases, some metrics come from the catalog's statistics rather than a live
+scan: the row count (PostgreSQL `pg_class.reltuples`, SQL Server
+`sys.dm_db_partition_stats`), and `distinct_count` / `null_count` in the `scout`
+and `scan` presets (`pg_stats`, SQL Server histograms). These are estimates that
+can lag the live table.
+
+Estimated values are labelled, never presented as exact:
+
+- **Rich / Markdown / LLM output** prefix estimated numbers with `~`
+  (e.g. `~126,375`); `to_llm()` adds the word `(estimated)`.
+- **JSON output** carries boolean flags: `dataset.row_count_estimated`, and
+  per-column `counts.nulls_estimated` / `counts.distinct_estimated`.
+
+When a preset already scans the table for exact aggregates, Kontra computes an
+exact `COUNT(*)` in the *same* query so the row count is same-moment with the
+aggregates — it never pairs an exact null count with a stale row estimate.
+
+A consistency guard enforces `null_count <= row_count` and
+`distinct_count <= row_count`. If an estimate violates a bound it is clamped to
+the bound and kept flagged. Two exact values that contradict are left as-is and
+surfaced as a warning rather than silently hidden — so the profile never reports
+impossible facts like `null_count > row_count`.
+
 ---
 
 ## Controls
