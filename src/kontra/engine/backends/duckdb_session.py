@@ -4,8 +4,11 @@ from __future__ import annotations
 import os
 from typing import Any, Dict
 from urllib.parse import urlparse
+from typing import TYPE_CHECKING
 
-import duckdb
+if TYPE_CHECKING:
+    import duckdb
+
 from kontra.connectors.handle import DatasetHandle
 
 # --- Public API ---
@@ -26,6 +29,8 @@ def create_duckdb_connection(handle: DatasetHandle) -> duckdb.DuckDBPyConnection
     Returns:
         A configured duckdb.DuckDBPyConnection.
     """
+    import duckdb
+
     con = duckdb.connect()
 
     # Apply performance/threading tweaks (reads env, but for runtime, not I/O)
@@ -59,6 +64,8 @@ def _safe_set(con: duckdb.DuckDBPyConnection, key: str, value: Any) -> None:
     """
     Safely execute a DuckDB SET command, ignoring errors.
     """
+    import duckdb
+
     try:
         con.execute(f"SET {key} = ?", [str(value)])
     except duckdb.Error:
@@ -71,6 +78,8 @@ def _configure_threads(con: duckdb.DuckDBPyConnection) -> None:
     Configure DuckDB thread count based on env vars or CPU count.
     This is a performance tweak, not an I/O secret.
     """
+    import duckdb
+
     env_threads = os.getenv("DUCKDB_THREADS")
     try:
         nthreads = int(env_threads) if env_threads else (os.cpu_count() or 4)

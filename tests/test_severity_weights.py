@@ -397,10 +397,11 @@ class TestConfigIntegration:
         assert "severity_weights" in d
         assert d["severity_weights"] == {"blocking": 1.0, "warning": 0.5}
 
-    def test_effective_config_severity_weights_excluded_when_none(self):
-        """EffectiveConfig.to_dict excludes severity_weights when None."""
+    def test_effective_config_severity_weights_shown_when_none(self):
+        """EffectiveConfig.to_dict always includes severity_weights (BUG-025)."""
         from kontra.config.settings import EffectiveConfig
 
         cfg = EffectiveConfig()
         d = cfg.to_dict()
-        assert "severity_weights" not in d
+        assert "severity_weights" in d
+        assert d["severity_weights"] is None

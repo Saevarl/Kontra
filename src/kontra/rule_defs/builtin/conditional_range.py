@@ -19,9 +19,10 @@ Passes when:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Union, TYPE_CHECKING
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
@@ -30,18 +31,28 @@ from kontra.rule_defs.condition_parser import parse_condition, ConditionParseErr
 from kontra.state.types import FailureMode
 
 
-# Map operators to Polars comparison methods
-POLARS_OP_MAP = {
-    "==": pl.Expr.__eq__,
-    "!=": pl.Expr.__ne__,
-    ">": pl.Expr.__gt__,
-    ">=": pl.Expr.__ge__,
-    "<": pl.Expr.__lt__,
-    "<=": pl.Expr.__le__,
-}
+# Map operators to Polars comparison methods. Built lazily so that importing
+# this module does not pull in polars at package load time.
+_POLARS_OP_MAP = None
 
 
-@register_rule("conditional_range")
+def _get_polars_op_map():
+    global _POLARS_OP_MAP
+    if _POLARS_OP_MAP is None:
+        import polars as pl
+
+        _POLARS_OP_MAP = {
+            "==": pl.Expr.__eq__,
+            "!=": pl.Expr.__ne__,
+            ">": pl.Expr.__gt__,
+            ">=": pl.Expr.__ge__,
+            "<": pl.Expr.__lt__,
+            "<=": pl.Expr.__le__,
+        }
+    return _POLARS_OP_MAP
+
+
+@register_rule("conditional_range", _builtin=True)
 class ConditionalRangeRule(BaseRule):
     """
     Fails where column is outside range when a condition is met.
@@ -109,8 +120,10 @@ class ConditionalRangeRule(BaseRule):
 
     def _build_condition_expr(self) -> pl.Expr:
         """Build the Polars expression for the when condition."""
+        import polars as pl
+
         when_col = pl.col(self._when_column)
-        compare_fn = POLARS_OP_MAP[self._when_op]
+        compare_fn = _get_polars_op_map()[self._when_op]
 
         # Handle NULL value in condition
         if self._when_value is None:
@@ -127,6 +140,8 @@ class ConditionalRangeRule(BaseRule):
 
     def _build_range_violation_expr(self) -> pl.Expr:
         """Build expression for range violation (NULL or out of range)."""
+        import polars as pl
+
         col = pl.col(self._column)
 
         # NULL is a violation
@@ -241,18 +256,18 @@ class ConditionalRangeRule(BaseRule):
         return details
 
     def compile_predicate(self) -> Optional[Predicate]:
-        # Build condition and range violation expressions
-        condition_expr = self._build_condition_expr()
-        range_violation_expr = self._build_range_violation_expr()
-
-        # Mask: condition is TRUE AND (column is NULL OR outside range)
-        expr = condition_expr & range_violation_expr
-
         message = self._build_message()
+
+        def _expr():
+            # Build condition and range violation expressions
+            condition_expr = self._build_condition_expr()
+            range_violation_expr = self._build_range_violation_expr()
+            # Mask: condition is TRUE AND (column is NULL OR outside range)
+            return condition_expr & range_violation_expr
 
         return Predicate(
             rule_id=self.rule_id,
-            expr=expr,
+            expr_factory=_expr,
             message=message,
             columns={self._column, self._when_column},
         )

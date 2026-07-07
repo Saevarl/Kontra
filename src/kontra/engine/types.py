@@ -14,7 +14,11 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, TypedDict, Literal
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, TypedDict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kontra.rule_defs.execution_plan import CompiledPlan, RuleExecutionPlan
 
 
 class RuleResultDict(TypedDict, total=False):
@@ -136,3 +140,87 @@ class StatsDict(TypedDict, total=False):
     columns_validated: List[str]
     columns_loaded: List[str]
     profile: Dict[str, Any]
+
+
+# --------------------------------------------------------------------------- #
+# Phase Dataclasses
+# --------------------------------------------------------------------------- #
+# These dataclasses represent the outputs of each phase in the validation
+# engine pipeline. They enable clean separation of concerns and make the
+# _run_impl() method easier to follow.
+
+
+@dataclass
+class CompilationContext:
+    """
+    Output of the rule compilation phase.
+
+    Contains everything needed to execute rules across tiers:
+    - Built rule objects
+    - Execution plan with compiled predicates
+    - Severity, tally, and context mappings by rule_id
+    """
+    rules: List[Any]
+    plan: "RuleExecutionPlan"
+    compiled_full: "CompiledPlan"
+    severity_map: Dict[str, str]
+    tally_map: Dict[str, bool]
+    context_map: Dict[str, Dict[str, Any]]
+
+
+@dataclass
+class PreplanResult:
+    """
+    Output of the preplan (metadata-only) phase.
+
+    Reports which rules were resolved via metadata without data scan,
+    and provides a scan manifest for remaining rules.
+    """
+    effective: bool
+    handled_ids: Set[str]
+    results_by_id: Dict[str, Dict[str, Any]]
+    # Parquet-specific manifest
+    row_groups: Optional[List[int]] = None
+    columns: Optional[List[str]] = None
+    total_rows: Optional[int] = None
+    # Timing
+    analyze_ms: int = 0
+    # Summary for stats
+    summary: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PushdownResult:
+    """
+    Output of the SQL pushdown phase.
+
+    Reports which rules were executed via SQL (DuckDB/PostgreSQL/SQLServer)
+    and provides metadata for subsequent phases.
+    """
+    effective: bool
+    handled_ids: Set[str]
+    results_by_id: Dict[str, Dict[str, Any]]
+    row_count: Optional[int] = None
+    available_cols: List[str] = field(default_factory=list)
+    executor_name: str = "none"
+    # Timing breakdown
+    compile_ms: int = 0
+    execute_ms: int = 0
+    introspect_ms: int = 0
+    # Staging info (CSV -> Parquet)
+    staged_path: Optional[str] = None
+    staging_tmpdir: Any = None  # tempfile.TemporaryDirectory
+
+
+@dataclass
+class ResidualResult:
+    """
+    Output of the residual Polars execution phase.
+
+    Contains rule results executed via Polars and the loaded DataFrame.
+    """
+    results: List[Dict[str, Any]]
+    df: Optional[Any] = None  # pl.DataFrame
+    # Timing
+    load_ms: int = 0
+    execute_ms: int = 0

@@ -18,10 +18,49 @@ rules:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | Yes | Contract identifier (used in history, diff) |
+| `name` | Yes | Contract identifier (used in history, diff). Changing this creates a new validation history -- see note below. |
 | `datasource` | Yes | File path, URI, or named datasource |
 | `description` | No | Human-readable description |
 | `rules` | Yes | List of rule definitions |
+| `extends` | No | Base contract(s) to inherit rules from |
+
+### Inheritance
+
+Inherit rules from base contracts with `extends`:
+
+```yaml
+# base.yml
+name: base_checks
+rules:
+  - name: not_null
+    params: { column: id }
+  - name: unique
+    params: { column: id }
+```
+
+```yaml
+# users.yml
+extends: base.yml
+name: users
+datasource: users.parquet
+rules:
+  - name: not_null
+    params: { column: email }
+```
+
+`users.yml` validates with 3 rules: 2 from base + 1 of its own.
+
+Only `rules` are inherited. `name` and `datasource` are not. Paths resolve relative to the child contract's directory. Multiple bases: `extends: [base.yml, compliance.yml]`. A base can extend another base. Duplicate rule IDs across base + child raise `DuplicateRuleIdError`.
+
+---
+
+## Contract Identity and History
+
+Kontra identifies a contract by a fingerprint derived from its `name` and `rules`. This fingerprint links validation runs to a contract across history and diff.
+
+**Renaming the `name` field is a destructive operation**: it changes the fingerprint, which means all previous validation history becomes unreachable under the new name. `kontra diff` will show no prior runs, and `kontra history` starts fresh.
+
+If you need to rename a contract, be aware that the old history remains in the state backend under the old fingerprint but will no longer be associated with the renamed contract.
 
 ---
 

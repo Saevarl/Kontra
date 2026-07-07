@@ -1,14 +1,15 @@
 from __future__ import annotations
-from typing import Dict, Any, Optional, Tuple
-import polars as pl
-import duckdb
+from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.state.types import FailureMode
 
 
-@register_rule("custom_sql_check")
+@register_rule("custom_sql_check", _builtin=True)
 class CustomSQLCheck(BaseRule):
     """
     Custom SQL check rule for flexible validation logic.
@@ -39,8 +40,34 @@ class CustomSQLCheck(BaseRule):
         super().__init__(*args, **kwargs)
         self._validation_result: Optional[Any] = None  # Cache validation result
 
+        from kontra.errors import RuleParameterError
+
+        # Warn if sql is missing {table} placeholder (BUG-016)
+        # Not a hard error because hardcoded "data" works for local DuckDB execution.
+        # The placeholder is required for remote execution (PostgreSQL/SQL Server).
+        sql = self.params.get("sql") or self.params.get("query")
+        if sql and "{table}" not in sql:
+            import warnings
+            warnings.warn(
+                f"custom_sql_check SQL should use {{table}} placeholder instead of "
+                f"hardcoded table names. Without it, remote execution (PostgreSQL/SQL Server) "
+                f"will fail. Example: SELECT * FROM {{table}} WHERE balance < 0",
+                UserWarning,
+                stacklevel=4,
+            )
+
+        # Validate threshold is non-negative (BUG-017)
+        threshold = self.params.get("threshold")
+        if threshold is not None and threshold < 0:
+            raise RuleParameterError(
+                "custom_sql_check", "threshold",
+                f"threshold must be >= 0, got {threshold}"
+            )
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         """Execute SQL check via DuckDB (fallback path)."""
+        import duckdb
+
         from kontra.engine.sql_validator import to_count_query, validate_sql
 
         # Accept both 'sql' (documented) and 'query' (legacy) parameter names
@@ -94,12 +121,19 @@ class CustomSQLCheck(BaseRule):
                 }
 
             return res
-        except Exception as e:
+        except duckdb.Error as e:
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
                 "failed_count": int(df.height),
-                "message": f"Rule execution failed: {e}",
+                "message": f"SQL execution failed: {e}",
+            }
+        except ValueError as e:
+            return {
+                "rule_id": self.rule_id,
+                "passed": False,
+                "failed_count": int(df.height),
+                "message": f"Validation error: {e}",
             }
 
     def compile_predicate(self):

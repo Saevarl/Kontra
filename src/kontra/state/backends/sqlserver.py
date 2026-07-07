@@ -229,7 +229,6 @@ class SQLServerStore(StateBackend):
         if parsed.path and parsed.path != "/":
             params["database"] = parsed.path.strip("/").split("/")[0]
 
-        # Parse query parameters
         query_params = parse_qs(parsed.query)
         for key, values in query_params.items():
             if values:
@@ -852,7 +851,6 @@ class SQLServerStore(StateBackend):
             cursor.execute(ann_sql, (actual_run_id,))
             ann_rows = cursor.fetchall()
 
-            # Build state
             state = self._build_state_from_rows(run_row, rule_rows)
 
             # Build annotations list
@@ -893,8 +891,6 @@ class SQLServerStore(StateBackend):
         contract_fingerprint: str,
         limit: int = 10,
     ) -> List[ValidationState]:
-        """Get recent history with annotations loaded."""
-        # Get history first
         states = self.get_history(contract_fingerprint, limit=limit)
         if not states:
             return []
@@ -924,7 +920,6 @@ class SQLServerStore(StateBackend):
             cursor.execute(ann_sql, run_ids)
             ann_rows = cursor.fetchall()
 
-            # Build annotations index
             annotations_index: Dict[int, Dict[Optional[int], List[Annotation]]] = {}
 
             for row in ann_rows:

@@ -3,21 +3,33 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-import polars as pl
-import duckdb
+if TYPE_CHECKING:
+    import duckdb
+    import polars as pl
 
 # --- Kontra Imports ---
-from kontra.engine.backends.duckdb_session import create_duckdb_connection
 from kontra.engine.backends.duckdb_utils import (
     esc_ident,
     lit_str,
 )
 from kontra.connectors.handle import DatasetHandle
+from kontra.connectors.uri_utils import is_azure_uri
 
 from .base import BaseMaterializer  # Import from new base file
 from .registry import register_materializer
+
+
+def _raise_if_azure_error(handle: DatasetHandle, exc: "duckdb.Error") -> None:
+    """
+    If the handle points to an Azure URI, wrap the DuckDB error with a clear message.
+
+    Raises AzureAccessError for Azure URIs, otherwise does nothing (caller re-raises).
+    """
+    if is_azure_uri(handle.uri):
+        from kontra.errors import AzureAccessError
+        raise AzureAccessError(handle.uri, str(exc)) from exc
 
 
 @register_materializer("duckdb")
@@ -40,7 +52,17 @@ class DuckDBMaterializer(BaseMaterializer):
         self.source = handle.uri
         self._io_debug_enabled = bool(os.getenv("KONTRA_IO_DEBUG"))
         self._last_io_debug: Optional[Dict[str, Any]] = None
-        self.con = create_duckdb_connection(self.handle)
+        self._con: Optional["duckdb.DuckDBPyConnection"] = None
+
+    @property
+    def con(self) -> "duckdb.DuckDBPyConnection":
+        """DuckDB connection, created on first use so that validations fully
+        resolved by preplan/pushdown never load DuckDB at all."""
+        if self._con is None:
+            from kontra.engine.backends.duckdb_session import create_duckdb_connection
+
+            self._con = create_duckdb_connection(self.handle)
+        return self._con
 
     # ---------- Materializer API ----------
 
@@ -48,16 +70,25 @@ class DuckDBMaterializer(BaseMaterializer):
         """
         Return column names without materializing data (best effort, format-aware).
         """
+        import duckdb
+
         read_fn = self._get_read_function()
-        cur = self.con.execute(
-            f"SELECT * FROM {read_fn}({lit_str(self.source)}) LIMIT 0"
-        )
+        try:
+            cur = self.con.execute(
+                f"SELECT * FROM {read_fn}({lit_str(self.source)}) LIMIT 0"
+            )
+        except duckdb.Error as e:
+            _raise_if_azure_error(self.handle, e)
+            raise
         return [d[0] for d in cur.description] if cur.description else []
 
-    def to_polars(self, columns: Optional[List[str]]) -> pl.DataFrame:
+    def to_polars(self, columns: Optional[List[str]]) -> "pl.DataFrame":
         """
         Materialize the requested columns as a Polars DataFrame via Arrow.
         """
+        import duckdb
+        import polars as pl
+
         # Route through Arrow for consistent, low-copy materialization.
         import pyarrow as pa  # noqa: F401
 
@@ -68,8 +99,12 @@ class DuckDBMaterializer(BaseMaterializer):
 
         t0 = time.perf_counter()
         query = f"SELECT {cols_sql} FROM {read_func}({lit_str(self.source)})"
-        cur = self.con.execute(query)
-        table = cur.fetch_arrow_table()
+        try:
+            cur = self.con.execute(query)
+            table = cur.fetch_arrow_table()
+        except duckdb.Error as e:
+            _raise_if_azure_error(self.handle, e)
+            raise
         t1 = time.perf_counter()
 
         if self._io_debug_enabled:

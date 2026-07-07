@@ -241,7 +241,6 @@ class PostgresStore(StateBackend):
         if parsed.path and parsed.path != "/":
             params["dbname"] = parsed.path.strip("/").split("/")[0]
 
-        # Parse query parameters
         query_params = parse_qs(parsed.query)
         for key, values in query_params.items():
             if values:
@@ -908,7 +907,6 @@ class PostgresStore(StateBackend):
                 cur.execute(ann_sql, (actual_run_id,))
                 ann_rows = cur.fetchall()
 
-                # Build state
                 state = self._build_state_from_rows(run_row, rule_rows)
 
                 # Build annotations list
@@ -941,7 +939,6 @@ class PostgresStore(StateBackend):
         contract_fingerprint: str,
         limit: int = 10,
     ) -> List[ValidationState]:
-        """Get recent history with annotations loaded."""
         # For efficiency, we load history without annotations first,
         # then load annotations in batch
         states = self.get_history(contract_fingerprint, limit=limit)
@@ -972,7 +969,6 @@ class PostgresStore(StateBackend):
                 cur.execute(ann_sql, (run_ids,))
                 ann_rows = cur.fetchall()
 
-            # Build annotations index
             # Key: (run_id, rule_result_id or None)
             annotations_index: Dict[int, Dict[Optional[int], List[Annotation]]] = {}
 

@@ -10,6 +10,7 @@ All errors inherit from KontraError and provide:
 
 from __future__ import annotations
 
+import builtins
 from typing import Optional, List
 
 
@@ -187,8 +188,12 @@ class DuplicateRuleIdError(RuleError):
 # =============================================================================
 
 
-class ConnectionError(KontraError):
-    """Base class for connection-related errors."""
+class ConnectionError(KontraError, builtins.ConnectionError):
+    """Base class for connection-related errors.
+
+    Inherits from both KontraError (for Kontra error features like suggestions)
+    and builtins.ConnectionError (so ``except ConnectionError:`` catches it).
+    """
 
     pass
 
@@ -247,6 +252,26 @@ class S3ConnectionError(ConnectionError):
                 "    export AWS_ENDPOINT_URL=http://localhost:9000",
                 "Check bucket and key names are correct",
                 "Verify bucket permissions",
+            ],
+        )
+
+
+class AzureAccessError(ConnectionError):
+    """Azure Storage access failed (ADLS Gen2, Azure Blob)."""
+
+    def __init__(self, uri: str, error: str):
+        super().__init__(
+            f"Azure file not found or inaccessible: {uri}",
+            context=str(error),
+            suggestions=[
+                "Check the container name and file path are correct",
+                "Verify the file exists in Azure Storage",
+                "Set Azure credentials:\n"
+                "    export AZURE_STORAGE_ACCOUNT_NAME=your_account\n"
+                "    export AZURE_STORAGE_ACCOUNT_KEY=your_key",
+                "Or use SAS token:\n"
+                "    export AZURE_STORAGE_SAS_TOKEN=your_token",
+                "Ensure DuckDB azure extension is installed (DuckDB >= 0.10.0)",
             ],
         )
 
@@ -320,6 +345,27 @@ class DataNotFoundError(DataError):
         super().__init__(
             f"Data source not found: {source}",
             suggestions=suggestions,
+        )
+
+
+class DatasourceTableError(DataError):
+    """Table not found in a known datasource.
+
+    Raised when the datasource name is valid but the table doesn't exist.
+    This is distinct from ValueError (unknown datasource) so callers can
+    distinguish "not a named datasource" (fall back silently) from
+    "datasource found, table missing" (propagate error).
+    """
+
+    def __init__(self, datasource: str, table: str, available_tables: list):
+        tables_str = ", ".join(available_tables) if available_tables else "(none)"
+        super().__init__(
+            f"Unknown table '{table}' in datasource '{datasource}'",
+            suggestions=[
+                f"Available tables in '{datasource}': {tables_str}",
+                "Check the table name spelling",
+                f"Use 'kontra config show' to see all datasources and tables",
+            ],
         )
 
 
@@ -560,7 +606,10 @@ def format_error_for_cli(error: Exception) -> str:
             "Check the object key (path) is correct."
         )
 
-    if "nocredentials" in error_str or "credentials" in error_str:
+    # Only show AWS credentials advice when the error is clearly S3/AWS-related,
+    # not when a local file error happens to contain the word "credentials"
+    _is_s3_context = "s3" in error_str or "aws" in error_str or "nocredentials" in error_str
+    if _is_s3_context and ("nocredentials" in error_str or "credentials" in error_str):
         return (
             f"AWS credentials not found: {error}\n\n"
             "Set credentials via environment variables:\n"

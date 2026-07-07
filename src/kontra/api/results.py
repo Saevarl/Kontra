@@ -11,125 +11,20 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
-
-import yaml
-
-_logger = logging.getLogger(__name__)
+from typing import Any, Dict, Iterator, List, Optional, Union, TYPE_CHECKING
 
 
-# --- Unique rule sampling helpers (shared by multiple methods) ---
+from kontra.api.sampling import (
+    SamplingContext,
+    SamplingOrchestrator,
+    SampleReason,
+)
 
-
-def _is_unique_rule(rule: Any) -> bool:
-    """Check if a rule is a unique rule."""
-    return getattr(rule, "name", None) == "unique"
-
-
-def _filter_samples_polars(
-    source: Any,  # pl.DataFrame or pl.LazyFrame
-    rule: Any,
-    predicate: Any,
-    n: int,
-) -> Any:  # pl.DataFrame
-    """
-    Filter samples with special handling for unique rule.
-
-    Works with both DataFrame and LazyFrame sources. Adds row_index,
-    and for unique rules adds _duplicate_count sorted by worst offenders.
-
-    Args:
-        source: Polars DataFrame or LazyFrame
-        rule: Rule object (used to detect unique rule)
-        predicate: Polars expression for filtering
-        n: Maximum rows to return
-
-    Returns:
-        Polars DataFrame with filtered samples
-    """
+if TYPE_CHECKING:
     import polars as pl
 
-    # Convert DataFrame to LazyFrame if needed
-    if isinstance(source, pl.DataFrame):
-        lf = source.lazy()
-    else:
-        lf = source
-
-    # Add row index
-    lf = lf.with_row_index("row_index")
-
-    # Special case: unique rule - add duplicate count, sort by worst offenders
-    if _is_unique_rule(rule):
-        column = rule.params.get("column")
-        return (
-            lf.with_columns(
-                pl.col(column).count().over(column).alias("_duplicate_count")
-            )
-            .filter(predicate)
-            .sort("_duplicate_count", descending=True)
-            .head(n)
-            .collect()
-        )
-    else:
-        return lf.filter(predicate).head(n).collect()
-
-
-def _build_unique_sample_query_sql(
-    table: str,
-    column: str,
-    n: int,
-    dialect: str,
-) -> str:
-    """
-    Build SQL query for sampling unique rule violations.
-
-    Returns query that finds duplicate values, orders by worst offenders,
-    and includes _duplicate_count and row_index.
-
-    Args:
-        table: Fully qualified table name
-        column: Column being checked for uniqueness
-        n: Maximum rows to return
-        dialect: SQL dialect ("postgres", "mssql")
-
-    Returns:
-        SQL query string
-    """
-    col = f'"{column}"'
-
-    if dialect == "mssql":
-        return f"""
-            SELECT t.*, dup._duplicate_count,
-                   ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS row_index
-            FROM {table} t
-            JOIN (
-                SELECT {col}, COUNT(*) as _duplicate_count
-                FROM {table}
-                GROUP BY {col}
-                HAVING COUNT(*) > 1
-            ) dup ON t.{col} = dup.{col}
-            ORDER BY dup._duplicate_count DESC
-            OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY
-        """
-    else:
-        return f"""
-            SELECT t.*, dup._duplicate_count,
-                   ROW_NUMBER() OVER (ORDER BY dup._duplicate_count DESC) - 1 AS row_index
-            FROM {table} t
-            JOIN (
-                SELECT {col}, COUNT(*) as _duplicate_count
-                FROM {table}
-                GROUP BY {col}
-                HAVING COUNT(*) > 1
-            ) dup ON t.{col} = dup.{col}
-            ORDER BY dup._duplicate_count DESC
-            LIMIT {n}
-        """
-
-
-# --- End unique rule helpers ---
+_logger = logging.getLogger(__name__)
 
 
 class FailureSamples:
@@ -251,14 +146,7 @@ class FailureSamples:
         return pl.DataFrame(self._samples)
 
 
-class SampleReason:
-    """Constants for why samples may be unavailable."""
-
-    UNAVAILABLE_METADATA = "unavailable_from_metadata"  # Preplan tier - knows existence, not location
-    UNAVAILABLE_PASSED = "rule_passed"  # No failures to sample
-    UNAVAILABLE_UNSUPPORTED = "rule_unsupported"  # dtype, min_rows, etc. - no row-level samples
-    TRUNCATED_BUDGET = "budget_exhausted"  # Global budget hit
-    TRUNCATED_LIMIT = "per_rule_limit"  # Per-rule cap hit
+# SampleReason is imported from sampling.py
 
 
 @dataclass
@@ -356,10 +244,14 @@ class RuleResult:
             if len(parts) >= 2:
                 column = parts[1]
 
-        # Extract rule name
+        # Extract rule name from various sources
         name = d.get("rule_name", d.get("name", ""))
         if not name and ":" in rule_id:
+            # Standard format: COL:col:name or DATASET:name
             name = rule_id.split(":")[-1]
+        if not name:
+            # Custom id with no colons — use rule_id as name fallback
+            name = rule_id
 
         return cls(
             rule_id=rule_id,
@@ -395,9 +287,8 @@ class RuleResult:
             "severity": self.severity,
             "source": self.source,
         }
-        # Include violation_rate if available
-        if self.violation_rate is not None:
-            d["violation_rate"] = self.violation_rate
+        # Always include violation_rate for consistent schema (BUG-012)
+        d["violation_rate"] = self.violation_rate if self.violation_rate is not None else 0.0
         if self.column:
             d["column"] = self.column
         if self.details:
@@ -497,6 +388,11 @@ class RuleResult:
 
         return " ".join(parts[:2]) + "".join(parts[2:])
 
+    def to_json(self, indent: Optional[int] = None) -> str:
+        """Convert to JSON string."""
+        import json
+        return json.dumps(self.to_dict(), indent=indent, default=str)
+
 
 @dataclass
 class ValidationResult:
@@ -537,11 +433,13 @@ class ValidationResult:
     stats: Optional[Dict[str, Any]] = None
     annotations: Optional[List[Dict[str, Any]]] = None  # Run-level annotations (opt-in)
     _raw: Optional[Dict[str, Any]] = field(default=None, repr=False)
-    # For sample_failures() - lazy evaluation
+    # For sample_failures() - lazy evaluation (kept for backwards compatibility)
     _data_source: Optional[Any] = field(default=None, repr=False)
     _rule_objects: Optional[List[Any]] = field(default=None, repr=False)
     # Loaded data (if Polars execution occurred)
     _data: Optional[Any] = field(default=None, repr=False)
+    # Sampling orchestrator (lazy-initialized)
+    _sampler: Optional[SamplingOrchestrator] = field(default=None, repr=False)
 
     @property
     def data(self) -> Optional["pl.DataFrame"]:
@@ -679,6 +577,7 @@ class ValidationResult:
         sample_columns: Optional[Union[List[str], str]] = None,
         severity_weights: Optional[Dict[str, float]] = None,
         data: Optional[Any] = None,
+        tally: bool = False,
     ) -> "ValidationResult":
         """Create from ValidationEngine.run() result dict.
 
@@ -692,7 +591,11 @@ class ValidationResult:
             sample_columns: Columns to include in samples (None=all, list=specific, "relevant"=rule columns)
             severity_weights: User-defined severity weights from config (None if unconfigured)
             data: Loaded DataFrame (if Polars execution occurred)
+            tally: Whether tally mode was used (affects sample cap)
         """
+        # In fail-fast mode (tally=False), cap samples at 1 per rule
+        if not tally and sample > 1:
+            sample = 1
         summary = result.get("summary", {})
         results_list = result.get("results", [])
 
@@ -725,14 +628,23 @@ class ValidationResult:
         blocking_failed = sum(1 for r in rules if not r.passed and r.severity == "blocking")
         warning_failed = sum(1 for r in rules if not r.passed and r.severity == "warning")
 
-        # Extract total_rows from summary
         total_rows = summary.get("total_rows", 0)
 
         # Populate _total_rows on each rule for violation_rate property
         for rule_result in rules:
             rule_result._total_rows = total_rows
 
-        # Create instance first (need it for sampling methods)
+        # Create sampling context and orchestrator
+        sampler = None
+        if rule_objects is not None:
+            ctx = SamplingContext(
+                data_source=data_source,
+                rule_objects=rule_objects,
+                cached_data=data,
+            )
+            sampler = SamplingOrchestrator(ctx)
+
+        # Create instance
         instance = cls(
             passed=summary.get("passed", blocking_failed == 0),
             dataset=summary.get("dataset_name", dataset),
@@ -747,463 +659,43 @@ class ValidationResult:
             _data_source=data_source,
             _rule_objects=rule_objects,
             _data=data,
+            _sampler=sampler,
         )
 
         # Perform eager sampling if enabled
-        if sample > 0 and rule_objects is not None:
-            instance._perform_eager_sampling(sample, sample_budget, rule_objects, sample_columns)
+        if sample > 0 and sampler is not None:
+            sampler.perform_eager_sampling(rules, sample, sample_budget, sample_columns)
 
         return instance
 
-    def _perform_eager_sampling(
-        self,
-        per_rule_cap: int,
-        global_budget: int,
-        rule_objects: List[Any],
-        sample_columns: Optional[Union[List[str], str]] = None,
-    ) -> None:
+    def _get_sampler(self) -> SamplingOrchestrator:
         """
-        Populate samples for each rule (eager sampling).
+        Get or create the sampling orchestrator.
 
-        Uses batched SQL queries when possible (1 query for all rules).
-        Falls back to per-rule Polars sampling when SQL not supported.
+        Returns:
+            SamplingOrchestrator instance
 
-        Args:
-            per_rule_cap: Max samples per rule
-            global_budget: Total samples across all rules
-            rule_objects: Rule objects for predicates
-            sample_columns: Columns to include (None=all, list=specific, "relevant"=rule columns)
+        Raises:
+            RuntimeError: If rule objects are not available
         """
-        import polars as pl
+        if self._sampler is not None:
+            return self._sampler
 
-        # Build rule_id -> rule_object map
-        rule_map = {getattr(r, "rule_id", None): r for r in rule_objects}
+        if self._rule_objects is None:
+            raise RuntimeError(
+                "sample_failures() requires rule objects. "
+                "This may happen if ValidationResult was created manually."
+            )
 
-        # Sort rules by failed_count descending (worst offenders first)
-        sorted_rules = sorted(
-            self.rules,
-            key=lambda r: r.failed_count if not r.passed else 0,
-            reverse=True,
+        ctx = SamplingContext(
+            data_source=self._data_source,
+            rule_objects=self._rule_objects,
+            cached_data=self._data,
         )
+        self._sampler = SamplingOrchestrator(ctx)
+        return self._sampler
 
-        remaining_budget = global_budget
-
-        # Phase 1: Collect rules that can use SQL batching
-        sql_rules: List[Tuple[Any, Any, int, Optional[List[str]]]] = []  # (rule_result, rule_obj, n, columns)
-        polars_rules: List[Tuple[Any, Any, Any, int, Optional[List[str]]]] = []  # (rule_result, rule_obj, predicate, n, columns)
-
-        for rule_result in sorted_rules:
-            # Handle passing rules
-            if rule_result.passed:
-                rule_result.samples = []
-                rule_result.samples_reason = SampleReason.UNAVAILABLE_PASSED
-                continue
-
-            # Check budget
-            if remaining_budget <= 0:
-                rule_result.samples = None
-                rule_result.samples_reason = SampleReason.TRUNCATED_BUDGET
-                rule_result.samples_truncated = True
-                continue
-
-            # Get corresponding rule object
-            rule_obj = rule_map.get(rule_result.rule_id)
-            if rule_obj is None:
-                rule_result.samples = None
-                rule_result.samples_reason = SampleReason.UNAVAILABLE_UNSUPPORTED
-                continue
-
-            # Check if rule was resolved via metadata (preplan)
-            if rule_result.source == "metadata":
-                if not self._can_sample_source():
-                    rule_result.samples = None
-                    rule_result.samples_reason = SampleReason.UNAVAILABLE_METADATA
-                    continue
-
-            # Calculate samples to get for this rule
-            n = min(per_rule_cap, remaining_budget)
-            remaining_budget -= n  # Reserve budget
-
-            # Determine columns to include
-            cols_to_include = self._resolve_sample_columns(sample_columns, rule_obj)
-
-            # Check if rule supports SQL filter (for batching)
-            # Note: to_sql_filter can return None to indicate no SQL support for this dialect
-            sql_filter_available = False
-            if hasattr(rule_obj, "to_sql_filter"):
-                # Probe to see if SQL filter is actually available
-                sql_filter = rule_obj.to_sql_filter("duckdb")
-                if sql_filter is not None:
-                    sql_rules.append((rule_result, rule_obj, n, cols_to_include))
-                    sql_filter_available = True
-
-            # Fall back to sample_predicate/compile_predicate if SQL not available
-            if not sql_filter_available:
-                # Check sample_predicate() first (for rules like unique that have
-                # different counting vs sampling semantics)
-                pred_obj = None
-                if hasattr(rule_obj, "sample_predicate"):
-                    pred_obj = rule_obj.sample_predicate()
-                if pred_obj is None and hasattr(rule_obj, "compile_predicate"):
-                    pred_obj = rule_obj.compile_predicate()
-
-                if pred_obj is not None:
-                    polars_rules.append((rule_result, rule_obj, pred_obj.expr, n, cols_to_include))
-                else:
-                    rule_result.samples = None
-                    rule_result.samples_reason = SampleReason.UNAVAILABLE_UNSUPPORTED
-
-        # Phase 2: Execute batched SQL sampling if applicable
-        if sql_rules:
-            self._execute_batched_sql_sampling(sql_rules, per_rule_cap)
-
-        # Phase 3: Execute per-rule Polars sampling for remaining rules
-        for rule_result, rule_obj, predicate, n, cols_to_include in polars_rules:
-            try:
-                samples, samples_source = self._collect_samples_for_rule(rule_obj, predicate, n, cols_to_include)
-                rule_result.samples = samples
-                rule_result.samples_source = samples_source
-
-                if len(samples) == per_rule_cap and rule_result.failed_count > per_rule_cap:
-                    rule_result.samples_truncated = True
-                    rule_result.samples_reason = SampleReason.TRUNCATED_LIMIT
-
-            except Exception as e:
-                rule_result.samples = None
-                rule_result.samples_reason = f"error: {str(e)[:50]}"
-
-    def _execute_batched_sql_sampling(
-        self,
-        sql_rules: List[Tuple[Any, Any, int, Optional[List[str]]]],
-        per_rule_cap: int,
-    ) -> None:
-        """
-        Execute batched SQL sampling for rules that support to_sql_filter().
-
-        Builds a single UNION ALL query for all rules, executes once,
-        and distributes results.
-        """
-        import polars as pl
-
-        source = self._data_source
-        if source is None:
-            return
-
-        # Determine dialect and source type
-        dialect = "duckdb"
-        is_parquet = False
-        is_database = False
-        db_conn = None
-        db_table = None
-        parquet_path = None
-        owns_connection = False  # Track if we created the connection (need to close it)
-
-        is_s3 = False
-
-        if isinstance(source, str):
-            lower = source.lower()
-            if source.startswith("s3://") or source.startswith("http://") or source.startswith("https://"):
-                # Remote file - use DuckDB for efficient sampling
-                is_parquet = True
-                is_s3 = True
-                parquet_path = source
-            elif lower.endswith(".parquet") or lower.endswith(".csv"):
-                # Local file - use Polars (more efficient for local)
-                is_parquet = False  # Will fall through to Polars path
-        elif hasattr(source, "scheme"):
-            handle = source
-            if handle.scheme in ("postgres", "postgresql"):
-                is_database = True
-                dialect = "postgres"
-                db_conn = getattr(handle, "external_conn", None)
-                # If no external connection but we have db_params, create one
-                if db_conn is None and handle.db_params is not None:
-                    try:
-                        from kontra.connectors.postgres import get_connection
-                        db_conn = get_connection(handle.db_params)
-                        owns_connection = True  # We need to close this
-                    except ImportError as e:
-                        _logger.debug(f"PostgreSQL driver not available: {e}")
-                        db_conn = None
-                    except (OSError, ConnectionError) as e:
-                        _logger.debug(f"Could not connect to PostgreSQL for sampling: {e}")
-                        db_conn = None
-                # Get table reference from handle or db_params
-                if handle.table_ref:
-                    db_table = handle.table_ref
-                elif handle.db_params:
-                    db_table = f'"{handle.db_params.schema}"."{handle.db_params.table}"'
-                else:
-                    db_table = None
-            elif handle.scheme == "mssql":
-                is_database = True
-                dialect = "mssql"
-                db_conn = getattr(handle, "external_conn", None)
-                # If no external connection but we have db_params, create one
-                if db_conn is None and handle.db_params is not None:
-                    try:
-                        from kontra.connectors.sqlserver import get_connection
-                        db_conn = get_connection(handle.db_params)
-                        owns_connection = True  # We need to close this
-                    except ImportError as e:
-                        _logger.debug(f"SQL Server driver not available: {e}")
-                        db_conn = None
-                    except (OSError, ConnectionError) as e:
-                        _logger.debug(f"Could not connect to SQL Server for sampling: {e}")
-                        db_conn = None
-                # Get table reference from handle or db_params
-                if handle.table_ref:
-                    db_table = handle.table_ref
-                elif handle.db_params:
-                    db_table = f"[{handle.db_params.schema}].[{handle.db_params.table}]"
-                else:
-                    db_table = None
-            elif handle.scheme == "s3":
-                # S3 via handle - use DuckDB
-                is_parquet = True
-                is_s3 = True
-                parquet_path = handle.uri
-            elif handle.scheme in ("", "file"):
-                # Local file via handle - use Polars
-                is_parquet = False
-
-        # Build list of (rule_id, sql_filter, limit, columns) for batching
-        rules_to_sample: List[Tuple[str, str, int, Optional[List[str]]]] = []
-
-        for rule_result, rule_obj, n, cols_to_include in sql_rules:
-            sql_filter = rule_obj.to_sql_filter(dialect)
-            if sql_filter:
-                rules_to_sample.append((rule_result.rule_id, sql_filter, n, cols_to_include))
-            else:
-                # Rule doesn't support this dialect, mark as unsupported
-                rule_result.samples = None
-                rule_result.samples_reason = SampleReason.UNAVAILABLE_UNSUPPORTED
-
-        if not rules_to_sample:
-            return
-
-        # Execute batched query
-        try:
-            if is_parquet and is_s3 and parquet_path:
-                # S3/remote: Use DuckDB batched sampling (much faster than Polars)
-                results = self._batch_sample_parquet_duckdb(parquet_path, rules_to_sample)
-                samples_source = "sql"
-            elif is_database and db_conn and db_table:
-                results = self._batch_sample_db(db_conn, db_table, rules_to_sample, dialect)
-                samples_source = "sql"
-            else:
-                # Fall back to per-rule sampling
-                results = {}
-                samples_source = "polars"
-                for rule_result, rule_obj, n, cols_to_include in sql_rules:
-                    if hasattr(rule_obj, "compile_predicate"):
-                        pred_obj = rule_obj.compile_predicate()
-                        if pred_obj:
-                            try:
-                                samples, src = self._collect_samples_for_rule(rule_obj, pred_obj.expr, n, cols_to_include)
-                                results[rule_result.rule_id] = samples
-                                samples_source = src
-                            except (ValueError, TypeError, KeyError, OSError) as e:
-                                _logger.debug(f"Could not collect samples for rule {rule_result.rule_id}: {e}")
-                                results[rule_result.rule_id] = []
-
-            # Distribute results to rule_result objects
-            for rule_result, rule_obj, n, cols_to_include in sql_rules:
-                samples = results.get(rule_result.rule_id, [])
-                rule_result.samples = samples
-                rule_result.samples_source = samples_source
-
-                if len(samples) == n and rule_result.failed_count > n:
-                    rule_result.samples_truncated = True
-                    rule_result.samples_reason = SampleReason.TRUNCATED_LIMIT
-
-        except Exception as e:
-            # Batched sampling failed, mark all rules
-            for rule_result, rule_obj, n, cols_to_include in sql_rules:
-                rule_result.samples = None
-                rule_result.samples_reason = f"error: {str(e)[:50]}"
-
-        finally:
-            # Close connection if we created it
-            if owns_connection and db_conn is not None:
-                try:
-                    db_conn.close()
-                except (OSError, AttributeError):
-                    pass  # Connection cleanup is best-effort
-
-    def _can_sample_source(self) -> bool:
-        """
-        Check if the data source supports sampling.
-
-        File-based sources (Parquet, CSV, S3) can always be sampled.
-        Database sources need a live connection.
-
-        Returns:
-            True if sampling is possible, False otherwise.
-        """
-        import polars as pl
-
-        source = self._data_source
-
-        if source is None:
-            return False
-
-        # DataFrame - always sampleable
-        if isinstance(source, pl.DataFrame):
-            return True
-
-        # String path - file based, always sampleable
-        if isinstance(source, str):
-            return True
-
-        # DatasetHandle - check scheme and connection
-        if hasattr(source, "scheme"):
-            scheme = getattr(source, "scheme", None)
-
-            # File-based schemes - always sampleable
-            if scheme in (None, "file") or (hasattr(source, "uri") and source.uri):
-                uri = getattr(source, "uri", "")
-                if uri.lower().endswith((".parquet", ".csv")) or uri.startswith("s3://"):
-                    return True
-
-            # BYOC or database with connection - check if connection exists
-            if hasattr(source, "external_conn") and source.external_conn is not None:
-                return True
-
-            # Database with db_params - we can create a connection for sampling
-            if hasattr(source, "db_params") and source.db_params is not None:
-                return True
-
-            # Database without connection or db_params - can't sample
-            if scheme in ("postgres", "postgresql", "mssql"):
-                return False
-
-        return True  # Default to sampleable
-
-    def _resolve_sample_columns(
-        self,
-        sample_columns: Optional[Union[List[str], str]],
-        rule_obj: Any,
-    ) -> Optional[List[str]]:
-        """
-        Resolve sample_columns to a list of column names.
-
-        Args:
-            sample_columns: None (all), list of names, or "relevant"
-            rule_obj: Rule object for "relevant" mode
-
-        Returns:
-            List of column names to include, or None for all columns
-        """
-        if sample_columns is None:
-            return None
-
-        if isinstance(sample_columns, list):
-            return sample_columns
-
-        if sample_columns == "relevant":
-            # Get columns from rule's required_columns() if available
-            cols = set()
-            if hasattr(rule_obj, "required_columns"):
-                cols.update(rule_obj.required_columns())
-
-            # Also check params for column names (required_columns() may be incomplete)
-            if hasattr(rule_obj, "params"):
-                params = rule_obj.params
-                if "column" in params:
-                    cols.add(params["column"])
-                if "left" in params:
-                    cols.add(params["left"])
-                if "right" in params:
-                    cols.add(params["right"])
-                if "when_column" in params:
-                    cols.add(params["when_column"])
-
-            return list(cols) if cols else None
-
-        # Unknown value - return all columns
-        return None
-
-    def _collect_samples_for_rule(
-        self,
-        rule_obj: Any,
-        predicate: Any,
-        n: int,
-        columns: Optional[List[str]] = None,
-    ) -> Tuple[List[Dict[str, Any]], str]:
-        """
-        Collect sample rows for a single rule.
-
-        Uses the existing sampling infrastructure (SQL pushdown, Parquet predicate, etc.)
-
-        Args:
-            rule_obj: Rule object
-            predicate: Polars expression for filtering
-            n: Number of samples to collect
-            columns: Columns to include (None = all)
-
-        Returns:
-            Tuple of (samples list, source string "sql" or "polars")
-        """
-        import polars as pl
-
-        source = self._data_source
-
-        if source is None:
-            return [], "polars"
-
-        # Reuse existing loading/filtering logic
-        df, load_source = self._load_data_for_sampling(rule_obj, n)
-
-        # If data was already filtered by SQL/DuckDB, just apply column projection
-        if load_source == "sql":
-            result_df = df.head(n)
-            return self._apply_column_projection(result_df, columns), "sql"
-
-        # For Polars path, filter with predicate (unique rule handled by helper)
-        result_df = _filter_samples_polars(df, rule_obj, predicate, n)
-
-        # For unique rule, always include _duplicate_count in projection
-        if _is_unique_rule(rule_obj) and columns is not None:
-            columns = list(columns) + ["_duplicate_count"]
-
-        return self._apply_column_projection(result_df, columns), "polars"
-
-    def _apply_column_projection(
-        self,
-        df: Any,
-        columns: Optional[List[str]],
-    ) -> List[Dict[str, Any]]:
-        """
-        Apply column projection to a DataFrame before converting to dicts.
-
-        Always includes row_index if present.
-
-        Args:
-            df: Polars DataFrame
-            columns: Columns to include (None = all)
-
-        Returns:
-            List of row dicts
-        """
-        if columns is None:
-            return df.to_dicts()
-
-        # Always include row_index and _duplicate_count if present
-        cols_to_select = set(columns)
-        if "row_index" in df.columns:
-            cols_to_select.add("row_index")
-        if "_duplicate_count" in df.columns:
-            cols_to_select.add("_duplicate_count")
-
-        # Only select columns that exist in the DataFrame
-        available_cols = set(df.columns)
-        cols_to_select = cols_to_select & available_cols
-
-        if not cols_to_select:
-            return df.to_dicts()
-
-        return df.select(sorted(cols_to_select)).to_dicts()
+    # Sampling methods moved to kontra.api.sampling.SamplingOrchestrator
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -1369,8 +861,6 @@ class ValidationResult:
             # For metadata-tier rules, use upgrade_tier to get samples:
             samples = result.sample_failures("COL:id:not_null", upgrade_tier=True)
         """
-        import polars as pl
-
         # Cap n at 100
         n = min(n, 100)
 
@@ -1411,43 +901,7 @@ class ValidationResult:
                 "cannot identify specific failing rows."
             )
 
-        # Find the rule object to get the failure predicate
-        if self._rule_objects is None:
-            raise RuntimeError(
-                "sample_failures() requires rule objects. "
-                "This may happen if ValidationResult was created manually."
-            )
-
-        rule_obj = None
-        for r in self._rule_objects:
-            if getattr(r, "rule_id", None) == rule_id:
-                rule_obj = r
-                break
-
-        if rule_obj is None:
-            raise ValueError(f"Rule object not found for: {rule_id}")
-
-        # Get the failure predicate
-        # Check sample_predicate() first (used by rules like unique that have
-        # different counting vs sampling semantics), then fall back to compile_predicate()
-        predicate = None
-        if hasattr(rule_obj, "sample_predicate"):
-            pred_obj = rule_obj.sample_predicate()
-            if pred_obj is not None:
-                predicate = pred_obj.expr
-        if predicate is None and hasattr(rule_obj, "compile_predicate"):
-            pred_obj = rule_obj.compile_predicate()
-            if pred_obj is not None:
-                predicate = pred_obj.expr
-
-        if predicate is None:
-            raise ValueError(
-                f"Rule '{rule_obj.name}' does not support row-level samples. "
-                "Dataset-level rules (min_rows, max_rows, freshness, etc.) "
-                "cannot identify specific failing rows."
-            )
-
-        # Load the data
+        # Check if data source is available
         if self._data_source is None:
             raise RuntimeError(
                 "sample_failures() requires data source reference. "
@@ -1455,535 +909,14 @@ class ValidationResult:
                 "or the data source is no longer available."
             )
 
-        # Load data based on source type
-        # Try SQL pushdown for database sources
-        df, load_source = self._load_data_for_sampling(rule_obj, n)
-
-        # For non-database sources (or if SQL filter wasn't available),
-        # we need to filter with Polars
-        if load_source != "sql":
-            # Filter to failing rows, add index, limit (unique rule handled by helper)
-            try:
-                failing = _filter_samples_polars(df, rule_obj, predicate, n).to_dicts()
-            except Exception as e:
-                raise RuntimeError(f"Failed to query failing rows: {e}") from e
-        else:
-            # SQL pushdown already applied filter and added row index
-            failing = df.head(n).to_dicts()
+        # Delegate to the sampling orchestrator
+        sampler = self._get_sampler()
+        failing = sampler.sample_failures_for_rule(rule_id, rule_result, n, upgrade_tier)
 
         return FailureSamples(failing, rule_id)
 
-    def _load_data_for_sampling(
-        self, rule: Any = None, n: int = 5
-    ) -> Tuple["pl.DataFrame", str]:
-        """
-        Load data from the stored data source for sample_failures().
 
-        For database sources with rules that support SQL filters,
-        pushes the filter to SQL for performance.
-
-        Returns:
-            Tuple of (DataFrame, source) where source is "sql" or "polars"
-        """
-        import polars as pl
-
-        source = self._data_source
-
-        if source is None:
-            raise RuntimeError("No data source available")
-
-        # String path/URI
-        if isinstance(source, str):
-            # Try to load as file with predicate pushdown for Parquet
-            if source.lower().endswith(".parquet") or source.startswith("s3://"):
-                return self._load_parquet_with_filter(source, rule, n)
-            elif source.lower().endswith(".csv"):
-                return pl.read_csv(source), "polars"
-            else:
-                # Try parquet first, then CSV
-                try:
-                    return self._load_parquet_with_filter(source, rule, n)
-                except (OSError, IOError, ValueError) as parquet_err:
-                    try:
-                        return pl.read_csv(source), "polars"
-                    except (OSError, IOError, ValueError) as csv_err:
-                        raise RuntimeError(f"Cannot load data from: {source} (parquet: {parquet_err}, csv: {csv_err})")
-
-        # Polars DataFrame (was passed directly)
-        if isinstance(source, pl.DataFrame):
-            return source, "polars"
-
-        # DatasetHandle (BYOC or parsed URI)
-        if hasattr(source, "scheme") and hasattr(source, "uri"):
-            # It's a DatasetHandle
-            handle = source
-
-            # Check for BYOC (external connection)
-            if handle.scheme == "byoc" or (handle.external_conn is not None):
-                conn = handle.external_conn
-                if conn is None:
-                    raise RuntimeError(
-                        "Database connection is closed. "
-                        "For BYOC, keep the connection open until done with sample_failures()."
-                    )
-                table = getattr(handle, "table_ref", None) or handle.path
-                dialect = handle.dialect or "postgres"
-                return self._query_db_with_filter(conn, table, rule, n, dialect), "sql"
-
-            elif handle.scheme in ("postgres", "postgresql"):
-                # PostgreSQL via URI
-                conn = getattr(handle, "external_conn", None)
-                owns_conn = False
-                if conn is None and handle.db_params is not None:
-                    # Create connection from stored params
-                    try:
-                        from kontra.connectors.postgres import get_connection
-                        conn = get_connection(handle.db_params)
-                        owns_conn = True
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"Failed to connect to PostgreSQL for sampling: {e}"
-                        ) from e
-                if conn is None:
-                    raise RuntimeError(
-                        "Database connection is not available. "
-                        "For URI-based connections, sample_failures() requires re-connection."
-                    )
-                table = getattr(handle, "table_ref", None) or handle.path
-                try:
-                    return self._query_db_with_filter(conn, table, rule, n, "postgres"), "sql"
-                finally:
-                    if owns_conn:
-                        conn.close()
-
-            elif handle.scheme == "mssql":
-                # SQL Server
-                conn = getattr(handle, "external_conn", None)
-                owns_conn = False
-                if conn is None and handle.db_params is not None:
-                    # Create connection from stored params
-                    try:
-                        from kontra.connectors.sqlserver import get_connection
-                        conn = get_connection(handle.db_params)
-                        owns_conn = True
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"Failed to connect to SQL Server for sampling: {e}"
-                        ) from e
-                if conn is None:
-                    raise RuntimeError(
-                        "Database connection is not available."
-                    )
-                table = getattr(handle, "table_ref", None) or handle.path
-                try:
-                    return self._query_db_with_filter(conn, table, rule, n, "mssql"), "sql"
-                finally:
-                    if owns_conn:
-                        conn.close()
-
-            elif handle.scheme in ("file", None) or (handle.uri and not handle.scheme):
-                # File-based (local)
-                uri = handle.uri
-                if uri.lower().endswith(".parquet"):
-                    return self._load_parquet_with_filter(uri, rule, n)
-                elif uri.lower().endswith(".csv"):
-                    return pl.read_csv(uri), "polars"
-                else:
-                    return self._load_parquet_with_filter(uri, rule, n)
-
-            elif handle.scheme in ("s3", "abfss", "abfs", "az"):
-                # S3 or Azure - use DuckDB for cloud parquet
-                return self._load_cloud_parquet_with_filter(handle, rule, n)
-
-        raise RuntimeError(f"Unsupported data source type: {type(source)}")
-
-    def _query_db_with_filter(
-        self,
-        conn: Any,
-        table: str,
-        rule: Any,
-        n: int,
-        dialect: str,
-    ) -> "pl.DataFrame":
-        """
-        Query database with SQL filter if rule supports it.
-
-        Uses the rule's to_sql_filter() method to push the filter to SQL,
-        avoiding loading the entire table.
-        """
-        import polars as pl
-
-        sql_filter = None
-
-        # Special case: unique rule needs subquery with table name
-        if _is_unique_rule(rule):
-            column = rule.params.get("column")
-            if column:
-                query = _build_unique_sample_query_sql(table, column, n, dialect)
-                return pl.read_database(query, conn)
-
-        if rule is not None and hasattr(rule, "to_sql_filter"):
-            sql_filter = rule.to_sql_filter(dialect)
-
-        if sql_filter:
-            # Build query with filter and row number
-            # ROW_NUMBER() gives us the original row index
-            if dialect == "mssql":
-                # SQL Server syntax
-                query = f"""
-                    SELECT *, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS row_index
-                    FROM {table}
-                    WHERE {sql_filter}
-                    ORDER BY (SELECT NULL)
-                    OFFSET 0 ROWS FETCH FIRST {n} ROWS ONLY
-                """
-            else:
-                # PostgreSQL / DuckDB syntax
-                query = f"""
-                    SELECT *, ROW_NUMBER() OVER () - 1 AS row_index
-                    FROM {table}
-                    WHERE {sql_filter}
-                    LIMIT {n}
-                """
-            return pl.read_database(query, conn)
-        else:
-            # Fall back to loading all data (rule doesn't support SQL filter)
-            return pl.read_database(f"SELECT * FROM {table}", conn)
-
-    def _load_parquet_with_filter(
-        self,
-        path: str,
-        rule: Any,
-        n: int,
-    ) -> Tuple["pl.DataFrame", str]:
-        """
-        Load Parquet file with predicate pushdown for performance.
-
-        - S3/remote files: Uses DuckDB SQL pushdown (doesn't download whole file)
-        - Local files: Uses Polars scan_parquet (efficient for local)
-
-        Returns:
-            Tuple of (DataFrame, source) where source is "sql" or "polars"
-        """
-        import polars as pl
-
-        # Check if this is a remote file (S3, HTTP)
-        is_remote = path.startswith("s3://") or path.startswith("http://") or path.startswith("https://")
-
-        # For remote files, use DuckDB SQL pushdown (much faster - doesn't download whole file)
-        if is_remote and rule is not None and hasattr(rule, "to_sql_filter"):
-            sql_filter = rule.to_sql_filter("duckdb")
-            if sql_filter:
-                try:
-                    return self._query_parquet_with_duckdb(path, sql_filter, n), "sql"
-                except (ImportError, OSError, ValueError) as e:
-                    _logger.debug(f"DuckDB query failed, falling back to Polars: {e}")
-                    pass  # Fall through to Polars
-
-        # For local files, just return the raw data - caller will filter
-        # (Don't filter here to avoid double-filtering in _collect_samples_for_rule)
-        return pl.read_parquet(path), "polars"
-
-    def _load_cloud_parquet_with_filter(
-        self,
-        handle: Any,
-        rule: Any,
-        n: int,
-    ) -> Tuple["pl.DataFrame", str]:
-        """
-        Load cloud Parquet file (S3/Azure) with predicate pushdown.
-
-        Uses handle.fs_opts for credentials instead of environment variables.
-        """
-        import duckdb
-        import polars as pl
-
-        path = handle.uri
-        fs_opts = handle.fs_opts or {}
-
-        con = duckdb.connect()
-
-        try:
-            # Configure S3 credentials from fs_opts (keys are s3_* prefixed per handle.py)
-            if handle.scheme == "s3":
-                con.execute("INSTALL httpfs; LOAD httpfs;")
-                if fs_opts.get("s3_access_key_id"):
-                    con.execute(f"SET s3_access_key_id='{fs_opts['s3_access_key_id']}';")
-                if fs_opts.get("s3_secret_access_key"):
-                    con.execute(f"SET s3_secret_access_key='{fs_opts['s3_secret_access_key']}';")
-                if fs_opts.get("s3_endpoint"):
-                    raw_endpoint = fs_opts["s3_endpoint"]
-                    endpoint = raw_endpoint.replace("http://", "").replace("https://", "")
-                    con.execute(f"SET s3_endpoint='{endpoint}';")
-                    # Check if SSL should be disabled (http:// means no SSL)
-                    if raw_endpoint.startswith("http://"):
-                        con.execute("SET s3_use_ssl=false;")
-                    # Path-style access for custom endpoints (MinIO, etc.)
-                    con.execute("SET s3_url_style='path';")
-                if fs_opts.get("s3_region"):
-                    con.execute(f"SET s3_region='{fs_opts['s3_region']}';")
-                if fs_opts.get("s3_use_ssl") == "false":
-                    con.execute("SET s3_use_ssl=false;")
-                if fs_opts.get("s3_url_style"):
-                    con.execute(f"SET s3_url_style='{fs_opts['s3_url_style']}';")
-
-            # Configure Azure credentials from fs_opts
-            elif handle.scheme in ("abfss", "abfs", "az"):
-                if fs_opts.get("azure_account_name"):
-                    con.execute(f"SET azure_storage_account_name='{fs_opts['azure_account_name']}';")
-                if fs_opts.get("azure_account_key"):
-                    con.execute(f"SET azure_storage_account_key='{fs_opts['azure_account_key']}';")
-
-            # Escape path for SQL
-            escaped_path = path.replace("'", "''")
-
-            # Check if rule supports SQL filter
-            sql_filter = None
-            if rule is not None and hasattr(rule, "to_sql_filter"):
-                sql_filter = rule.to_sql_filter("duckdb")
-
-            if sql_filter:
-                # Use SQL filter with pushdown
-                query = f"""
-                    SELECT *, ROW_NUMBER() OVER () - 1 AS row_index
-                    FROM read_parquet('{escaped_path}')
-                    WHERE {sql_filter}
-                    LIMIT {n}
-                """
-            else:
-                # No filter - just load with limit
-                query = f"""
-                    SELECT *, ROW_NUMBER() OVER () - 1 AS row_index
-                    FROM read_parquet('{escaped_path}')
-                    LIMIT {n}
-                """
-
-            result = con.execute(query).pl()
-            return result, "sql"
-
-        finally:
-            con.close()
-
-    def _query_parquet_with_duckdb(
-        self,
-        path: str,
-        sql_filter: str,
-        n: int,
-        columns: Optional[List[str]] = None,
-    ) -> "pl.DataFrame":
-        """
-        Query Parquet file using DuckDB with SQL filter.
-
-        Much faster than Polars for S3 files because DuckDB pushes
-        the filter and LIMIT to the row group level.
-        """
-        import duckdb
-        import polars as pl
-
-        con = duckdb.connect()
-
-        # Configure S3 if needed
-        if path.startswith("s3://"):
-            import os
-            con.execute("INSTALL httpfs; LOAD httpfs;")
-            if os.environ.get("AWS_ACCESS_KEY_ID"):
-                con.execute(f"SET s3_access_key_id='{os.environ['AWS_ACCESS_KEY_ID']}';")
-            if os.environ.get("AWS_SECRET_ACCESS_KEY"):
-                con.execute(f"SET s3_secret_access_key='{os.environ['AWS_SECRET_ACCESS_KEY']}';")
-            if os.environ.get("AWS_ENDPOINT_URL"):
-                endpoint = os.environ["AWS_ENDPOINT_URL"].replace("http://", "").replace("https://", "")
-                con.execute(f"SET s3_endpoint='{endpoint}';")
-                con.execute("SET s3_use_ssl=false;")
-                con.execute("SET s3_url_style='path';")
-            if os.environ.get("AWS_REGION"):
-                con.execute(f"SET s3_region='{os.environ['AWS_REGION']}';")
-
-        # Escape path for SQL
-        escaped_path = path.replace("'", "''")
-
-        # Build column list (with projection if specified)
-        if columns:
-            col_list = ", ".join(f'"{c}"' for c in columns)
-        else:
-            col_list = "*"
-
-        # Build query with filter and row number
-        query = f"""
-            SELECT {col_list}, ROW_NUMBER() OVER () - 1 AS row_index
-            FROM read_parquet('{escaped_path}')
-            WHERE {sql_filter}
-            LIMIT {n}
-        """
-
-        result = con.execute(query).pl()
-        con.close()
-        return result
-
-    def _batch_sample_parquet_duckdb(
-        self,
-        path: str,
-        rules_to_sample: List[Tuple[str, str, int, Optional[List[str]]]],
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Batch sample multiple rules from Parquet using a single DuckDB query.
-
-        Args:
-            path: Parquet file path or S3 URI
-            rules_to_sample: List of (rule_id, sql_filter, limit, columns)
-
-        Returns:
-            Dict mapping rule_id to list of sample dicts
-        """
-        import duckdb
-        import polars as pl
-
-        if not rules_to_sample:
-            return {}
-
-        con = duckdb.connect()
-
-        # Configure S3 if needed
-        if path.startswith("s3://"):
-            import os
-            con.execute("INSTALL httpfs; LOAD httpfs;")
-            if os.environ.get("AWS_ACCESS_KEY_ID"):
-                con.execute(f"SET s3_access_key_id='{os.environ['AWS_ACCESS_KEY_ID']}';")
-            if os.environ.get("AWS_SECRET_ACCESS_KEY"):
-                con.execute(f"SET s3_secret_access_key='{os.environ['AWS_SECRET_ACCESS_KEY']}';")
-            if os.environ.get("AWS_ENDPOINT_URL"):
-                endpoint = os.environ["AWS_ENDPOINT_URL"].replace("http://", "").replace("https://", "")
-                con.execute(f"SET s3_endpoint='{endpoint}';")
-                con.execute("SET s3_use_ssl=false;")
-                con.execute("SET s3_url_style='path';")
-            if os.environ.get("AWS_REGION"):
-                con.execute(f"SET s3_region='{os.environ['AWS_REGION']}';")
-
-        escaped_path = path.replace("'", "''")
-
-        # Collect all columns needed across all rules
-        all_columns: set = set()
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
-            if columns:
-                all_columns.update(columns)
-
-        # If any rule needs all columns, use *
-        needs_all = any(cols is None for _, _, _, cols in rules_to_sample)
-
-        if needs_all or not all_columns:
-            col_list = "*"
-        else:
-            col_list = ", ".join(f'"{c}"' for c in sorted(all_columns))
-
-        # Build UNION ALL query - one subquery per rule (wrapped in parens for DuckDB)
-        subqueries = []
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
-            escaped_rule_id = rule_id.replace("'", "''")
-            subquery = f"""(
-                SELECT '{escaped_rule_id}' AS _rule_id, {col_list}, ROW_NUMBER() OVER () - 1 AS row_index
-                FROM read_parquet('{escaped_path}')
-                WHERE {sql_filter}
-                LIMIT {limit}
-            )"""
-            subqueries.append(subquery)
-
-        query = " UNION ALL ".join(subqueries)
-
-        try:
-            result_df = con.execute(query).pl()
-        finally:
-            con.close()
-
-        # Distribute results to each rule
-        results: Dict[str, List[Dict[str, Any]]] = {rule_id: [] for rule_id, _, _, _ in rules_to_sample}
-
-        for row in result_df.to_dicts():
-            rule_id = row.pop("_rule_id")
-            if rule_id in results:
-                results[rule_id].append(row)
-
-        return results
-
-    def _batch_sample_db(
-        self,
-        conn: Any,
-        table: str,
-        rules_to_sample: List[Tuple[str, str, int, Optional[List[str]]]],
-        dialect: str,
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Batch sample multiple rules from database using a single query.
-
-        Args:
-            conn: Database connection
-            table: Table name (with schema if needed)
-            rules_to_sample: List of (rule_id, sql_filter, limit, columns)
-            dialect: "postgres" or "mssql"
-
-        Returns:
-            Dict mapping rule_id to list of sample dicts
-        """
-        import polars as pl
-
-        if not rules_to_sample:
-            return {}
-
-        # Collect all columns needed across all rules
-        all_columns: set = set()
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
-            if columns:
-                all_columns.update(columns)
-
-        needs_all = any(cols is None for _, _, _, cols in rules_to_sample)
-
-        if dialect == "mssql":
-            # SQL Server syntax
-            if needs_all or not all_columns:
-                col_list = "*"
-            else:
-                col_list = ", ".join(f"[{c}]" for c in sorted(all_columns))
-
-            subqueries = []
-            for rule_id, sql_filter, limit, columns in rules_to_sample:
-                escaped_rule_id = rule_id.replace("'", "''")
-                subquery = f"""(
-                    SELECT TOP {limit} '{escaped_rule_id}' AS _rule_id, {col_list},
-                           ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS row_index
-                    FROM {table}
-                    WHERE {sql_filter}
-                )"""
-                subqueries.append(subquery)
-        else:
-            # PostgreSQL syntax
-            if needs_all or not all_columns:
-                col_list = "*"
-            else:
-                col_list = ", ".join(f'"{c}"' for c in sorted(all_columns))
-
-            subqueries = []
-            for rule_id, sql_filter, limit, columns in rules_to_sample:
-                escaped_rule_id = rule_id.replace("'", "''")
-                subquery = f"""(
-                    SELECT '{escaped_rule_id}' AS _rule_id, {col_list},
-                           ROW_NUMBER() OVER () - 1 AS row_index
-                    FROM {table}
-                    WHERE {sql_filter}
-                    LIMIT {limit}
-                )"""
-                subqueries.append(subquery)
-
-        query = " UNION ALL ".join(subqueries)
-
-        result_df = pl.read_database(query, conn)
-
-        # Distribute results to each rule
-        results: Dict[str, List[Dict[str, Any]]] = {rule_id: [] for rule_id, _, _, _ in rules_to_sample}
-
-        for row in result_df.to_dicts():
-            rule_id = row.pop("_rule_id")
-            if rule_id in results:
-                results[rule_id].append(row)
-
-        return results
+# The remaining sampling methods have been moved to kontra.api.sampling.SamplingOrchestrator
 
 
 @dataclass
@@ -2046,9 +979,84 @@ class DryRunResult:
             if len(self.columns_needed) > 10:
                 cols += f"...+{len(self.columns_needed) - 10}"
             return f"DRYRUN: {self.contract_name or 'inline'} VALID rules={self.rules_count} cols=[{cols}]"
-        else:
-            errs = "; ".join(self.errors[:3])
-            return f"DRYRUN: {self.contract_name or 'inline'} INVALID errors=[{errs}]"
+        errs = "; ".join(self.errors[:3])
+        return f"DRYRUN: {self.contract_name or 'inline'} INVALID errors=[{errs}]"
+
+
+@dataclass
+class RuleExplainEntry:
+    """Tier assignment for a single rule in the execution plan."""
+    rule_id: str
+    name: str
+    tier: str  # "metadata", "sql", "polars"
+    reason: str
+    column: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "rule_id": self.rule_id,
+            "name": self.name,
+            "tier": self.tier,
+            "reason": self.reason,
+        }
+        if self.column:
+            d["column"] = self.column
+        return d
+
+
+@dataclass
+class ExplainResult:
+    """
+    Result of an execution plan preview (explain mode).
+
+    Shows which tier each rule will execute on without running validation.
+
+    Properties:
+        contract_name: Name of the contract
+        total_rules: Number of rules
+        rules: List of RuleExplainEntry with tier assignments
+        summary: Counts by tier (metadata, sql, polars)
+    """
+    contract_name: str
+    total_rules: int
+    rules: List[RuleExplainEntry]
+    summary: Dict[str, int]
+
+    def __repr__(self) -> str:
+        parts = [f"ExplainResult({self.contract_name}) {self.total_rules} rules"]
+        for tier, count in sorted(self.summary.items()):
+            parts.append(f"  {tier}: {count}")
+        return "\n".join(parts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "contract_name": self.contract_name,
+            "total_rules": self.total_rules,
+            "rules": [r.to_dict() for r in self.rules],
+            "summary": self.summary,
+        }
+
+    def to_json(self, indent: Optional[int] = None) -> str:
+        return json.dumps(self.to_dict(), indent=indent, default=str)
+
+    def render(self) -> str:
+        """Render a human-readable table for CLI output."""
+        lines = [f"\nExecution Plan: {self.contract_name} ({self.total_rules} rules)\n"]
+        for entry in self.rules:
+            lines.append(f"  {entry.rule_id:<35s} {entry.tier:<10s} {entry.reason}")
+        lines.append("")
+        summary_parts = [f"{count} {tier}" for tier, count in sorted(self.summary.items()) if count > 0]
+        lines.append(f"Summary: {', '.join(summary_parts)}")
+        return "\n".join(lines)
+
+    def to_llm(self) -> str:
+        """Token-optimized format for LLM context."""
+        lines = [f"EXPLAIN: {self.contract_name} ({self.total_rules} rules)"]
+        for entry in self.rules:
+            lines.append(f"  {entry.rule_id}: {entry.tier} ({entry.reason})")
+        summary_parts = [f"{count} {tier}" for tier, count in sorted(self.summary.items()) if count > 0]
+        lines.append(f"TIERS: {', '.join(summary_parts)}")
+        return "\n".join(lines)
 
 
 @dataclass
@@ -2065,6 +1073,7 @@ class Diff:
         new_failures: Rules that started failing
         resolved: Rules that stopped failing
         count_changes: Rules where failure count changed
+        warnings: List of warnings about metadata differences (e.g., tally mode change)
     """
 
     has_changes: bool
@@ -2076,6 +1085,7 @@ class Diff:
     resolved: List[Dict[str, Any]]
     regressions: List[Dict[str, Any]]
     improvements: List[Dict[str, Any]]
+    warnings: List[str] = field(default_factory=list)
     _state_diff: Optional[Any] = field(default=None, repr=False)
 
     def __repr__(self) -> str:
@@ -2104,6 +1114,26 @@ class Diff:
         return self.regressions + self.improvements
 
     @classmethod
+    def empty(cls, reason: str = "No history available") -> "Diff":
+        """Create an empty Diff for cases with no history.
+
+        This prevents callers from needing None guards when accessing
+        properties like .regressed or .has_changes.
+        """
+        return cls(
+            has_changes=False,
+            improved=False,
+            regressed=False,
+            before={"run_at": "", "passed": None, "total_rules": 0, "failed_count": 0, "contract_name": ""},
+            after={"run_at": "", "passed": None, "total_rules": 0, "failed_count": 0, "contract_name": ""},
+            new_failures=[],
+            resolved=[],
+            regressions=[],
+            improvements=[],
+            _state_diff=None,
+        )
+
+    @classmethod
     def from_state_diff(cls, state_diff: "StateDiff") -> "Diff":
         """Create from internal StateDiff object."""
         return cls(
@@ -2128,12 +1158,13 @@ class Diff:
             resolved=[rd.to_dict() for rd in state_diff.resolved],
             regressions=[rd.to_dict() for rd in state_diff.regressions],
             improvements=[rd.to_dict() for rd in state_diff.improvements],
+            warnings=list(state_diff.warnings),
             _state_diff=state_diff,
         )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        d: Dict[str, Any] = {
             "has_changes": self.has_changes,
             "improved": self.improved,
             "regressed": self.regressed,
@@ -2144,6 +1175,9 @@ class Diff:
             "regressions": self.regressions,
             "improvements": self.improvements,
         }
+        if self.warnings:
+            d["warnings"] = self.warnings
+        return d
 
     def to_json(self, indent: Optional[int] = None) -> str:
         """Convert to JSON string."""
@@ -2167,6 +1201,11 @@ class Diff:
 
         lines.append(f"DIFF: {contract} {status}")
         lines.append(f"{self.before.get('run_at', '')[:10]} -> {self.after.get('run_at', '')[:10]}")
+
+        # Warnings about metadata differences
+        if self.warnings:
+            for warning in self.warnings:
+                lines.append(f"WARNING: {warning}")
 
         if self.new_failures:
             lines.append(f"NEW_FAILURES: {len(self.new_failures)}")
@@ -2267,7 +1306,15 @@ class Suggestions:
 
         return Suggestions(filtered, self.source, self._profile)
 
-    def to_dict(self) -> List[Dict[str, Any]]:
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary with metadata and rules list."""
+        return {
+            "source": self.source,
+            "count": len(self._rules),
+            "rules": [r.to_dict() for r in self._rules],
+        }
+
+    def to_rules_list(self) -> List[Dict[str, Any]]:
         """Convert to list of rule dicts (usable with kontra.validate(rules=...))."""
         return [r.to_dict() for r in self._rules]
 
@@ -2333,6 +1380,8 @@ class Suggestions:
             return generate_rules_yaml(self._profile)
 
         # Fallback for Suggestions created without profile
+        import yaml
+
         contract = {
             "name": contract_name,
             "datasource": self.source,
@@ -2443,3 +1492,5 @@ class Suggestions:
         filtered = [r for r in rules if r.confidence >= min_confidence]
 
         return cls(filtered, source=profile.source_uri, profile=profile)
+
+

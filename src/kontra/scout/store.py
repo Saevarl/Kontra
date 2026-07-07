@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from kontra.version import VERSION
 from .types import DatasetProfile, ProfileState
@@ -133,7 +132,6 @@ class LocalProfileStore:
         return sorted(sources)
 
     def clear(self, source_fingerprint: Optional[str] = None) -> int:
-        """Clear stored profiles."""
         deleted = 0
 
         if source_fingerprint:
@@ -188,7 +186,6 @@ _default_profile_store: Optional[LocalProfileStore] = None
 
 
 def get_default_profile_store() -> LocalProfileStore:
-    """Get the default profile store."""
     global _default_profile_store
     if _default_profile_store is None:
         _default_profile_store = LocalProfileStore()

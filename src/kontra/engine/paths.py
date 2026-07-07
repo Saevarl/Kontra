@@ -172,8 +172,9 @@ def _resolve_named_datasource_path(reference: str) -> ExecutionPath:
         # Recursively detect path from resolved URI
         return _detect_path_from_uri(resolved_uri)
     except (ValueError, ImportError, KeyError):
-        # Not a named datasource or config not available
-        # Default to file - will error later if invalid
+        # Not a named datasource or config not available.
+        # DatasourceTableError (datasource found, table missing) inherits
+        # from KontraError, not ValueError, so it propagates correctly.
         return "file"
 
 

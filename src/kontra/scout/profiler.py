@@ -24,7 +24,9 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from kontra.connectors.handle import DatasetHandle
 from kontra.version import VERSION
 
-_logger = logging.getLogger(__name__)
+from kontra.logging import get_logger
+
+_logger = get_logger(__name__)
 
 from .types import (
     ColumnProfile,
@@ -278,14 +280,22 @@ class ScoutProfiler:
             # 3. Get estimated size (if available)
             estimated_size = self.backend.get_estimated_size_bytes()
 
-            # 4. Profile each column (single-pass aggregation)
+            # 4. Check for stale statistics (PostgreSQL only)
+            warnings: List[str] = []
+            if hasattr(self.backend, "check_stats_staleness"):
+                staleness_warning = self.backend.check_stats_staleness()
+                if staleness_warning:
+                    warnings.append(staleness_warning)
+                    _logger.warning(staleness_warning)
+
+            # 5. Profile each column (single-pass aggregation)
             column_profiles = self._profile_columns(schema, row_count)
 
-            # 5. Optionally detect patterns (sampling-based, efficient)
+            # 6. Optionally detect patterns (sampling-based, efficient)
             if self.include_patterns:
                 self._detect_patterns(column_profiles)
 
-            # 6. Infer semantic types
+            # 7. Infer semantic types
             self._infer_semantic_types(column_profiles)
 
             duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -302,6 +312,7 @@ class ScoutProfiler:
                 sampled=self.sample_size is not None,
                 sample_size=self.sample_size,
                 columns=column_profiles,
+                warnings=warnings,
                 profile_duration_ms=duration_ms,
             )
         finally:
@@ -434,15 +445,14 @@ class ScoutProfiler:
 
         Much faster than full table scan approach.
         """
-        import os
-
         # Step 1: Get freshness info
         freshness = self.backend.get_table_freshness()
         is_fresh = freshness.get("is_fresh", False)
 
-        if os.getenv("KONTRA_VERBOSE"):
-            stale_ratio = freshness.get("stale_ratio", 1.0)
-            print(f"[INFO] PostgreSQL stats freshness: stale_ratio={stale_ratio:.2f}, is_fresh={is_fresh}")
+        stale_ratio = freshness.get("stale_ratio", 1.0)
+        _logger.info(
+            f"PostgreSQL stats freshness: stale_ratio={stale_ratio:.2f}, is_fresh={is_fresh}"
+        )
 
         # Step 2: Get metadata (null/distinct) and classify columns
         metadata = self.backend.profile_metadata_only(schema, row_count)

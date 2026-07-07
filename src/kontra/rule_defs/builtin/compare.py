@@ -15,25 +15,16 @@ Fails when:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set, TYPE_CHECKING
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
 
-
-# Map operator strings to Polars comparison methods
-POLARS_OP_MAP = {
-    ">": pl.Expr.__gt__,
-    ">=": pl.Expr.__ge__,
-    "<": pl.Expr.__lt__,
-    "<=": pl.Expr.__le__,
-    "==": pl.Expr.__eq__,
-    "!=": pl.Expr.__ne__,
-}
 
 # Map for human-readable operator descriptions
 OP_DESCRIPTIONS = {
@@ -45,10 +36,30 @@ OP_DESCRIPTIONS = {
     "!=": "not equal to",
 }
 
-SUPPORTED_OPS = set(POLARS_OP_MAP.keys())
+SUPPORTED_OPS = set(OP_DESCRIPTIONS.keys())
+
+# Map operator strings to Polars comparison methods. Built lazily so that
+# importing this module does not pull in polars at package load time.
+_POLARS_OP_MAP = None
 
 
-@register_rule("compare")
+def _get_polars_op_map():
+    global _POLARS_OP_MAP
+    if _POLARS_OP_MAP is None:
+        import polars as pl
+
+        _POLARS_OP_MAP = {
+            ">": pl.Expr.__gt__,
+            ">=": pl.Expr.__ge__,
+            "<": pl.Expr.__lt__,
+            "<=": pl.Expr.__le__,
+            "==": pl.Expr.__eq__,
+            "!=": pl.Expr.__ne__,
+        }
+    return _POLARS_OP_MAP
+
+
+@register_rule("compare", _builtin=True)
 class CompareRule(BaseRule):
     """
     Fails where left column does not satisfy the comparison with right column.
@@ -82,40 +93,55 @@ class CompareRule(BaseRule):
         return {self._left, self._right}
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+        import polars as pl
+
         # Check columns exist before accessing
         col_check = self._check_columns(df, {self._left, self._right})
         if col_check is not None:
             return col_check
 
-        left_col = pl.col(self._left)
-        right_col = pl.col(self._right)
+        try:
+            left_col = pl.col(self._left)
+            right_col = pl.col(self._right)
 
-        # Get the comparison function
-        compare_fn = POLARS_OP_MAP[self._op]
+            # Get the comparison function
+            compare_fn = _get_polars_op_map()[self._op]
 
-        # Build mask expression: True = failure
-        # Failures are: NULL in either column OR comparison is FALSE
-        comparison_expr = compare_fn(left_col, right_col)
-        mask_expr = (
-            left_col.is_null()
-            | right_col.is_null()
-            | ~comparison_expr
-        )
+            # Build mask expression: True = failure
+            # Failures are: NULL in either column OR comparison is FALSE
+            comparison_expr = compare_fn(left_col, right_col)
+            mask_expr = (
+                left_col.is_null()
+                | right_col.is_null()
+                | ~comparison_expr
+            )
 
-        # Evaluate the expression to get a Series
-        mask = df.select(mask_expr.alias("_mask"))["_mask"]
+            # Evaluate the expression to get a Series
+            mask = df.select(mask_expr.alias("_mask"))["_mask"]
 
-        op_desc = OP_DESCRIPTIONS[self._op]
-        message = f"{self._left} is not {op_desc} {self._right}"
+            op_desc = OP_DESCRIPTIONS[self._op]
+            message = f"{self._left} is not {op_desc} {self._right}"
 
-        res = super()._failures(df, mask, message)
-        res["rule_id"] = self.rule_id
+            res = super()._failures(df, mask, message)
+            res["rule_id"] = self.rule_id
 
-        if res["failed_count"] > 0:
-            res["failure_mode"] = str(FailureMode.COMPARISON_FAILED)
-            res["details"] = self._explain_failure(df, res["failed_count"])
+            if res["failed_count"] > 0:
+                res["failure_mode"] = str(FailureMode.COMPARISON_FAILED)
+                res["details"] = self._explain_failure(df, res["failed_count"])
 
-        return res
+            return res
+        except (TypeError, pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError) as e:
+            left_dtype = df.schema.get(self._left, "unknown")
+            right_dtype = df.schema.get(self._right, "unknown")
+            return {
+                "rule_id": self.rule_id,
+                "passed": False,
+                "failed_count": int(df.height),
+                "message": (
+                    f"Cannot compare '{self._left}' ({left_dtype}) {self._op} "
+                    f"'{self._right}' ({right_dtype}): {e}"
+                ),
+            }
 
     def _explain_failure(
         self, df: pl.DataFrame, failed_count: int
@@ -142,25 +168,28 @@ class CompareRule(BaseRule):
         return details
 
     def compile_predicate(self) -> Optional[Predicate]:
-        left_col = pl.col(self._left)
-        right_col = pl.col(self._right)
-
-        compare_fn = POLARS_OP_MAP[self._op]
-        comparison_expr = compare_fn(left_col, right_col)
-
-        # Violation mask: NULL in either column OR comparison is FALSE
-        expr = (
-            left_col.is_null()
-            | right_col.is_null()
-            | ~comparison_expr
-        )
-
         op_desc = OP_DESCRIPTIONS[self._op]
         message = f"{self._left} is not {op_desc} {self._right}"
 
+        def _expr():
+            import polars as pl
+
+            left_col = pl.col(self._left)
+            right_col = pl.col(self._right)
+
+            compare_fn = _get_polars_op_map()[self._op]
+            comparison_expr = compare_fn(left_col, right_col)
+
+            # Violation mask: NULL in either column OR comparison is FALSE
+            return (
+                left_col.is_null()
+                | right_col.is_null()
+                | ~comparison_expr
+            )
+
         return Predicate(
             rule_id=self.rule_id,
-            expr=expr,
+            expr_factory=_expr,
             message=message,
             columns={self._left, self._right},
         )

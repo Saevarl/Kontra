@@ -1,14 +1,53 @@
 from __future__ import annotations
-from typing import Dict, Any, Optional, Set, Tuple
+from typing import Dict, Any, Optional, Set, Tuple, TYPE_CHECKING
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.state.types import FailureMode
 
 
-@register_rule("dtype")
+# Type maps reference polars dtypes, so they are built lazily to avoid pulling
+# in polars at package load time.
+_EXACT_MAP = None
+_FAMILY_MAP = None
+
+
+def _get_type_maps():
+    """Return (exact_map, family_map) of polars dtypes, built on first use."""
+    global _EXACT_MAP, _FAMILY_MAP
+    if _EXACT_MAP is None:
+        import polars as pl
+
+        _EXACT_MAP = {
+            # signed ints
+            "int8": {pl.Int8}, "int16": {pl.Int16}, "int32": {pl.Int32}, "int64": {pl.Int64},
+            # unsigned ints
+            "uint8": {pl.UInt8}, "uint16": {pl.UInt16}, "uint32": {pl.UInt32}, "uint64": {pl.UInt64},
+            # floats
+            "float32": {pl.Float32}, "float64": {pl.Float64},
+            "float": {pl.Float64}, "double": {pl.Float64},  # common aliases treated as exact Float64
+            # booleans
+            "bool": {pl.Boolean}, "boolean": {pl.Boolean},
+            # temporal
+            "date": {pl.Date}, "datetime": {pl.Datetime}, "time": {pl.Time},
+        }
+        _FAMILY_MAP = {
+            "int": {pl.Int8, pl.Int16, pl.Int32, pl.Int64},
+            "integer": {pl.Int8, pl.Int16, pl.Int32, pl.Int64},
+            "float": {pl.Float32, pl.Float64},
+            "numeric": {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Float32, pl.Float64},
+            "string": {pl.Utf8, getattr(pl, "String", pl.Utf8)},  # tolerate both Utf8 and String
+            "str": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
+            "text": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
+            "utf8": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
+        }
+    return _EXACT_MAP, _FAMILY_MAP
+
+
+@register_rule("dtype", _builtin=True)
 class DtypeRule(BaseRule):
     """
     Dtype — schema-level type check for a single column.
@@ -71,38 +110,13 @@ class DtypeRule(BaseRule):
 
     _STRING_ALIASES = {"utf8", "string", "str", "text"}
 
-    # Exact physical types (single-member sets treated as "exact")
-    _EXACT_MAP = {
-        # signed ints
-        "int8": {pl.Int8}, "int16": {pl.Int16}, "int32": {pl.Int32}, "int64": {pl.Int64},
-        # unsigned ints
-        "uint8": {pl.UInt8}, "uint16": {pl.UInt16}, "uint32": {pl.UInt32}, "uint64": {pl.UInt64},
-        # floats
-        "float32": {pl.Float32}, "float64": {pl.Float64},
-        "float": {pl.Float64}, "double": {pl.Float64},  # common aliases treated as exact Float64
-        # booleans
-        "bool": {pl.Boolean}, "boolean": {pl.Boolean},
-        # temporal
-        "date": {pl.Date}, "datetime": {pl.Datetime}, "time": {pl.Time},
-    }
-
-    # Logical families (multi-member sets)
-    _FAMILY_MAP = {
-        "int": {pl.Int8, pl.Int16, pl.Int32, pl.Int64},
-        "integer": {pl.Int8, pl.Int16, pl.Int32, pl.Int64},
-        "float": {pl.Float32, pl.Float64},
-        "numeric": {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Float32, pl.Float64},
-        "string": {pl.Utf8, getattr(pl, "String", pl.Utf8)},  # tolerate both Utf8 and String
-        "str": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
-        "text": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
-        "utf8": {pl.Utf8, getattr(pl, "String", pl.Utf8)},
-    }
-
     # ---- Normalization ------------------------------------------------------
 
     @staticmethod
     def _dtype_label(dt: pl.DataType) -> str:
         """Stable, user-friendly label for actual dtype in messages."""
+        import polars as pl
+
         # Polars dtypes stringify nicely (e.g., "Int64", "Utf8").
         # Keep that behavior, but ensure Utf8/String variants read cleanly.
         if dt == pl.Utf8:
@@ -125,15 +139,17 @@ class DtypeRule(BaseRule):
         # tolerate hyphen variants like "utf-8"
         t_no_dash = t.replace("-", "")
 
+        exact_map, family_map = _get_type_maps()
+
         # Family first (covers "string", "str", "utf8", etc.)
-        if t in self._FAMILY_MAP:
-            return t, self._FAMILY_MAP[t]
-        if t_no_dash in self._FAMILY_MAP:
-            return t_no_dash, self._FAMILY_MAP[t_no_dash]
+        if t in family_map:
+            return t, family_map[t]
+        if t_no_dash in family_map:
+            return t_no_dash, family_map[t_no_dash]
 
         # Exact physical types (single-member sets)
-        if t in self._EXACT_MAP:
-            return t, self._EXACT_MAP[t]
+        if t in exact_map:
+            return t, exact_map[t]
 
         return t, None
 

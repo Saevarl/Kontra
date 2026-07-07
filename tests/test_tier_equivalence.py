@@ -348,6 +348,119 @@ class TestRangeEquivalence:
                 )
 
 
+class TestRangeDateEquivalence:
+    """BUG-004/005: range must work with date/datetime columns.
+
+    String boundaries like '2023-01-01' must be coerced to date/datetime
+    before comparison. Previously crashed with InvalidOperationError.
+    """
+
+    @pytest.fixture
+    def date_range_data(self, tmp_path) -> str:
+        """Date column: 1 out of range, 1 null = 2 violations."""
+        from datetime import date as dt_date
+        df = pl.DataFrame({
+            "event_date": [
+                dt_date(2023, 3, 1),
+                dt_date(2023, 6, 15),
+                dt_date(2024, 2, 1),  # out of range
+                None,                 # null = violation
+            ],
+        })
+        path = tmp_path / "date_range.parquet"
+        df.write_parquet(str(path))
+        return str(path)
+
+    def test_date_range_polars(self, date_range_data, write_contract):
+        """Date range with string boundaries must not crash (BUG-005)."""
+        rule = {"name": "range", "params": {"column": "event_date", "min": "2023-01-01", "max": "2023-12-31"}, "tally": True}
+        cpath = write_contract(dataset=date_range_data, rules=[rule])
+
+        result = run_with_tier(cpath, "polars")
+        count = get_violation_count(result, "COL:event_date:range")
+        assert count == 2, f"Expected 2 violations (1 out of range + 1 null), got {count}"
+
+    def test_date_range_preplan(self, date_range_data, write_contract):
+        """Date range preplan must not falsely pass (BUG-004)."""
+        rule = {"name": "range", "params": {"column": "event_date", "min": "2023-01-01", "max": "2023-12-31"}}
+        cpath = write_contract(dataset=date_range_data, rules=[rule])
+
+        result = run_with_tier(cpath, "preplan")
+        rule_result = get_rule_result(result, "COL:event_date:range")
+
+        # Must not falsely pass — there are violations
+        assert rule_result["passed"] is False
+
+    def test_date_range_all_in_range(self, tmp_path, write_contract):
+        """Date range with all values in range should pass."""
+        from datetime import date as dt_date
+        df = pl.DataFrame({
+            "event_date": [dt_date(2023, 3, 1), dt_date(2023, 6, 15), dt_date(2023, 9, 30)],
+        })
+        path = tmp_path / "dates_ok.parquet"
+        df.write_parquet(str(path))
+
+        rule = {"name": "range", "params": {"column": "event_date", "min": "2023-01-01", "max": "2023-12-31"}, "tally": True}
+        cpath = write_contract(dataset=str(path), rules=[rule])
+
+        result = run_with_tier(cpath, "polars")
+        count = get_violation_count(result, "COL:event_date:range")
+        assert count == 0
+
+
+class TestRangeWithNullsEquivalence:
+    """BUG-003: range with nulls must not falsely pass via metadata.
+
+    NULLs are treated as range violations. Preplan must detect nulls
+    and not short-circuit to pass_meta when values are in range but
+    nulls exist.
+    """
+
+    RULE = {"name": "range", "params": {"column": "score", "min": 0, "max": 100}}
+    RULE_ID = "COL:score:range"
+
+    @pytest.fixture
+    def range_null_data(self, tmp_path) -> str:
+        """Values all in range, but 3 nulls which are range violations."""
+        df = pl.DataFrame({
+            "score": [10, 20, 30, None, 50, None, 70, None, 90, 100],
+        })
+        path = tmp_path / "range_nulls.parquet"
+        df.write_parquet(str(path))
+        return str(path)
+
+    def test_preplan_does_not_false_pass(self, range_null_data, write_contract):
+        """Preplan must NOT report pass_meta when column has nulls."""
+        cpath = write_contract(dataset=range_null_data, rules=[self.RULE])
+
+        preplan_result = run_with_tier(cpath, "preplan")
+        polars_result = run_with_tier(cpath, "polars")
+
+        preplan_rule = get_rule_result(preplan_result, self.RULE_ID)
+        polars_rule = get_rule_result(polars_result, self.RULE_ID)
+
+        # Polars should find 3 violations (the 3 nulls)
+        assert polars_rule["passed"] is False
+        assert polars_rule["failed_count"] == 3
+
+        # Preplan must NOT say "passed" — nulls are violations
+        if preplan_rule.get("execution_source") == "metadata":
+            assert preplan_rule["passed"] is False, (
+                "BUG-003: preplan falsely passed range check despite null values"
+            )
+
+    def test_preplan_detects_null_failure(self, range_null_data, write_contract):
+        """Preplan should detect nulls as range violations (fail_meta)."""
+        cpath = write_contract(dataset=range_null_data, rules=[self.RULE])
+
+        preplan_result = run_with_tier(cpath, "preplan")
+        preplan_rule = get_rule_result(preplan_result, self.RULE_ID)
+
+        # With our fix, preplan should detect nulls and report fail_meta
+        if preplan_rule.get("execution_source") == "metadata":
+            assert preplan_rule["passed"] is False
+
+
 # =============================================================================
 # allowed_values: SQL vs Polars
 # =============================================================================
@@ -373,6 +486,44 @@ class TestAllowedValuesEquivalence:
 
         assert sql_count == polars_count == self.EXPECTED_VIOLATIONS, (
             f"allowed_values mismatch: SQL={sql_count}, Polars={polars_count}, expected={self.EXPECTED_VIOLATIONS}"
+        )
+
+
+class TestAllowedValuesNullEquivalence:
+    """BUG-006: allowed_values null handling must be consistent SQL vs Polars.
+
+    When NULL is not in allowed_values, NULLs should be counted as violations
+    by both SQL and Polars tiers.
+    """
+
+    @pytest.fixture
+    def null_data(self, tmp_path) -> str:
+        """Data with 3 NULLs and 2 invalid values."""
+        df = pl.DataFrame({
+            "status": ["active", "inactive", None, "active", None, "bad", None, "worse"],
+        })
+        path = tmp_path / "null_av.parquet"
+        df.write_parquet(str(path))
+        return str(path)
+
+    def test_nulls_are_violations_both_tiers(self, null_data, write_contract):
+        """SQL and Polars must agree: NULLs are violations when not in allowed list."""
+        rule = {
+            "name": "allowed_values",
+            "params": {"column": "status", "values": ["active", "inactive"]},
+            "tally": True,
+        }
+        cpath = write_contract(dataset=null_data, rules=[rule])
+
+        sql_result = run_with_tier(cpath, "sql")
+        polars_result = run_with_tier(cpath, "polars")
+
+        sql_count = get_violation_count(sql_result, "COL:status:allowed_values")
+        polars_count = get_violation_count(polars_result, "COL:status:allowed_values")
+
+        # 3 NULLs + 2 invalid values = 5 violations
+        assert sql_count == polars_count == 5, (
+            f"BUG-006: allowed_values null mismatch: SQL={sql_count}, Polars={polars_count}, expected=5"
         )
 
 

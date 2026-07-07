@@ -62,7 +62,6 @@ class SqlServerBackend:
         self._conn = get_connection(self.params)
 
     def close(self) -> None:
-        """Close the connection."""
         if self._conn:
             self._conn.close()
             self._conn = None
@@ -73,17 +72,20 @@ class SqlServerBackend:
             return self._schema
 
         cursor = self._conn.cursor()
-        cursor.execute(
-            """
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = %s AND table_name = %s
-            ORDER BY ordinal_position
-            """,
-            (self.params.schema, self.params.table),
-        )
-        self._schema = [(row[0], row[1]) for row in cursor.fetchall()]
-        return self._schema
+        try:
+            cursor.execute(
+                """
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s
+                ORDER BY ordinal_position
+                """,
+                (self.params.schema, self.params.table),
+            )
+            self._schema = [(row[0], row[1]) for row in cursor.fetchall()]
+            return self._schema
+        finally:
+            cursor.close()
 
     def get_row_count(self) -> int:
         """
@@ -93,42 +95,44 @@ class SqlServerBackend:
         Falls back to COUNT(*) for accuracy.
         """
         cursor = self._conn.cursor()
-
-        # Try partition stats estimate first (instant, no scan)
-        cursor.execute(
-            """
-            SELECT SUM(row_count) AS row_estimate
-            FROM sys.dm_db_partition_stats ps
-            JOIN sys.objects o ON ps.object_id = o.object_id
-            JOIN sys.schemas s ON o.schema_id = s.schema_id
-            WHERE s.name = %s AND o.name = %s AND ps.index_id IN (0, 1)
-            """,
-            (self.params.schema, self.params.table),
-        )
-        row = cursor.fetchone()
-        estimate = int(row[0]) if row and row[0] else 0
-
-        # If estimate is 0 or negative (stats not updated), use COUNT
-        if estimate <= 0:
-            cursor.execute(f"SELECT COUNT(*) FROM {self._qualified_table()}")
+        try:
+            # Try partition stats estimate first (instant, no scan)
+            cursor.execute(
+                """
+                SELECT SUM(row_count) AS row_estimate
+                FROM sys.dm_db_partition_stats ps
+                JOIN sys.objects o ON ps.object_id = o.object_id
+                JOIN sys.schemas s ON o.schema_id = s.schema_id
+                WHERE s.name = %s AND o.name = %s AND ps.index_id IN (0, 1)
+                """,
+                (self.params.schema, self.params.table),
+            )
             row = cursor.fetchone()
-            return int(row[0]) if row else 0
+            estimate = int(row[0]) if row and row[0] else 0
 
-        # If sample_size is set, we need exact count for accuracy
-        if self.sample_size:
-            cursor.execute(f"SELECT COUNT(*) FROM {self._qualified_table()}")
-            row = cursor.fetchone()
-            return int(row[0]) if row else 0
+            # If estimate is 0 or negative (stats not updated), use COUNT
+            if estimate <= 0:
+                cursor.execute(f"SELECT COUNT(*) FROM {self._qualified_table()}")
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
 
-        # Use estimate for large tables
-        if os.getenv("KONTRA_VERBOSE"):
-            print(f"[INFO] sys.dm_db_partition_stats estimate: {estimate} rows")
-        return estimate
+            # If sample_size is set, we need exact count for accuracy
+            if self.sample_size:
+                cursor.execute(f"SELECT COUNT(*) FROM {self._qualified_table()}")
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+
+            # Use estimate for large tables
+            if os.getenv("KONTRA_VERBOSE"):
+                _logger.info("sys.dm_db_partition_stats estimate: %d rows", estimate)
+            return estimate
+        finally:
+            cursor.close()
 
     def get_estimated_size_bytes(self) -> Optional[int]:
         """Estimate size from sys.dm_db_partition_stats."""
+        cursor = self._conn.cursor()
         try:
-            cursor = self._conn.cursor()
             cursor.execute(
                 """
                 SELECT SUM(used_page_count) * 8 * 1024 AS size_bytes
@@ -144,6 +148,8 @@ class SqlServerBackend:
         except _get_db_error() as e:
             _logger.debug(f"Could not get table size: {e}")
             return None
+        finally:
+            cursor.close()
 
     def execute_stats_query(self, exprs: List[str]) -> Dict[str, Any]:
         """Execute aggregation query."""
@@ -163,10 +169,13 @@ class SqlServerBackend:
             sql = f"SELECT {', '.join(exprs)} FROM {table}"
 
         cursor = self._conn.cursor()
-        cursor.execute(sql)
-        row = cursor.fetchone()
-        col_names = [desc[0] for desc in cursor.description]
-        return dict(zip(col_names, row)) if row else {}
+        try:
+            cursor.execute(sql)
+            row = cursor.fetchone()
+            col_names = [desc[0] for desc in cursor.description]
+            return dict(zip(col_names, row)) if row else {}
+        finally:
+            cursor.close()
 
     def fetch_top_values(self, column: str, limit: int) -> List[Tuple[Any, int]]:
         """Fetch top N most frequent values."""
@@ -179,16 +188,17 @@ class SqlServerBackend:
             GROUP BY {col}
             ORDER BY cnt DESC
         """
+        cursor = self._conn.cursor()
         try:
-            cursor = self._conn.cursor()
             cursor.execute(sql)
             return [(r[0], int(r[1])) for r in cursor.fetchall()]
         except _get_db_error() as e:
             _logger.debug(f"Query error fetching top values for {column}: {e}")
             return []
+        finally:
+            cursor.close()
 
     def fetch_distinct_values(self, column: str) -> List[Any]:
-        """Fetch all distinct values."""
         col = self.esc_ident(column)
         table = self._qualified_table()
         sql = f"""
@@ -197,16 +207,17 @@ class SqlServerBackend:
             WHERE {col} IS NOT NULL
             ORDER BY {col}
         """
+        cursor = self._conn.cursor()
         try:
-            cursor = self._conn.cursor()
             cursor.execute(sql)
             return [r[0] for r in cursor.fetchall()]
         except _get_db_error() as e:
             _logger.debug(f"Query error fetching distinct values for {column}: {e}")
             return []
+        finally:
+            cursor.close()
 
     def fetch_sample_values(self, column: str, limit: int) -> List[Any]:
-        """Fetch sample values."""
         col = self.esc_ident(column)
         table = self._qualified_table()
         sql = f"""
@@ -214,13 +225,15 @@ class SqlServerBackend:
             FROM {table}
             WHERE {col} IS NOT NULL
         """
+        cursor = self._conn.cursor()
         try:
-            cursor = self._conn.cursor()
             cursor.execute(sql)
             return [r[0] for r in cursor.fetchall() if r[0] is not None]
         except _get_db_error() as e:
             _logger.debug(f"Query error fetching sample values for {column}: {e}")
             return []
+        finally:
+            cursor.close()
 
     def esc_ident(self, name: str) -> str:
         """Escape identifier for SQL Server."""
@@ -228,7 +241,6 @@ class SqlServerBackend:
 
     @property
     def source_format(self) -> str:
-        """Return source format."""
         return "sqlserver"
 
     # ----------------------------- Internal methods -----------------------------
@@ -240,17 +252,20 @@ class SqlServerBackend:
     def _get_object_id(self) -> Optional[int]:
         """Get the object_id for the table."""
         cursor = self._conn.cursor()
-        cursor.execute(
-            """
-            SELECT o.object_id
-            FROM sys.objects o
-            JOIN sys.schemas s ON o.schema_id = s.schema_id
-            WHERE s.name = %s AND o.name = %s
-            """,
-            (self.params.schema, self.params.table),
-        )
-        row = cursor.fetchone()
-        return int(row[0]) if row else None
+        try:
+            cursor.execute(
+                """
+                SELECT o.object_id
+                FROM sys.objects o
+                JOIN sys.schemas s ON o.schema_id = s.schema_id
+                WHERE s.name = %s AND o.name = %s
+                """,
+                (self.params.schema, self.params.table),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else None
+        finally:
+            cursor.close()
 
     def supports_metadata_only(self) -> bool:
         """Check if this backend supports metadata-only profiling."""
@@ -269,7 +284,6 @@ class SqlServerBackend:
         Note: For null counts, we fall back to a sampled query since
         SQL Server metadata doesn't include null statistics directly.
         """
-        cursor = self._conn.cursor()
         object_id = self._get_object_id()
 
         if not object_id:
@@ -287,117 +301,121 @@ class SqlServerBackend:
                 "is_estimate": True,
             }
 
-        # Query column statistics
+        cursor = self._conn.cursor()
         try:
-            cursor.execute(
-                """
-                SELECT
-                    c.name AS column_name,
-                    s.stats_id,
-                    sp.rows,
-                    sp.rows_sampled,
-                    sp.modification_counter
-                FROM sys.stats s
-                JOIN sys.stats_columns sc ON s.object_id = sc.object_id AND s.stats_id = sc.stats_id
-                JOIN sys.columns c ON sc.object_id = c.object_id AND sc.column_id = c.column_id
-                CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
-                WHERE s.object_id = %s AND sc.stats_column_id = 1
-                """,
-                (object_id,),
-            )
-            for row in cursor.fetchall():
-                col_name = row[0]
-                if col_name in stats_info:
-                    stats_info[col_name]["rows"] = row[2]
-                    stats_info[col_name]["rows_sampled"] = row[3]
-        except _get_db_error() as e:
-            _logger.debug(f"Could not get stats properties: {e}")
-
-        # Get distinct counts from histogram
-        try:
-            cursor.execute(
-                """
-                SELECT
-                    c.name AS column_name,
-                    SUM(h.distinct_range_rows) + COUNT(*) AS distinct_estimate
-                FROM sys.stats s
-                JOIN sys.stats_columns sc ON s.object_id = sc.object_id AND s.stats_id = sc.stats_id
-                JOIN sys.columns c ON sc.object_id = c.object_id AND sc.column_id = c.column_id
-                CROSS APPLY sys.dm_db_stats_histogram(s.object_id, s.stats_id) h
-                WHERE s.object_id = %s AND sc.stats_column_id = 1
-                GROUP BY c.name
-                """,
-                (object_id,),
-            )
-            for row in cursor.fetchall():
-                col_name = row[0]
-                if col_name in stats_info:
-                    stats_info[col_name]["distinct_count"] = int(row[1]) if row[1] else 0
-        except _get_db_error() as e:
-            # dm_db_stats_histogram might not be available (requires SQL Server 2016 SP1 CU2+)
-            _logger.debug(f"Could not get stats histogram (may require SQL Server 2016+): {e}")
-
-        # Fallback: For columns without stats, query COUNT(DISTINCT) directly
-        # This handles columns without indexes/statistics
-        cols_without_stats = [
-            col_name for col_name, _ in schema
-            if stats_info.get(col_name, {}).get("distinct_count", 0) == 0
-        ]
-        if cols_without_stats:
+            # Query column statistics
             try:
-                # Batch COUNT(DISTINCT) for all columns without stats
-                distinct_exprs = [
-                    f"COUNT(DISTINCT {self.esc_ident(col)}) AS [{col}_distinct]"
-                    for col in cols_without_stats
-                ]
-                table = self._qualified_table()
-                sql = f"SELECT {', '.join(distinct_exprs)} FROM {table}"
-                cursor.execute(sql)
-                row = cursor.fetchone()
-                if row:
-                    for i, col_name in enumerate(cols_without_stats):
-                        stats_info[col_name]["distinct_count"] = int(row[i] or 0)
-                        stats_info[col_name]["is_estimate"] = False
-            except _get_db_error() as e:
-                _logger.debug(f"Could not get distinct counts: {e}")
-
-        # For null counts, SQL Server doesn't store null statistics in metadata
-        # For small tables, just do full count; for large tables, use sampling
-        try:
-            null_exprs = []
-            for col_name, _ in schema:
-                c = self.esc_ident(col_name)
-                null_exprs.append(
-                    f"SUM(CASE WHEN {c} IS NULL THEN 1 ELSE 0 END) AS [{col_name}_nulls]"
+                cursor.execute(
+                    """
+                    SELECT
+                        c.name AS column_name,
+                        s.stats_id,
+                        sp.rows,
+                        sp.rows_sampled,
+                        sp.modification_counter
+                    FROM sys.stats s
+                    JOIN sys.stats_columns sc ON s.object_id = sc.object_id AND s.stats_id = sc.stats_id
+                    JOIN sys.columns c ON sc.object_id = c.object_id AND sc.column_id = c.column_id
+                    CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+                    WHERE s.object_id = %s AND sc.stats_column_id = 1
+                    """,
+                    (object_id,),
                 )
+                for row in cursor.fetchall():
+                    col_name = row[0]
+                    if col_name in stats_info:
+                        stats_info[col_name]["rows"] = row[2]
+                        stats_info[col_name]["rows_sampled"] = row[3]
+            except _get_db_error() as e:
+                _logger.debug(f"Could not get stats properties: {e}")
 
-            table = self._qualified_table()
+            # Get distinct counts from histogram
+            try:
+                cursor.execute(
+                    """
+                    SELECT
+                        c.name AS column_name,
+                        SUM(h.distinct_range_rows) + COUNT(*) AS distinct_estimate
+                    FROM sys.stats s
+                    JOIN sys.stats_columns sc ON s.object_id = sc.object_id AND s.stats_id = sc.stats_id
+                    JOIN sys.columns c ON sc.object_id = c.object_id AND sc.column_id = c.column_id
+                    CROSS APPLY sys.dm_db_stats_histogram(s.object_id, s.stats_id) h
+                    WHERE s.object_id = %s AND sc.stats_column_id = 1
+                    GROUP BY c.name
+                    """,
+                    (object_id,),
+                )
+                for row in cursor.fetchall():
+                    col_name = row[0]
+                    if col_name in stats_info:
+                        stats_info[col_name]["distinct_count"] = int(row[1]) if row[1] else 0
+            except _get_db_error() as e:
+                # dm_db_stats_histogram might not be available (requires SQL Server 2016 SP1 CU2+)
+                _logger.debug(f"Could not get stats histogram (may require SQL Server 2016+): {e}")
 
-            # For small tables (< 100K rows), full count is fast enough
-            if row_count < 100000:
-                sql = f"SELECT {', '.join(null_exprs)} FROM {table}"
-                cursor.execute(sql)
-                row = cursor.fetchone()
-                if row:
-                    for i, (col_name, _) in enumerate(schema):
-                        stats_info[col_name]["null_count"] = int(row[i] or 0)
-                        stats_info[col_name]["is_estimate"] = False
-            else:
-                # For large tables, use 1% sample and extrapolate
-                sql = f"""
-                    SELECT {', '.join(null_exprs)}
-                    FROM {table}
-                    TABLESAMPLE (1 PERCENT)
-                """
-                cursor.execute(sql)
-                row = cursor.fetchone()
-                if row:
-                    for i, (col_name, _) in enumerate(schema):
-                        sample_nulls = row[i] or 0
-                        stats_info[col_name]["null_count"] = int(sample_nulls * 100)
-                        stats_info[col_name]["is_estimate"] = True
-        except _get_db_error() as e:
-            _logger.debug(f"Could not get null counts: {e}")
+            # Fallback: For columns without stats, query COUNT(DISTINCT) directly
+            # This handles columns without indexes/statistics
+            cols_without_stats = [
+                col_name for col_name, _ in schema
+                if stats_info.get(col_name, {}).get("distinct_count", 0) == 0
+            ]
+            if cols_without_stats:
+                try:
+                    # Batch COUNT(DISTINCT) for all columns without stats
+                    distinct_exprs = [
+                        f"COUNT(DISTINCT {self.esc_ident(col)}) AS [{col}_distinct]"
+                        for col in cols_without_stats
+                    ]
+                    table = self._qualified_table()
+                    sql = f"SELECT {', '.join(distinct_exprs)} FROM {table}"
+                    cursor.execute(sql)
+                    row = cursor.fetchone()
+                    if row:
+                        for i, col_name in enumerate(cols_without_stats):
+                            stats_info[col_name]["distinct_count"] = int(row[i] or 0)
+                            stats_info[col_name]["is_estimate"] = False
+                except _get_db_error() as e:
+                    _logger.debug(f"Could not get distinct counts: {e}")
+
+            # For null counts, SQL Server doesn't store null statistics in metadata
+            # For small tables, just do full count; for large tables, use sampling
+            try:
+                null_exprs = []
+                for col_name, _ in schema:
+                    c = self.esc_ident(col_name)
+                    null_exprs.append(
+                        f"SUM(CASE WHEN {c} IS NULL THEN 1 ELSE 0 END) AS [{col_name}_nulls]"
+                    )
+
+                table = self._qualified_table()
+
+                # For small tables (< 100K rows), full count is fast enough
+                if row_count < 100000:
+                    sql = f"SELECT {', '.join(null_exprs)} FROM {table}"
+                    cursor.execute(sql)
+                    row = cursor.fetchone()
+                    if row:
+                        for i, (col_name, _) in enumerate(schema):
+                            stats_info[col_name]["null_count"] = int(row[i] or 0)
+                            stats_info[col_name]["is_estimate"] = False
+                else:
+                    # For large tables, use 1% sample and extrapolate
+                    sql = f"""
+                        SELECT {', '.join(null_exprs)}
+                        FROM {table}
+                        TABLESAMPLE (1 PERCENT)
+                    """
+                    cursor.execute(sql)
+                    row = cursor.fetchone()
+                    if row:
+                        for i, (col_name, _) in enumerate(schema):
+                            sample_nulls = row[i] or 0
+                            stats_info[col_name]["null_count"] = int(sample_nulls * 100)
+                            stats_info[col_name]["is_estimate"] = True
+            except _get_db_error() as e:
+                _logger.debug(f"Could not get null counts: {e}")
+        finally:
+            cursor.close()
 
         return stats_info
 
@@ -412,7 +430,6 @@ class SqlServerBackend:
         - stale_ratio: modification_counter / rows
         - is_fresh: True if stale_ratio < 0.2
         """
-        cursor = self._conn.cursor()
         object_id = self._get_object_id()
 
         if not object_id:
@@ -424,6 +441,7 @@ class SqlServerBackend:
                 "is_fresh": False,
             }
 
+        cursor = self._conn.cursor()
         try:
             cursor.execute(
                 """
@@ -471,6 +489,8 @@ class SqlServerBackend:
                 "stale_ratio": 1.0,
                 "is_fresh": False,
             }
+        finally:
+            cursor.close()
 
     def supports_strategic_standard(self) -> bool:
         """Check if this backend supports strategic standard profiling."""
@@ -511,8 +531,8 @@ class SqlServerBackend:
             TABLESAMPLE ({sample_pct} PERCENT)
         """
 
+        cursor = self._conn.cursor()
         try:
-            cursor = self._conn.cursor()
             cursor.execute(sql)
             row = cursor.fetchone()
             col_names = [desc[0] for desc in cursor.description]
@@ -527,6 +547,8 @@ class SqlServerBackend:
             # Fall back to full query if TABLESAMPLE fails
             _logger.debug(f"TABLESAMPLE query failed, falling back to full query: {e}")
             return self.execute_stats_query(exprs)
+        finally:
+            cursor.close()
 
     def fetch_low_cardinality_values_batched(
         self, columns: List[str]
@@ -553,8 +575,8 @@ class SqlServerBackend:
         sql = " UNION ALL ".join(parts) + " ORDER BY col_name, cnt DESC"
 
         result: Dict[str, List[Tuple[Any, int]]] = {col: [] for col in columns}
+        cursor = self._conn.cursor()
         try:
-            cursor = self._conn.cursor()
             cursor.execute(sql)
             for row in cursor.fetchall():
                 col_name, val, cnt = row
@@ -562,6 +584,8 @@ class SqlServerBackend:
                     result[col_name].append((val, int(cnt)))
         except _get_db_error() as e:
             _logger.debug(f"Query error fetching low cardinality values: {e}")
+        finally:
+            cursor.close()
 
         return result
 

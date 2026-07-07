@@ -591,6 +591,332 @@ class TestStateDiff:
         assert "has_regressions" in data
         assert "new_failures" in data
 
+    def test_tally_mode_change_warning(self):
+        """Test that diff warns when tally mode changes between runs (F-023).
+
+        Run 1 with tally=False reports failed_count=1 (early-stop lower bound).
+        Run 2 with tally=True reports failed_count=17 (exact count).
+        The data didn't change but the count did. Diff should still show
+        regression but include a warning about the tally mode change.
+        """
+        before = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 1, "polars"),
+        ])
+        before.tally = False  # Early-stop mode
+
+        after = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 17, "polars"),
+        ])
+        after.tally = True  # Exact count mode
+
+        diff = StateDiff.compute(before, after)
+
+        # Still shows as regression (count went up)
+        assert diff.has_regressions
+        assert len(diff.regressions) == 1
+        assert diff.regressions[0].delta == 16
+
+        # But includes a warning about the tally mode change
+        assert len(diff.warnings) == 1
+        assert "Tally mode changed" in diff.warnings[0]
+        assert "tally=False" in diff.warnings[0]
+        assert "tally=True" in diff.warnings[0]
+
+    def test_tally_mode_same_no_warning(self):
+        """Test that no warning is emitted when tally mode is the same."""
+        before = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 10, "polars"),
+        ])
+        before.tally = True
+
+        after = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 25, "polars"),
+        ])
+        after.tally = True
+
+        diff = StateDiff.compute(before, after)
+
+        assert diff.has_regressions
+        assert len(diff.warnings) == 0
+
+    def test_tally_mode_unknown_no_warning(self):
+        """Test backwards compat: old runs without tally info produce no warning."""
+        before = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 1, "polars"),
+        ])
+        # tally is None (old run, no tally info)
+
+        after = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 17, "polars"),
+        ])
+        after.tally = True
+
+        diff = StateDiff.compute(before, after)
+
+        # Should NOT warn when one side has no tally info
+        assert len(diff.warnings) == 0
+
+    def test_tally_mode_warning_in_to_llm(self):
+        """Test that tally mode warning appears in LLM output."""
+        before = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 1, "polars"),
+        ])
+        before.tally = False
+
+        after = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 17, "polars"),
+        ])
+        after.tally = True
+
+        diff = StateDiff.compute(before, after)
+        llm_output = diff.to_llm()
+
+        assert "WARNING:" in llm_output
+        assert "Tally mode changed" in llm_output
+
+    def test_tally_mode_warning_in_to_dict(self):
+        """Test that tally mode warning appears in serialized dict."""
+        before = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 1, "polars"),
+        ])
+        before.tally = False
+
+        after = self._make_state(passed=False, rules=[
+            RuleState("COL:email:not_null", "not_null", False, 17, "polars"),
+        ])
+        after.tally = True
+
+        diff = StateDiff.compute(before, after)
+        d = diff.to_dict()
+
+        assert "warnings" in d
+        assert len(d["warnings"]) == 1
+        assert "Tally mode changed" in d["warnings"][0]
+
+    def test_tally_mode_no_warnings_key_when_empty(self):
+        """Test that 'warnings' key is absent from dict when no warnings."""
+        before = self._make_state()
+        after = self._make_state()
+
+        diff = StateDiff.compute(before, after)
+        d = diff.to_dict()
+
+        assert "warnings" not in d
+
+
+# ---------------------------------------------------------------------------
+# ValidationState Tally Serialization Tests (F-023)
+# ---------------------------------------------------------------------------
+
+
+class TestValidationStateTally:
+    """Tests for tally mode tracking in ValidationState."""
+
+    def test_tally_roundtrip_true(self):
+        """Test that tally=True survives serialization roundtrip."""
+        state = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(passed=True, total_rules=1, passed_rules=1, failed_rules=0),
+            rules=[RuleState("COL:id:not_null", "not_null", True, 0, "polars")],
+            tally=True,
+        )
+
+        d = state.to_dict()
+        assert d["tally"] is True
+
+        restored = ValidationState.from_dict(d)
+        assert restored.tally is True
+
+    def test_tally_roundtrip_false(self):
+        """Test that tally=False survives serialization roundtrip."""
+        state = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(passed=True, total_rules=1, passed_rules=1, failed_rules=0),
+            rules=[RuleState("COL:id:not_null", "not_null", True, 0, "polars")],
+            tally=False,
+        )
+
+        d = state.to_dict()
+        assert d["tally"] is False
+
+        restored = ValidationState.from_dict(d)
+        assert restored.tally is False
+
+    def test_tally_none_backwards_compat(self):
+        """Test that old states without tally field load correctly."""
+        state = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(passed=True, total_rules=1, passed_rules=1, failed_rules=0),
+            rules=[RuleState("COL:id:not_null", "not_null", True, 0, "polars")],
+            # tally defaults to None
+        )
+
+        d = state.to_dict()
+        assert "tally" not in d  # None is not serialized
+
+        restored = ValidationState.from_dict(d)
+        assert restored.tally is None
+
+    def test_tally_json_roundtrip(self):
+        """Test tally survives JSON serialization."""
+        state = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(passed=True, total_rules=1, passed_rules=1, failed_rules=0),
+            rules=[RuleState("COL:id:not_null", "not_null", True, 0, "polars")],
+            tally=True,
+        )
+
+        json_str = state.to_json()
+        restored = ValidationState.from_json(json_str)
+        assert restored.tally is True
+
+
+# ---------------------------------------------------------------------------
+# Diff API Tally Warning Tests (F-023)
+# ---------------------------------------------------------------------------
+
+
+class TestDiffTallyWarning:
+    """Tests for tally mode warning propagation through Diff API."""
+
+    def test_diff_from_state_diff_propagates_warnings(self):
+        """Test that Diff.from_state_diff propagates warnings from StateDiff."""
+        from kontra.api.results import Diff
+
+        before = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(
+                passed=False, total_rules=1, passed_rules=0, failed_rules=1,
+                blocking_failures=1,
+            ),
+            rules=[RuleState("COL:email:not_null", "not_null", False, 1, "polars")],
+            tally=False,
+        )
+        after = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(
+                passed=False, total_rules=1, passed_rules=0, failed_rules=1,
+                blocking_failures=1,
+            ),
+            rules=[RuleState("COL:email:not_null", "not_null", False, 17, "polars")],
+            tally=True,
+        )
+
+        state_diff = StateDiff.compute(before, after)
+        diff = Diff.from_state_diff(state_diff)
+
+        assert len(diff.warnings) == 1
+        assert "Tally mode changed" in diff.warnings[0]
+        assert diff.regressed  # Still shows as regression
+
+    def test_diff_to_dict_includes_warnings(self):
+        """Test that Diff.to_dict() includes warnings when present."""
+        from kontra.api.results import Diff
+
+        before = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(
+                passed=False, total_rules=1, passed_rules=0, failed_rules=1,
+                blocking_failures=1,
+            ),
+            rules=[RuleState("COL:email:not_null", "not_null", False, 1, "polars")],
+            tally=False,
+        )
+        after = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(
+                passed=False, total_rules=1, passed_rules=0, failed_rules=1,
+                blocking_failures=1,
+            ),
+            rules=[RuleState("COL:email:not_null", "not_null", False, 17, "polars")],
+            tally=True,
+        )
+
+        state_diff = StateDiff.compute(before, after)
+        diff = Diff.from_state_diff(state_diff)
+        d = diff.to_dict()
+
+        assert "warnings" in d
+        assert len(d["warnings"]) == 1
+
+    def test_diff_to_llm_includes_warning(self):
+        """Test that Diff.to_llm() includes tally mode warning."""
+        from kontra.api.results import Diff
+
+        before = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(
+                passed=False, total_rules=1, passed_rules=0, failed_rules=1,
+                blocking_failures=1,
+            ),
+            rules=[RuleState("COL:email:not_null", "not_null", False, 1, "polars")],
+            tally=False,
+        )
+        after = ValidationState(
+            contract_fingerprint="abc123",
+            dataset_fingerprint="data123",
+            contract_name="test_contract",
+            dataset_uri="data/test.parquet",
+            run_at=datetime.now(timezone.utc),
+            summary=StateSummary(
+                passed=False, total_rules=1, passed_rules=0, failed_rules=1,
+                blocking_failures=1,
+            ),
+            rules=[RuleState("COL:email:not_null", "not_null", False, 17, "polars")],
+            tally=True,
+        )
+
+        state_diff = StateDiff.compute(before, after)
+        diff = Diff.from_state_diff(state_diff)
+        llm = diff.to_llm()
+
+        assert "WARNING:" in llm
+        assert "Tally mode changed" in llm
+
+    def test_diff_empty_has_no_warnings(self):
+        """Test that Diff.empty() has no warnings."""
+        from kontra.api.results import Diff
+
+        diff = Diff.empty()
+        assert diff.warnings == []
+        assert "warnings" not in diff.to_dict()
+
 
 # ---------------------------------------------------------------------------
 # Annotation Tests

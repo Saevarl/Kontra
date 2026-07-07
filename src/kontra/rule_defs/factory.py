@@ -1,11 +1,43 @@
 from __future__ import annotations
 
-from typing import List, Dict, Any, Optional
+import logging
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import get_rule, get_all_rule_names
 from kontra.config.models import RuleSpec
-from kontra.errors import DuplicateRuleIdError
+from kontra.errors import DuplicateRuleIdError, RuleParameterError
+from kontra.logging import get_logger, log_exception
+
+_logger = get_logger(__name__)
+
+
+class _FailedRule(BaseRule):
+    """
+    Sentinel rule that always returns a failure result.
+
+    Created when a custom rule's __init__ crashes. Instead of aborting the
+    entire validation run, the factory substitutes this sentinel which
+    reports the construction error as a rule failure at execution time.
+    """
+
+    rule_scope = "custom"
+    supports_tally = False
+
+    def __init__(self, name: str, params: Dict[str, Any], error: Exception):
+        super().__init__(name, params)
+        self._init_error = error
+
+    def validate(self, df: "pl.DataFrame") -> Dict[str, Any]:
+        return {
+            "rule_id": self.rule_id,
+            "passed": False,
+            "failed_count": 0,
+            "message": f"Rule __init__ crashed: {type(self._init_error).__name__}: {self._init_error}",
+        }
 
 
 def _derive_rule_id(spec: RuleSpec) -> str:
@@ -24,7 +56,12 @@ def _derive_rule_id(spec: RuleSpec) -> str:
     params: Dict[str, Any] = spec.params or {}
     col = params.get("column")
     if isinstance(col, str) and col:
-        return f"COL:{col}:{spec.name}"
+        base_id = f"COL:{col}:{spec.name}"
+        # Differentiate rules with significant variant params (BUG-055)
+        # e.g. not_null with include_nan=True → COL:val:not_null:include_nan
+        if params.get("include_nan"):
+            base_id += ":include_nan"
+        return base_id
     return f"DATASET:{spec.name}"
 
 
@@ -81,10 +118,7 @@ class RuleFactory:
 
                 rule_instance.rule_id = rule_id
                 rule_instance.severity = spec.severity
-                rule_instance.tally = spec.tally  # None = use global default
-                rule_instance.context = spec.context or {}
-
-                # Warn if tally is set on a rule that doesn't support it
+                # Clear tally for rules that don't support it (BUG-018)
                 if spec.tally is not None and not rule_instance.supports_tally:
                     import warnings
                     warnings.warn(
@@ -93,12 +127,35 @@ class RuleFactory:
                         UserWarning,
                         stacklevel=2,
                     )
+                    rule_instance.tally = None  # Don't show tally=True in results
+                else:
+                    rule_instance.tally = spec.tally  # None = use global default
+                rule_instance.context = spec.context or {}
 
                 rules.append(rule_instance)
-            except (ValueError, DuplicateRuleIdError):
+            except (ValueError, DuplicateRuleIdError, RuleParameterError):
                 raise  # Re-raise validation errors as-is
             except Exception as e:
-                raise RuntimeError(f"Failed to instantiate rule '{rule_name}': {e}") from e
+                # Custom rule __init__ crashed — substitute a sentinel that
+                # reports the error as a rule failure instead of aborting.
+                log_exception(
+                    _logger,
+                    f"Rule '{rule_name}' __init__ crashed, substituting failed sentinel",
+                    e,
+                    level=logging.WARNING,
+                )
+                rule_id = _derive_rule_id(spec)
+                if rule_id in seen_ids:
+                    # Duplicate — still raise, can't recover
+                    raise RuntimeError(f"Failed to instantiate rule '{rule_name}': {e}") from e
+                seen_ids[rule_id] = idx
+
+                sentinel = _FailedRule(rule_name, rule_params, e)
+                sentinel.rule_id = rule_id
+                sentinel.severity = spec.severity
+                sentinel.tally = None
+                sentinel.context = spec.context or {}
+                rules.append(sentinel)
 
         return rules
 

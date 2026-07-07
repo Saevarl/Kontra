@@ -1,13 +1,15 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
-import polars as pl
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
 
-@register_rule("not_null")
+@register_rule("not_null", _builtin=True)
 class NotNullRule(BaseRule):
     """
     Fails where column contains NULL values.
@@ -90,19 +92,24 @@ class NotNullRule(BaseRule):
         column = self.params["column"]
         include_nan = self.params.get("include_nan", False)
 
-        expr = pl.col(column).is_null()
         message = f"{column} contains null values"
-
         if include_nan:
-            # Note: is_nan() only works on float columns, but compile_predicate
-            # doesn't have access to the DataFrame schema. The expression will
-            # be evaluated at runtime where Polars handles type checking.
-            expr = expr | pl.col(column).is_nan()
             message = f"{column} contains null or NaN values"
+
+        def _expr():
+            import polars as pl
+
+            expr = pl.col(column).is_null()
+            if include_nan:
+                # Note: is_nan() only works on float columns, but compile_predicate
+                # doesn't have access to the DataFrame schema. The expression will
+                # be evaluated at runtime where Polars handles type checking.
+                expr = expr | pl.col(column).is_nan()
+            return expr
 
         return Predicate(
             rule_id=self.rule_id,
-            expr=expr,
+            expr_factory=_expr,
             message=message,
             columns={column},
         )

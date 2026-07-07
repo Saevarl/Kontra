@@ -630,6 +630,67 @@ class TestRangeValidationFix:
             RangeRule("range", {"column": "value"})  # No min or max
 
 
+class TestRangeStringParamCoercion:
+    """Tests for F-032: range rule string param coercion."""
+
+    def test_string_min_max_coerced_to_numeric(self):
+        """Dict format with string min/max should coerce to numeric."""
+        from kontra.rule_defs.builtin.range import RangeRule
+
+        rule = RangeRule("range", {"column": "age", "min": "18", "max": "120"})
+        assert rule.params["min"] == 18
+        assert rule.params["max"] == 120
+        assert isinstance(rule.params["min"], int)
+        assert isinstance(rule.params["max"], int)
+
+    def test_string_float_coerced(self):
+        """String float values should coerce to float."""
+        from kontra.rule_defs.builtin.range import RangeRule
+
+        rule = RangeRule("range", {"column": "score", "min": "0.5", "max": "99.9"})
+        assert rule.params["min"] == 0.5
+        assert rule.params["max"] == 99.9
+        assert isinstance(rule.params["min"], float)
+        assert isinstance(rule.params["max"], float)
+
+    def test_non_numeric_string_raises_error(self):
+        """Non-numeric string min/max should raise RuleParameterError."""
+        from kontra.rule_defs.builtin.range import RangeRule
+        from kontra.errors import RuleParameterError
+
+        with pytest.raises(RuleParameterError, match="must be numeric"):
+            RangeRule("range", {"column": "age", "min": "abc"})
+
+    def test_coerced_values_validate_correctly(self):
+        """String params that are coerced should produce correct validation results."""
+        import polars as pl
+        from kontra.rule_defs.builtin.range import RangeRule
+
+        df = pl.DataFrame({"age": [15, 20, 25, 130]})
+        # Dict format with string params (as from YAML)
+        rule = RangeRule("range", {"column": "age", "min": "18", "max": "120"})
+        result = rule.validate(df)
+        # 15 is below 18, 130 is above 120 → 2 failures
+        assert result["failed_count"] == 2
+        assert not result["passed"]
+
+    def test_date_string_preserved_for_temporal_coercion(self):
+        """Date strings should be preserved (handled by _coerce_temporal at runtime)."""
+        from kontra.rule_defs.builtin.range import RangeRule
+
+        rule = RangeRule("range", {"column": "dt", "min": "2024-01-01"})
+        # Date string is left as-is for _coerce_temporal
+        assert rule.params["min"] == "2024-01-01"
+
+    def test_unsupported_type_raises_error(self):
+        """Non-string non-numeric types should raise RuleParameterError."""
+        from kontra.rule_defs.builtin.range import RangeRule
+        from kontra.errors import RuleParameterError
+
+        with pytest.raises(RuleParameterError, match="must be numeric"):
+            RangeRule("range", {"column": "age", "min": [18]})
+
+
 class TestDtypeValidationFix:
     """Tests for dtype rule validation fix (BUG-005 from first round)."""
 
@@ -645,3 +706,137 @@ class TestDtypeValidationFix:
         assert "unknown_type" in error_str
         # Should list valid types
         assert "int64" in error_str or "Valid types" in error_str
+
+
+# ---------------------------------------------------------------------------
+# BUG F-016: Custom rule with bad return dict or __init__ crash
+# ---------------------------------------------------------------------------
+
+class TestCustomRuleInitCrash:
+    """F-016: Custom rule whose __init__ crashes should not abort validation."""
+
+    def test_init_crash_returns_failed_result(self):
+        """A custom rule whose __init__ raises is replaced by a sentinel that reports failure."""
+        import kontra
+        from kontra import rules
+        from kontra.rule_defs.base import BaseRule
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
+
+        @register_rule("_test_f016_boom")
+        class BoomRule(BaseRule):
+            rule_scope = "column"
+            def __init__(self, name, params):
+                super().__init__(name, params)
+                raise RuntimeError("kaboom in __init__")
+            def validate(self, df):
+                return {"rule_id": self.rule_id, "passed": True, "failed_count": 0, "message": "ok"}
+
+        try:
+            df = pl.DataFrame({"id": [1, 2, 3]})
+            result = kontra.validate(
+                df,
+                rules=[
+                    rules.not_null("id"),
+                    {"name": "_test_f016_boom", "params": {"column": "id"}},
+                ],
+            )
+            # Validation should complete (not raise)
+            assert not result.passed  # The boom rule fails
+            boom_results = [r for r in result.rules if "boom" in r.rule_id.lower() or "f016" in r.rule_id.lower()]
+            assert len(boom_results) == 1
+            assert boom_results[0].passed is False
+            assert "kaboom" in boom_results[0].message.lower() or "__init__" in boom_results[0].message.lower()
+            # The not_null rule should still succeed
+            not_null_results = [r for r in result.rules if r.rule_id == "COL:id:not_null"]
+            assert len(not_null_results) == 1
+            assert not_null_results[0].passed is True
+        finally:
+            RULE_REGISTRY.pop("_test_f016_boom", None)
+
+
+class TestCustomRuleBadReturnDict:
+    """F-016: Custom rule returning a malformed dict should not crash validation."""
+
+    def test_missing_rule_id_key(self):
+        """A custom rule returning dict without rule_id is handled gracefully."""
+        import kontra
+        from kontra.rule_defs.base import BaseRule
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
+
+        @register_rule("_test_f016_no_rid")
+        class NoRuleIdRule(BaseRule):
+            rule_scope = "dataset"
+            def __init__(self, name, params):
+                super().__init__(name, params)
+            def validate(self, df):
+                # Missing rule_id, passed, and failed_count
+                return {"message": "oops I forgot keys"}
+
+        try:
+            df = pl.DataFrame({"id": [1, 2, 3]})
+            result = kontra.validate(
+                df,
+                rules=[{"name": "_test_f016_no_rid", "params": {}}],
+            )
+            # Should not raise KeyError; should get a result
+            assert len(result.rules) == 1
+            r = result.rules[0]
+            # Missing keys were patched in with defaults
+            assert r.rule_id is not None
+            assert "missing keys" in r.message.lower() or "warning" in r.message.lower()
+        finally:
+            RULE_REGISTRY.pop("_test_f016_no_rid", None)
+
+    def test_non_dict_return(self):
+        """A custom rule returning a non-dict is handled gracefully."""
+        import kontra
+        from kontra.rule_defs.base import BaseRule
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
+
+        @register_rule("_test_f016_str_ret")
+        class StringReturnRule(BaseRule):
+            rule_scope = "dataset"
+            def __init__(self, name, params):
+                super().__init__(name, params)
+            def validate(self, df):
+                return "this is not a dict"
+
+        try:
+            df = pl.DataFrame({"id": [1, 2, 3]})
+            result = kontra.validate(
+                df,
+                rules=[{"name": "_test_f016_str_ret", "params": {}}],
+            )
+            assert len(result.rules) == 1
+            r = result.rules[0]
+            assert r.passed is False
+            assert "invalid type" in r.message.lower() or "str" in r.message.lower()
+        finally:
+            RULE_REGISTRY.pop("_test_f016_str_ret", None)
+
+    def test_validate_runtime_error_still_caught(self):
+        """A custom rule whose validate() raises is caught (pre-existing behavior)."""
+        import kontra
+        from kontra.rule_defs.base import BaseRule
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
+
+        @register_rule("_test_f016_raise")
+        class RaisingRule(BaseRule):
+            rule_scope = "dataset"
+            def __init__(self, name, params):
+                super().__init__(name, params)
+            def validate(self, df):
+                raise ValueError("something broke")
+
+        try:
+            df = pl.DataFrame({"id": [1, 2, 3]})
+            result = kontra.validate(
+                df,
+                rules=[{"name": "_test_f016_raise", "params": {}}],
+            )
+            assert len(result.rules) == 1
+            r = result.rules[0]
+            assert r.passed is False
+            assert "something broke" in r.message
+        finally:
+            RULE_REGISTRY.pop("_test_f016_raise", None)

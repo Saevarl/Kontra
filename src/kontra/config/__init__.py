@@ -6,29 +6,35 @@ Public API:
     - Contract, RuleSpec: Data models for contracts
     - ContractLoader: Loads contracts from files or S3
     - KontraConfig, EffectiveConfig: Configuration models
-    - load_config: Load project configuration
+    - load_config_file, find_config_file, resolve_effective_config
+
+Submodules load lazily (PEP 562): they pull in pydantic/yaml, which would
+otherwise dominate `import kontra` time.
 """
 
-from kontra.config.models import Contract, RuleSpec
-from kontra.config.loader import ContractLoader
-from kontra.config.settings import (
-    KontraConfig,
-    EffectiveConfig,
-    load_config_file,
-    resolve_effective_config,
-    find_config_file,
-)
+from typing import Any
 
-__all__ = [
-    # Contract models
-    "Contract",
-    "RuleSpec",
-    # Loader
-    "ContractLoader",
-    # Config
-    "KontraConfig",
-    "EffectiveConfig",
-    "load_config_file",
-    "find_config_file",
-    "resolve_effective_config",
-]
+_LAZY_ATTRS = {
+    "Contract": "kontra.config.models",
+    "RuleSpec": "kontra.config.models",
+    "ContractLoader": "kontra.config.loader",
+    "KontraConfig": "kontra.config.settings",
+    "EffectiveConfig": "kontra.config.settings",
+    "load_config_file": "kontra.config.settings",
+    "find_config_file": "kontra.config.settings",
+    "resolve_effective_config": "kontra.config.settings",
+}
+
+__all__ = list(_LAZY_ATTRS)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name = _LAZY_ATTRS[name]
+    except KeyError:
+        raise AttributeError(f"module 'kontra.config' has no attribute '{name}'") from None
+    import importlib
+
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value
+    return value

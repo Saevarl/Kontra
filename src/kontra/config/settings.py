@@ -12,12 +12,17 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
-import yaml
-from pydantic import BaseModel, Field, field_validator
+# NOTE: `yaml` is imported lazily inside load_config_file() so that importing
+# this module (which happens on every validate() call to resolve defaults) does
+# not pull in PyYAML when no config file exists. Pydantic is intentionally NOT
+# used here: these settings-layer models are plain dataclasses with explicit
+# validation to keep `import kontra` / cold-start cost low. Contract models in
+# kontra.config.models still use pydantic.
 
 
 # =============================================================================
@@ -64,130 +69,362 @@ def substitute_env_vars_recursive(obj: Any) -> Any:
 
 
 # =============================================================================
-# Pydantic Models
+# Config Models (plain dataclasses + explicit validation)
 # =============================================================================
+#
+# These deliberately avoid pydantic. They provide a small, pydantic-compatible
+# surface (keyword construction, `.model_validate(dict)`, attribute access) so
+# existing callers/tests keep working, while validating and coercing values the
+# same way the previous pydantic models did:
+#   - Literal fields reject values outside their allowed set.
+#   - `port` coerces numeric strings to int (e.g. "5433" -> 5433).
+#   - `severity_weights` coerces values to float (8 -> 8.0, "8" -> 8.0).
+#   - Unknown keys are ignored (pydantic's default `extra='ignore'`).
+# Invalid input raises ValueError (pydantic's ValidationError is itself a
+# ValueError subclass, so `except ValueError` handlers keep working).
 
-# =============================================================================
-# Datasource Models
-# =============================================================================
+_REQUIRED = object()  # sentinel for required fields with no default
 
 
-class PostgresDatasourceConfig(BaseModel):
+def _require_mapping(data: Any, model_name: str) -> Dict[str, Any]:
+    """Ensure model_validate input is a mapping (pydantic 'model_type' error)."""
+    if not isinstance(data, Mapping):
+        raise ValueError(
+            f"{model_name}: expected a mapping, got {type(data).__name__}"
+        )
+    return dict(data)
+
+
+def _validate_literal(value: Any, allowed: tuple, field_name: str) -> Any:
+    """Validate that value is one of the allowed literals (pydantic Literal)."""
+    if value not in allowed:
+        opts = ", ".join(repr(a) for a in allowed)
+        raise ValueError(
+            f"{field_name}: invalid value {value!r}. Expected one of: {opts}"
+        )
+    return value
+
+
+def _coerce_int(value: Any, field_name: str) -> int:
+    """Coerce value to int the way pydantic's lax int mode does."""
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name}: expected an integer, got bool")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        raise ValueError(f"{field_name}: expected an integer, got {value!r}")
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            raise ValueError(
+                f"{field_name}: unable to parse {value!r} as an integer"
+            ) from None
+    raise ValueError(f"{field_name}: expected an integer, got {type(value).__name__}")
+
+
+def _coerce_float(value: Any, field_name: str) -> float:
+    """Coerce value to float the way pydantic's lax float mode does."""
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            raise ValueError(
+                f"{field_name}: unable to parse {value!r} as a number"
+            ) from None
+    raise ValueError(f"{field_name}: expected a number, got {type(value).__name__}")
+
+
+def _pick_known(cls: type, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Select only known dataclass field names from data (ignore extras)."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in names}
+
+
+# --- Datasource Models ---
+
+
+@dataclass
+class PostgresDatasourceConfig:
     """PostgreSQL datasource configuration."""
 
-    type: Literal["postgres"] = "postgres"
+    type: str = "postgres"
     host: str = "${PGHOST}"
     port: int = 5432
     user: str = "${PGUSER}"
     password: str = "${PGPASSWORD}"
     database: str = "${PGDATABASE}"
     # Tables: map alias -> schema.table
-    tables: Dict[str, str] = Field(default_factory=dict)
+    tables: Dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_literal(self.type, ("postgres",), "type")
+        self.port = _coerce_int(self.port, "port")
+        if self.tables is None:
+            self.tables = {}
+
+    @classmethod
+    def model_validate(cls, data: Any) -> "PostgresDatasourceConfig":
+        return cls(**_pick_known(cls, _require_mapping(data, "PostgresDatasourceConfig")))
 
 
-class FilesDatasourceConfig(BaseModel):
+@dataclass
+class FilesDatasourceConfig:
     """File-based datasource configuration (Parquet, CSV)."""
 
-    type: Literal["files", "file"] = "files"
+    type: str = "files"
     base_path: str = "./"
     path: str = ""  # Alias for base_path
     # Tables: map alias -> relative path
-    tables: Dict[str, str] = Field(default_factory=dict)
-    datasets: Dict[str, str] = Field(default_factory=dict)  # Alias for tables
+    tables: Dict[str, str] = field(default_factory=dict)
+    datasets: Dict[str, str] = field(default_factory=dict)  # Alias for tables
+
+    def __post_init__(self) -> None:
+        _validate_literal(self.type, ("files", "file"), "type")
+        if self.tables is None:
+            self.tables = {}
+        if self.datasets is None:
+            self.datasets = {}
+
+    @classmethod
+    def model_validate(cls, data: Any) -> "FilesDatasourceConfig":
+        return cls(**_pick_known(cls, _require_mapping(data, "FilesDatasourceConfig")))
 
 
-class S3DatasourceConfig(BaseModel):
+@dataclass
+class S3DatasourceConfig:
     """S3 datasource configuration."""
 
-    type: Literal["s3"] = "s3"
-    bucket: str
+    type: str = "s3"
+    bucket: str = _REQUIRED  # type: ignore[assignment]
     prefix: str = ""
     # Tables: map alias -> relative key
-    tables: Dict[str, str] = Field(default_factory=dict)
+    tables: Dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_literal(self.type, ("s3",), "type")
+        if self.bucket is _REQUIRED:
+            raise ValueError("bucket: Field required")
+        if self.tables is None:
+            self.tables = {}
+
+    @classmethod
+    def model_validate(cls, data: Any) -> "S3DatasourceConfig":
+        return cls(**_pick_known(cls, _require_mapping(data, "S3DatasourceConfig")))
 
 
-class MSSQLDatasourceConfig(BaseModel):
+@dataclass
+class MSSQLDatasourceConfig:
     """SQL Server datasource configuration."""
 
-    type: Literal["mssql"] = "mssql"
+    type: str = "mssql"
     host: str = "localhost"
     port: int = 1433
     user: str = "sa"
     password: str = ""
     database: str = ""
     # Tables: map alias -> schema.table
-    tables: Dict[str, str] = Field(default_factory=dict)
+    tables: Dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_literal(self.type, ("mssql",), "type")
+        self.port = _coerce_int(self.port, "port")
+        if self.tables is None:
+            self.tables = {}
+
+    @classmethod
+    def model_validate(cls, data: Any) -> "MSSQLDatasourceConfig":
+        return cls(**_pick_known(cls, _require_mapping(data, "MSSQLDatasourceConfig")))
 
 
 # Union type for datasource configs
-DatasourceConfig = PostgresDatasourceConfig | FilesDatasourceConfig | S3DatasourceConfig | MSSQLDatasourceConfig
+DatasourceConfig = Union[
+    PostgresDatasourceConfig,
+    FilesDatasourceConfig,
+    S3DatasourceConfig,
+    MSSQLDatasourceConfig,
+]
 
 
-class DefaultsConfig(BaseModel):
+@dataclass
+class DefaultsConfig:
     """Default values for CLI options."""
 
-    preplan: Literal["on", "off"] = "on"
-    pushdown: Literal["on", "off"] = "on"
-    projection: Literal["on", "off"] = "on"
-    output_format: Literal["rich", "json"] = "rich"
-    stats: Literal["none", "summary", "profile"] = "none"
+    preplan: str = "on"
+    pushdown: str = "on"
+    projection: str = "on"
+    output_format: str = "rich"
+    stats: str = "none"
     state_backend: str = "local"
-    csv_mode: Literal["auto", "duckdb", "parquet"] = "auto"
+    csv_mode: str = "auto"
+
+    def __post_init__(self) -> None:
+        _validate_literal(self.preplan, ("on", "off", "auto"), "preplan")
+        _validate_literal(self.pushdown, ("on", "off"), "pushdown")
+        _validate_literal(self.projection, ("on", "off"), "projection")
+        _validate_literal(self.output_format, ("rich", "json"), "output_format")
+        _validate_literal(self.stats, ("none", "summary", "profile"), "stats")
+        _validate_literal(self.csv_mode, ("auto", "duckdb", "parquet"), "csv_mode")
+        # state_backend is a free-form string (local | s3://... | postgres://...)
+
+    @classmethod
+    def model_validate(cls, data: Any) -> "DefaultsConfig":
+        return cls(**_pick_known(cls, _require_mapping(data, "DefaultsConfig")))
 
 
-class ScoutConfig(BaseModel):
+@dataclass
+class ScoutConfig:
     """Profile-specific settings (also known as Scout internally)."""
 
     # Accept both new (scout/scan/interrogate) and old (lite/standard/deep) preset names
-    preset: Literal["scout", "scan", "interrogate", "lite", "standard", "deep", "llm"] = "scan"
+    preset: str = "scan"
     save_profile: bool = False
     list_values_threshold: Optional[int] = None
     top_n: Optional[int] = None
     include_patterns: bool = False
 
+    def __post_init__(self) -> None:
+        _validate_literal(
+            self.preset,
+            ("scout", "scan", "interrogate", "lite", "standard", "deep", "llm"),
+            "preset",
+        )
 
-class EnvironmentConfig(BaseModel):
+    @classmethod
+    def model_validate(cls, data: Any) -> "ScoutConfig":
+        return cls(**_pick_known(cls, _require_mapping(data, "ScoutConfig")))
+
+
+@dataclass
+class EnvironmentConfig:
     """
     Environment-specific overrides.
 
     All fields are optional - only specified fields override defaults.
     """
 
-    preplan: Optional[Literal["on", "off"]] = None
-    pushdown: Optional[Literal["on", "off"]] = None
-    projection: Optional[Literal["on", "off"]] = None
-    output_format: Optional[Literal["rich", "json"]] = None
-    stats: Optional[Literal["none", "summary", "profile"]] = None
+    preplan: Optional[str] = None
+    pushdown: Optional[str] = None
+    projection: Optional[str] = None
+    output_format: Optional[str] = None
+    stats: Optional[str] = None
     state_backend: Optional[str] = None
-    csv_mode: Optional[Literal["auto", "duckdb", "parquet"]] = None
+    csv_mode: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.preplan is not None:
+            _validate_literal(self.preplan, ("on", "off", "auto"), "preplan")
+        if self.pushdown is not None:
+            _validate_literal(self.pushdown, ("on", "off"), "pushdown")
+        if self.projection is not None:
+            _validate_literal(self.projection, ("on", "off"), "projection")
+        if self.output_format is not None:
+            _validate_literal(self.output_format, ("rich", "json"), "output_format")
+        if self.stats is not None:
+            _validate_literal(self.stats, ("none", "summary", "profile"), "stats")
+        if self.csv_mode is not None:
+            _validate_literal(self.csv_mode, ("auto", "duckdb", "parquet"), "csv_mode")
+
+    @classmethod
+    def model_validate(cls, data: Any) -> "EnvironmentConfig":
+        return cls(**_pick_known(cls, _require_mapping(data, "EnvironmentConfig")))
 
 
-class KontraConfig(BaseModel):
+def _coerce_severity_weights(value: Any) -> Optional[Dict[str, float]]:
+    """Coerce severity_weights mapping values to float (or None)."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            f"severity_weights: expected a mapping, got {type(value).__name__}"
+        )
+    return {
+        str(k): _coerce_float(v, f"severity_weights.{k}") for k, v in value.items()
+    }
+
+
+@dataclass
+class KontraConfig:
     """
     Root configuration model for .kontra/config.yml
     """
 
     version: str = "1"
-    defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+    defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
     # Accept both "profile" and "scout" as the config key (profile is preferred)
-    scout: ScoutConfig = Field(default_factory=ScoutConfig, alias="profile")
-    datasources: Dict[str, Any] = Field(default_factory=dict)  # Flexible for different types
-    environments: Dict[str, EnvironmentConfig] = Field(default_factory=dict)
-
-    model_config = {"populate_by_name": True}  # Allow both 'scout' and 'profile'
-
+    scout: ScoutConfig = field(default_factory=ScoutConfig)
+    datasources: Dict[str, Any] = field(default_factory=dict)  # Flexible for different types
+    environments: Dict[str, EnvironmentConfig] = field(default_factory=dict)
     # LLM juice: user-defined severity weights (Kontra carries but never acts on these)
-    severity_weights: Optional[Dict[str, float]] = Field(
-        default=None,
-        description="User-defined numeric weights for severity levels. Kontra carries these but never uses them internally."
-    )
+    severity_weights: Optional[Dict[str, float]] = None
 
-    @field_validator("version")
+    def __post_init__(self) -> None:
+        if self.version != "1":
+            raise ValueError(
+                f"Unsupported config version: {self.version}. Expected '1'."
+            )
+
+        # Coerce nested mappings into their models (supports both direct
+        # construction with dicts and model_validate).
+        if isinstance(self.defaults, Mapping):
+            self.defaults = DefaultsConfig.model_validate(self.defaults)
+        elif not isinstance(self.defaults, DefaultsConfig):
+            raise ValueError(
+                f"defaults: expected a mapping, got {type(self.defaults).__name__}"
+            )
+
+        if isinstance(self.scout, Mapping):
+            self.scout = ScoutConfig.model_validate(self.scout)
+        elif not isinstance(self.scout, ScoutConfig):
+            raise ValueError(
+                f"scout: expected a mapping, got {type(self.scout).__name__}"
+            )
+
+        if self.datasources is None:
+            self.datasources = {}
+        elif not isinstance(self.datasources, Mapping):
+            raise ValueError(
+                f"datasources: expected a mapping, got {type(self.datasources).__name__}"
+            )
+        else:
+            self.datasources = dict(self.datasources)
+
+        envs: Dict[str, EnvironmentConfig] = {}
+        for name, env in (self.environments or {}).items():
+            if isinstance(env, EnvironmentConfig):
+                envs[name] = env
+            else:
+                envs[name] = EnvironmentConfig.model_validate(env)
+        self.environments = envs
+
+        self.severity_weights = _coerce_severity_weights(self.severity_weights)
+
     @classmethod
-    def validate_version(cls, v: str) -> str:
-        if v != "1":
-            raise ValueError(f"Unsupported config version: {v}. Expected '1'.")
-        return v
+    def model_validate(cls, data: Any) -> "KontraConfig":
+        data = _require_mapping(data, "KontraConfig")
+        kwargs: Dict[str, Any] = {}
+        if "version" in data:
+            kwargs["version"] = data["version"]
+        if "defaults" in data:
+            kwargs["defaults"] = data["defaults"]
+        # Alias: accept both 'scout' and 'profile' (profile is preferred)
+        if "scout" in data:
+            kwargs["scout"] = data["scout"]
+        elif "profile" in data:
+            kwargs["scout"] = data["profile"]
+        if "datasources" in data:
+            kwargs["datasources"] = data["datasources"]
+        if "environments" in data:
+            kwargs["environments"] = data["environments"]
+        if "severity_weights" in data:
+            kwargs["severity_weights"] = data["severity_weights"]
+        return cls(**kwargs)
 
     def get_datasource(self, name: str) -> Optional[DatasourceConfig]:
         """
@@ -209,9 +446,8 @@ class KontraConfig(BaseModel):
             return S3DatasourceConfig.model_validate(ds_data)
         elif ds_type in ("files", "file"):
             return FilesDatasourceConfig.model_validate(ds_data)
-        else:
-            # Default to files for unknown types
-            return FilesDatasourceConfig.model_validate(ds_data)
+        # Default to files for unknown types
+        return FilesDatasourceConfig.model_validate(ds_data)
 
 
 # =============================================================================
@@ -242,7 +478,7 @@ class EffectiveConfig:
     csv_mode: str = "auto"
 
     # Scout
-    scout_preset: str = "standard"
+    scout_preset: str = "scan"
     scout_save_profile: bool = False
     scout_list_values_threshold: Optional[int] = None
     scout_top_n: Optional[int] = None
@@ -273,8 +509,8 @@ class EffectiveConfig:
                 "include_patterns": self.scout_include_patterns,
             },
         }
-        if self.severity_weights is not None:
-            d["severity_weights"] = self.severity_weights
+        # Always show severity_weights in config output (BUG-025)
+        d["severity_weights"] = self.severity_weights
         return d
 
 
@@ -317,6 +553,10 @@ def load_config_file(path: Path) -> KontraConfig:
     """
     from kontra.errors import ConfigParseError, ConfigValidationError
 
+    # Imported lazily: only pay the PyYAML import cost when a config file
+    # actually exists to parse (keeps `import kontra` / validate() fast).
+    import yaml
+
     try:
         content = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -331,13 +571,11 @@ def load_config_file(path: Path) -> KontraConfig:
     if raw is None:
         raw = {}
 
-    # Substitute environment variables
-    raw = substitute_env_vars_recursive(raw)
-
-    # Validate with Pydantic
+    # Validate structure (dataclass models with explicit validation)
     try:
+        raw = substitute_env_vars_recursive(raw)
         return KontraConfig.model_validate(raw)
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         raise ConfigValidationError([str(e)], str(path))
 
 
@@ -465,7 +703,9 @@ def resolve_effective_config(
 
     # Layer 1: Apply config file defaults
     if file_config:
-        effective.preplan = file_config.defaults.preplan
+        # Map legacy "auto" → "on" for backward compatibility (BUG-001)
+        preplan_val = file_config.defaults.preplan
+        effective.preplan = "on" if preplan_val == "auto" else preplan_val
         effective.pushdown = file_config.defaults.pushdown
         effective.projection = file_config.defaults.projection
         effective.output_format = file_config.defaults.output_format
@@ -594,8 +834,7 @@ def resolve_datasource(
                 f"Ambiguous table '{reference}' found in multiple datasources: {matches_str}. "
                 f"Use explicit 'datasource.table' format."
             )
-        else:
-            ds_name = matches[0]
+        ds_name = matches[0]
 
     # At this point we have ds_name and table_name
     if config is None:
@@ -604,7 +843,6 @@ def resolve_datasource(
             "No config file exists. Run 'kontra init' to create one."
         )
 
-    # Get datasource
     ds = config.get_datasource(ds_name)
     if ds is None:
         available = list(config.datasources.keys())
@@ -616,12 +854,10 @@ def resolve_datasource(
 
     # Resolve table reference
     if table_name not in ds.tables:
+        from kontra.errors import DatasourceTableError
+
         available_tables = list(ds.tables.keys())
-        tables_str = ", ".join(available_tables) if available_tables else "(none)"
-        raise ValueError(
-            f"Unknown table '{table_name}' in datasource '{ds_name}'. "
-            f"Available tables: {tables_str}"
-        )
+        raise DatasourceTableError(ds_name, table_name, available_tables)
 
     table_ref = ds.tables[table_name]
 
@@ -648,8 +884,7 @@ def resolve_datasource(
         prefix = ds.prefix.rstrip("/")
         if prefix:
             return f"s3://{ds.bucket}/{prefix}/{table_ref}"
-        else:
-            return f"s3://{ds.bucket}/{table_ref}"
+        return f"s3://{ds.bucket}/{table_ref}"
 
     elif isinstance(ds, FilesDatasourceConfig):
         # Local file path
@@ -674,8 +909,7 @@ def resolve_datasource(
 
         return f"mssql://{auth}{host}:{port}/{database}/{table_ref}"
 
-    else:
-        raise ValueError(f"Unknown datasource type for '{ds_name}'")
+    raise ValueError(f"Unknown datasource type for '{ds_name}'")
 
 
 def list_datasources(config: Optional[KontraConfig] = None) -> Dict[str, List[str]]:

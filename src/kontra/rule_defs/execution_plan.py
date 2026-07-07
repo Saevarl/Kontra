@@ -34,6 +34,24 @@ def _extract_rule_kind(rule_id: str) -> Optional[str]:
     return None
 
 
+# Rule kinds whose Polars predicate message already carries the constraint
+# details (values list, [min, max], pattern, condition) — prefix with count.
+_PREDICATE_MESSAGE_KINDS = {
+    "allowed_values", "disallowed_values", "range", "length", "regex",
+    "compare", "conditional_not_null", "conditional_range",
+}
+
+# Fixed templates matching the SQL tier's wording (see sql_utils._RULE_MESSAGES).
+# Placeholders: {count}, {rows}, {s} = plural suffix, {col} = " in <column>".
+_POLARS_MESSAGES = {
+    "not_null": "{count} null value{s} found{col}",
+    "unique": "{count} duplicate {rows}{col}",
+    "contains": "{count} {rows} missing required substring{col}",
+    "starts_with": "{count} {rows} with invalid prefix{col}",
+    "ends_with": "{count} {rows} with invalid suffix{col}",
+}
+
+
 def _generate_polars_message(
     rule_id: str,
     failed_count: int,
@@ -51,13 +69,6 @@ def _generate_polars_message(
 
     rule_kind = _extract_rule_kind(rule_id)
 
-    # Extract column name from rule_id
-    column = None
-    if rule_id.startswith("COL:"):
-        parts = rule_id.split(":")
-        if len(parts) >= 2:
-            column = parts[1]
-
     # Count prefix: "At least 1" for early termination, exact count for tally
     if is_tally:
         count_str = str(failed_count)
@@ -66,62 +77,28 @@ def _generate_polars_message(
         count_str = "At least 1"
         row_str = "row"
 
-    # Generate rule-specific messages (same format as SQL path)
-    if rule_kind == "not_null":
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} null value{'' if not is_tally or failed_count == 1 else 's'} found{col_part}"
-
-    elif rule_kind == "unique":
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} duplicate {row_str}{col_part}"
-
-    elif rule_kind in ("allowed_values", "disallowed_values"):
-        # Use predicate message which includes the allowed values list
+    if rule_kind in _PREDICATE_MESSAGE_KINDS:
         return f"{count_str} {row_str}: {predicate_message}"
 
-    elif rule_kind == "range":
-        # Use predicate message which includes the constraint values [min, max]
-        # e.g., "age values outside range [0, 150]"
-        return f"{count_str} {row_str}: {predicate_message}"
-
-    elif rule_kind == "length":
-        # Use predicate message which includes the constraint values [min, max]
-        return f"{count_str} {row_str}: {predicate_message}"
-
-    elif rule_kind == "regex":
-        # Use predicate message which includes the pattern
-        return f"{count_str} {row_str}: {predicate_message}"
-
-    elif rule_kind == "contains":
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} {row_str} missing required substring{col_part}"
-
-    elif rule_kind == "starts_with":
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} {row_str} with invalid prefix{col_part}"
-
-    elif rule_kind == "ends_with":
-        col_part = f" in {column}" if column else ""
-        return f"{count_str} {row_str} with invalid suffix{col_part}"
-
-    elif rule_kind == "compare":
-        # Use predicate message which includes column names (e.g., "end_date is not greater than start_date")
-        return f"{count_str} {row_str}: {predicate_message}"
-
-    elif rule_kind == "conditional_not_null":
-        # Use predicate message which includes column and condition (e.g., "shipping_date is null when status == 'shipped'")
-        return f"{count_str} {row_str}: {predicate_message}"
-
-    elif rule_kind == "conditional_range":
-        # Use predicate message which includes column, range, and condition
-        return f"{count_str} {row_str}: {predicate_message}"
-
-    else:
-        # For unknown rule kinds or custom IDs, use predicate message with count prefix
+    template = _POLARS_MESSAGES.get(rule_kind)
+    if template is None:
+        # Unknown rule kinds / custom IDs: the predicate message stands alone
         if is_tally:
             return predicate_message
-        else:
-            return f"At least 1 violation: {predicate_message}"
+        return f"At least 1 violation: {predicate_message}"
+
+    column = None
+    if rule_id.startswith("COL:"):
+        parts = rule_id.split(":")
+        if len(parts) >= 2:
+            column = parts[1]
+
+    return template.format(
+        count=count_str,
+        rows=row_str,
+        s="" if not is_tally or failed_count == 1 else "s",
+        col=f" in {column}" if column else "",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -305,9 +282,29 @@ class RuleExecutionPlan:
 
                 # Execute tally=True predicates with .sum() for exact counts
                 if tally_predicates:
-                    counts_df = df.select([p.expr.sum().alias(p.rule_id) for p in tally_predicates])
-                    counts = counts_df.row(0, named=True)
+                    try:
+                        counts_df = df.select([p.expr.sum().alias(p.rule_id) for p in tally_predicates])
+                        counts = counts_df.row(0, named=True)
+                    except (TypeError, pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError):
+                        # Batch failed (e.g. type mismatch) — execute each predicate individually
+                        counts = {}
+                        for p in tally_predicates:
+                            try:
+                                c = df.select(p.expr.sum().alias(p.rule_id)).row(0, named=True)
+                                counts[p.rule_id] = c[p.rule_id]
+                            except (TypeError, pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError) as e:
+                                vec_results.append({
+                                    "rule_id": p.rule_id,
+                                    "passed": False,
+                                    "failed_count": int(df.height),
+                                    "message": f"Rule execution failed: {e}",
+                                    "execution_source": "polars",
+                                    "severity": rule_severity_map.get(p.rule_id, "blocking"),
+                                })
+                                continue
                     for p in tally_predicates:
+                        if p.rule_id not in counts:
+                            continue  # Already handled in error fallback
                         failed_count = int(counts[p.rule_id])
                         passed = failed_count == 0
                         message = _generate_polars_message(
@@ -326,9 +323,29 @@ class RuleExecutionPlan:
 
                 # Execute tally=False predicates with .any() for early termination
                 if fast_predicates:
-                    any_df = df.select([p.expr.any().alias(p.rule_id) for p in fast_predicates])
-                    any_results = any_df.row(0, named=True)
+                    try:
+                        any_df = df.select([p.expr.any().alias(p.rule_id) for p in fast_predicates])
+                        any_results = any_df.row(0, named=True)
+                    except (TypeError, pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError):
+                        # Batch failed — execute each predicate individually
+                        any_results = {}
+                        for p in fast_predicates:
+                            try:
+                                r = df.select(p.expr.any().alias(p.rule_id)).row(0, named=True)
+                                any_results[p.rule_id] = r[p.rule_id]
+                            except (TypeError, pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError) as e:
+                                vec_results.append({
+                                    "rule_id": p.rule_id,
+                                    "passed": False,
+                                    "failed_count": int(df.height),
+                                    "message": f"Rule execution failed: {e}",
+                                    "execution_source": "polars",
+                                    "severity": rule_severity_map.get(p.rule_id, "blocking"),
+                                })
+                                continue
                     for p in fast_predicates:
+                        if p.rule_id not in any_results:
+                            continue  # Already handled in error fallback
                         has_violation = bool(any_results[p.rule_id])
                         passed = not has_violation
                         failed_count = 1 if has_violation else 0
@@ -351,20 +368,27 @@ class RuleExecutionPlan:
 
         fb_results: List[Dict[str, Any]] = []
         for r in compiled.fallback_rules:
+            rule_id = getattr(r, "rule_id", r.name)
+            severity = getattr(r, "severity", "blocking")
             try:
                 result = r.validate(df)
-                result["execution_source"] = "polars"
-                result["severity"] = getattr(r, "severity", "blocking")
+                # Validate the return dict: custom rules may return malformed dicts
+                result = _normalize_rule_result(result, rule_id, severity, df.height)
                 fb_results.append(result)
             except Exception as e:
+                log_exception(
+                    _logger,
+                    f"Rule '{rule_id}' validate() raised {type(e).__name__}",
+                    e,
+                )
                 fb_results.append(
                     {
-                        "rule_id": getattr(r, "rule_id", r.name),
+                        "rule_id": rule_id,
                         "passed": False,
                         "failed_count": int(df.height),
-                        "message": f"Rule execution failed: {e}",
+                        "message": f"Rule execution failed: {type(e).__name__}: {e}",
                         "execution_source": "polars",
-                        "severity": getattr(r, "severity", "blocking"),
+                        "severity": severity,
                     }
                 )
 
@@ -454,6 +478,70 @@ class RuleExecutionPlan:
 # Helpers
 # --------------------------------------------------------------------------- #
 
+_REQUIRED_RESULT_KEYS = {"rule_id", "passed", "failed_count"}
+
+
+def _normalize_rule_result(
+    result: Any,
+    rule_id: str,
+    severity: str,
+    row_count: int,
+) -> Dict[str, Any]:
+    """
+    Validate and normalize a result dict returned by a custom rule's validate().
+
+    If the result is not a dict or is missing required keys (rule_id, passed,
+    failed_count), constructs a proper error result so downstream code never
+    sees a KeyError.
+
+    Args:
+        result: The raw return value from rule.validate(df)
+        rule_id: The expected rule_id (fallback if missing from result)
+        severity: The rule's severity
+        row_count: DataFrame row count (for error result)
+
+    Returns:
+        Normalized result dict with all required keys present.
+    """
+    if not isinstance(result, dict):
+        _logger.warning(
+            "Rule '%s' validate() returned %s instead of dict",
+            rule_id, type(result).__name__,
+        )
+        return {
+            "rule_id": rule_id,
+            "passed": False,
+            "failed_count": 0,
+            "message": (
+                f"Rule returned invalid type {type(result).__name__} "
+                f"instead of dict"
+            ),
+            "execution_source": "polars",
+            "severity": severity,
+        }
+
+    missing = _REQUIRED_RESULT_KEYS - result.keys()
+    if missing:
+        _logger.warning(
+            "Rule '%s' validate() returned dict missing keys: %s",
+            rule_id, sorted(missing),
+        )
+        # Patch in defaults for missing keys so downstream code works
+        result.setdefault("rule_id", rule_id)
+        result.setdefault("passed", False)
+        result.setdefault("failed_count", 0)
+        # Append a warning to the message
+        original_msg = result.get("message", "")
+        result["message"] = (
+            f"{original_msg} [WARNING: result dict was missing keys: "
+            f"{sorted(missing)}]"
+        ).strip()
+
+    result["execution_source"] = "polars"
+    result["severity"] = severity
+    return result
+
+
 def _try_compile_predicate(rule: BaseRule) -> Optional[Predicate]:
     """
     Ask a rule for its vectorizable Predicate, if any.
@@ -511,27 +599,36 @@ def _validate_predicate(pred: Predicate) -> None:
     """
     Type/shape checks for a Predicate returned by a rule.
 
+    The Polars ``expr`` type-check is only performed when the expression has
+    already been materialized eagerly. Lazily-built expressions are validated
+    when they are first materialized by the residual Polars tier — this keeps
+    metadata-only (preplan) validations from importing polars just to compile
+    predicates they never execute.
+
     Raises:
         TypeError: If predicate structure is invalid.
         ValueError: If predicate values are invalid.
         ImportError: If polars is not installed.
     """
-    try:
-        import polars as pl  # Lazy import - only needed when validating predicates
-    except ImportError as e:
-        raise ImportError(
-            "Polars is required to compile validation rules but is not installed. "
-            "Install with: pip install polars"
-        ) from e
-
     if not isinstance(pred, Predicate):
         raise TypeError("compile_predicate() must return a Predicate instance")
-    if not isinstance(pred.expr, pl.Expr):
-        raise TypeError("Predicate.expr must be a Polars Expr")
     if not pred.rule_id or not isinstance(pred.rule_id, str):
         raise ValueError("Predicate.rule_id must be a non-empty string")
     if not isinstance(pred.columns, set):
         raise TypeError("Predicate.columns must be a set[str]")
+
+    # Only validate the expression's type if it is already materialized.
+    # Lazy predicates defer both the polars import and this check.
+    if pred.has_eager_expr:
+        try:
+            import polars as pl  # Lazy import - only when an eager expr exists
+        except ImportError as e:
+            raise ImportError(
+                "Polars is required to compile validation rules but is not installed. "
+                "Install with: pip install polars"
+            ) from e
+        if not isinstance(pred.expr, pl.Expr):
+            raise TypeError("Predicate.expr must be a Polars Expr")
 
 
 def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:

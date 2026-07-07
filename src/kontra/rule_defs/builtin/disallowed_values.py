@@ -19,9 +19,10 @@ Passes when:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, TYPE_CHECKING
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
@@ -29,7 +30,7 @@ from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
 
 
-@register_rule("disallowed_values")
+@register_rule("disallowed_values", _builtin=True)
 class DisallowedValuesRule(BaseRule):
     """
     Fails where column value IS in the disallowed set.
@@ -75,6 +76,8 @@ class DisallowedValuesRule(BaseRule):
 
     def _explain_failure(self, df: pl.DataFrame, mask: pl.Series) -> Dict[str, Any]:
         """Generate detailed failure explanation."""
+        import polars as pl
+
         # Find which disallowed values were found and their counts
         found_values = (
             df.filter(mask)
@@ -97,11 +100,15 @@ class DisallowedValuesRule(BaseRule):
         }
 
     def compile_predicate(self) -> Optional[Predicate]:
-        # Failure = value IS in the disallowed list
-        expr = pl.col(self._column).is_in(self._values).fill_null(False)
+        def _expr():
+            import polars as pl
+
+            # Failure = value IS in the disallowed list
+            return pl.col(self._column).is_in(self._values).fill_null(False)
+
         return Predicate(
             rule_id=self.rule_id,
-            expr=expr,
+            expr_factory=_expr,
             message=f"{self._column} contains disallowed values",
             columns={self._column},
         )

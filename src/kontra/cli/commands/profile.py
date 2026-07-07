@@ -11,6 +11,7 @@ from kontra.cli.constants import (
     EXIT_RUNTIME_ERROR,
     EXIT_SUCCESS,
 )
+from kontra.errors import DatasourceTableError
 
 
 def register(app: typer.Typer) -> None:
@@ -180,7 +181,7 @@ def _run_profile(
 
         try:
             resolved_source = resolve_datasource(source)
-        except ValueError as e:
+        except (ValueError, DatasourceTableError) as e:
             typer.secho(f"Datasource error: {e}", fg=typer.colors.RED)
             raise typer.Exit(code=EXIT_CONFIG_ERROR)
 

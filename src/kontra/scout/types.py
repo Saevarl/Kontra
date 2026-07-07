@@ -146,6 +146,27 @@ class ColumnProfile:
 
         return d
 
+    def to_llm(self) -> str:
+        """Token-optimized format for LLM context."""
+        parts = [f"{self.name} ({self.dtype})"]
+        parts.append(f"rows={self.row_count}")
+        if self.null_count > 0:
+            parts.append(f"nulls={self.null_count} ({self.null_rate:.1%})")
+        parts.append(f"distinct={self.distinct_count}")
+        if self.is_low_cardinality and self.values:
+            vals = [str(v) for v in self.values[:10]]
+            parts.append(f"values=[{', '.join(vals)}]")
+        if self.numeric:
+            parts.append(f"range=[{self.numeric.min}, {self.numeric.max}]")
+            parts.append(f"mean={self.numeric.mean:.2f}")
+        if self.string:
+            parts.append(f"len=[{self.string.min_length}, {self.string.max_length}]")
+        if self.temporal:
+            parts.append(f"range=[{self.temporal.min}, {self.temporal.max}]")
+        if self.semantic_type:
+            parts.append(f"semantic={self.semantic_type}")
+        return " | ".join(parts)
+
 
 @dataclass
 class DatasetProfile:
@@ -170,6 +191,9 @@ class DatasetProfile:
     # Columns
     columns: List[ColumnProfile] = field(default_factory=list)
 
+    # Warnings (non-blocking advisory messages, e.g. stale pg_stats)
+    warnings: List[str] = field(default_factory=list)
+
     # Timing
     profile_duration_ms: int = 0
 
@@ -182,6 +206,9 @@ class DatasetProfile:
         lines.append(f"  Rows: {self.row_count:,} | Columns: {self.column_count}")
         if self.sampled:
             lines.append(f"  Sampled: {self.sample_size:,} rows")
+        if self.warnings:
+            for w in self.warnings:
+                lines.append(f"  Warning: {w}")
         lines.append(f"  Duration: {self.profile_duration_ms}ms")
         lines.append(f"  Columns:")
         for col in self.columns[:10]:
@@ -200,7 +227,7 @@ class DatasetProfile:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return {
+        d = {
             "schema_version": "1.0",
             "source_uri": self.source_uri,
             "source_format": self.source_format,
@@ -217,6 +244,9 @@ class DatasetProfile:
             "columns": [c.to_dict() for c in self.columns],
             "profile_duration_ms": self.profile_duration_ms,
         }
+        if self.warnings:
+            d["warnings"] = self.warnings
+        return d
 
     def get_column(self, name: str) -> Optional[ColumnProfile]:
         """Get a column profile by name."""
@@ -226,7 +256,6 @@ class DatasetProfile:
         return None
 
     def to_json(self, indent: int = 2) -> str:
-        """Serialize to JSON string."""
         import json
         return json.dumps(self.to_dict(), indent=indent, default=str)
 
@@ -239,8 +268,10 @@ class DatasetProfile:
         lines.append(f"rows={self.row_count:,} cols={self.column_count}")
         if self.sampled:
             lines.append(f"(sampled: {self.sample_size:,} rows)")
+        if self.warnings:
+            for w in self.warnings:
+                lines.append(f"WARNING: {w}")
 
-        # Check if this is a metadata-only preset (scout/lite)
         is_metadata_only = self.preset in ("scout", "lite")
 
         lines.append("")
@@ -283,7 +314,6 @@ class DatasetProfile:
             counts = c.get("counts", {})
             card = c.get("cardinality", {})
 
-            # Parse top values
             top_values = []
             for tv in card.get("top_values", []):
                 top_values.append(TopValue(
@@ -354,6 +384,7 @@ class DatasetProfile:
             sampled=ds.get("sampled", False),
             sample_size=ds.get("sample_size"),
             columns=columns,
+            warnings=d.get("warnings", []),
             profile_duration_ms=d.get("profile_duration_ms", 0),
         )
 
@@ -404,13 +435,11 @@ class ProfileState:
         )
 
     def to_json(self, indent: int = 2) -> str:
-        """Serialize to JSON string."""
         import json
         return json.dumps(self.to_dict(), indent=indent, default=str)
 
     @classmethod
     def from_json(cls, json_str: str) -> "ProfileState":
-        """Deserialize from JSON string."""
         import json
         return cls.from_dict(json.loads(json_str))
 
@@ -635,7 +664,6 @@ class ProfileDiff:
         }
 
     def to_json(self, indent: int = 2) -> str:
-        """Serialize to JSON."""
         import json
         return json.dumps(self.to_dict(), indent=indent, default=str)
 

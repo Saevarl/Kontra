@@ -1,13 +1,15 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional, Sequence
-import polars as pl
+from typing import Dict, Any, List, Optional, Sequence, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
 
-@register_rule("allowed_values")
+@register_rule("allowed_values", _builtin=True)
 class AllowedValuesRule(BaseRule):
     def __init__(self, name: str, params: Dict[str, Any]):
         super().__init__(name, params)
@@ -15,6 +17,14 @@ class AllowedValuesRule(BaseRule):
         if "values" not in self.params:
             raise ValueError(
                 f"Rule '{self.name}' requires parameter 'values' but it was not provided"
+            )
+        # Reject empty values list — always fails, likely a mistake (BUG-056)
+        values = self.params["values"]
+        if isinstance(values, (list, tuple, set)) and len(values) == 0:
+            from kontra.errors import RuleParameterError
+            raise RuleParameterError(
+                "allowed_values", "values",
+                "values list must not be empty (would always fail)"
             )
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
@@ -47,6 +57,8 @@ class AllowedValuesRule(BaseRule):
 
     def _explain_failure(self, df: pl.DataFrame, column: str, allowed: set) -> Dict[str, Any]:
         """Generate detailed failure explanation."""
+        import polars as pl
+
         col = df[column]
 
         # Find unexpected values and their counts
@@ -93,21 +105,25 @@ class AllowedValuesRule(BaseRule):
         str_vals = [repr(v) if isinstance(v, str) else str(v) for v in values if v is not None]
         if len(str_vals) <= max_show:
             return ", ".join(str_vals)
-        else:
-            shown = ", ".join(str_vals[:max_show])
-            return f"{shown}, ... ({len(str_vals)} total)"
+        shown = ", ".join(str_vals[:max_show])
+        return f"{shown}, ... ({len(str_vals)} total)"
 
     def compile_predicate(self) -> Optional[Predicate]:
         column = self.params["column"]
         values: Sequence[Any] = self.params["values"]
         # Check if NULL is explicitly allowed
         null_allowed = None in set(values)
-        # If NULL is allowed, don't treat NULL as violation
-        expr = (~pl.col(column).is_in(values)).fill_null(not null_allowed)
         values_str = self._format_values_list(values)
+
+        def _expr():
+            import polars as pl
+
+            # If NULL is allowed, don't treat NULL as violation
+            return (~pl.col(column).is_in(values)).fill_null(not null_allowed)
+
         return Predicate(
             rule_id=self.rule_id,
-            expr=expr,
+            expr_factory=_expr,
             message=f"{column} value not in [{values_str}]",
             columns={column},
         )
@@ -155,13 +171,10 @@ class AllowedValuesRule(BaseRule):
             if null_allowed:
                 # NULL is allowed, only non-null disallowed values are violations
                 return f"{col} NOT IN ({in_list}) AND {col} IS NOT NULL"
-            else:
-                # NULL is not allowed, both disallowed values AND NULL are violations
-                return f"{col} NOT IN ({in_list}) OR {col} IS NULL"
-        else:
-            # Only NULL in allowed values (no other values) - everything non-null fails
-            if null_allowed:
-                return f"{col} IS NOT NULL"
-            else:
-                # Empty allowed list, no NULL - everything fails (always true filter)
-                return "1=1"
+            # NULL is not allowed, both disallowed values AND NULL are violations
+            return f"{col} NOT IN ({in_list}) OR {col} IS NULL"
+        # Only NULL in allowed values (no other values) - everything non-null fails
+        if null_allowed:
+            return f"{col} IS NOT NULL"
+        # Empty allowed list, no NULL - everything fails (always true filter)
+        return "1=1"

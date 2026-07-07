@@ -202,5 +202,4 @@ def _format_value(value: Any) -> str:
         return f"[{items}]"
     elif value is None:
         return "null"
-    else:
-        return str(value)
+    return str(value)

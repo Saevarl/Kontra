@@ -13,61 +13,11 @@ from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.postgres import PostgresConnectionParams, get_connection
 
 from .types import PrePlan, Decision
+from .dtype_utils import pg_dtype_matches as _pg_dtype_matches
 
 
 # Predicate format: (rule_id, column, op, value)
 Predicate = Tuple[str, str, str, Any]
-
-
-def _pg_dtype_matches(pg_type: str, udt_name: str, expected: str) -> bool:
-    """
-    Check if PostgreSQL data type matches expected dtype specification.
-
-    Args:
-        pg_type: data_type from information_schema (e.g., 'integer', 'character varying')
-        udt_name: udt_name from information_schema (e.g., 'int4', 'varchar')
-        expected: User's expected dtype (e.g., 'int', 'string', 'int64')
-    """
-    pg_type = (pg_type or "").lower()
-    udt_name = (udt_name or "").lower()
-    expected = expected.lower()
-
-    # Integer family
-    if expected in ("int", "integer"):
-        return pg_type in ("integer", "smallint", "bigint") or udt_name in ("int2", "int4", "int8")
-    if expected == "int8" or expected == "int16":
-        return pg_type == "smallint" or udt_name == "int2"
-    if expected == "int32":
-        return pg_type == "integer" or udt_name == "int4"
-    if expected == "int64":
-        return pg_type == "bigint" or udt_name == "int8"
-
-    # Float family
-    if expected in ("float", "float64", "double"):
-        return pg_type in ("double precision", "real", "numeric") or udt_name in ("float4", "float8", "numeric")
-    if expected == "float32":
-        return pg_type == "real" or udt_name == "float4"
-    if expected == "numeric":
-        return pg_type in ("integer", "smallint", "bigint", "double precision", "real", "numeric")
-
-    # String family
-    if expected in ("string", "str", "utf8", "text"):
-        return pg_type in ("character varying", "text", "character", "varchar", "char") or udt_name in ("varchar", "text", "bpchar")
-
-    # Boolean
-    if expected in ("bool", "boolean"):
-        return pg_type == "boolean" or udt_name == "bool"
-
-    # Date/time
-    if expected == "date":
-        return pg_type == "date" or udt_name == "date"
-    if expected == "datetime":
-        return pg_type.startswith("timestamp") or udt_name.startswith("timestamp")
-    if expected == "time":
-        return pg_type.startswith("time") or udt_name.startswith("time")
-
-    # Exact match fallback
-    return expected == pg_type or expected == udt_name
 
 
 def fetch_pg_stats_for_preplan(

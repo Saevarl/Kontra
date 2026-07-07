@@ -151,13 +151,13 @@ class TestJSONReporter:
         assert result["c"] == [1, 3]
 
     def test_strip_nulls_empty_containers(self):
-        """_strip_nulls removes empty lists/dicts."""
+        """_strip_nulls preserves empty lists/dicts (they carry semantic meaning)."""
         data = {"a": [], "b": {}, "c": [1, 2]}
         result = _strip_nulls(data)
 
-        assert "a" not in result
-        assert "b" not in result
-        assert "c" in result
+        assert result["a"] == []
+        assert result["b"] == {}
+        assert result["c"] == [1, 2]
 
 
 # =============================================================================

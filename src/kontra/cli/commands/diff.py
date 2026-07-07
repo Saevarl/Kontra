@@ -145,7 +145,6 @@ def register(app: typer.Typer) -> None:
 
                 contract_fp = most_recent_fp
 
-            # Get history for this contract
             history = store.get_history(contract_fp, limit=100)
 
             if len(history) < 1:
@@ -228,7 +227,6 @@ def register(app: typer.Typer) -> None:
 
                 before_state = history[1]
 
-            # Compute diff
             diff = StateDiff.compute(before_state, after_state)
 
             # Render output
@@ -242,8 +240,7 @@ def register(app: typer.Typer) -> None:
             # Exit code based on regressions
             if diff.has_regressions:
                 raise typer.Exit(code=EXIT_VALIDATION_FAILED)
-            else:
-                raise typer.Exit(code=EXIT_SUCCESS)
+            raise typer.Exit(code=EXIT_SUCCESS)
 
         except typer.Exit:
             raise
@@ -346,7 +343,6 @@ def register(app: typer.Typer) -> None:
 
                 source_fp = most_recent_fp
 
-            # Get history for this source
             history = store.get_history(source_fp, limit=100)
 
             if len(history) < 1:
@@ -400,7 +396,6 @@ def register(app: typer.Typer) -> None:
 
                 before_state = history[1]
 
-            # Compute diff
             diff = ProfileDiff.compute(before_state, after_state)
 
             # Render output

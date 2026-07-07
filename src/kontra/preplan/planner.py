@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
-import pyarrow.fs as pafs  # <-- Added
-import pyarrow.parquet as pq
+if TYPE_CHECKING:
+    import pyarrow.fs as pafs
 
+from kontra.logging import get_logger
+
+from .parquet_meta import ParquetMeta, ParquetMetaError, read_parquet_meta
 from .types import PrePlan, Decision
+
+_logger = get_logger(__name__)
 
 # NOTE: The preplan consumes simple, metadata-usable predicates only.
 # Shape: (rule_id, column, op, value)
@@ -75,7 +79,8 @@ def _expand_glob_first_file(
     try:
         result = con.execute(f"SELECT file FROM glob('{glob_path}') LIMIT 1").fetchone()
         return result[0] if result else None
-    except Exception:
+    except duckdb.Error:
+        # DuckDB errors (e.g. S3 connectivity, invalid path format) — glob is best-effort
         return None
     finally:
         con.close()
@@ -189,14 +194,14 @@ def _dtype_matches(actual: str, expected: str) -> bool:
 
 
 def _rg_col_stats(rg, j) -> Optional[Dict[str, Any]]:
-    """Return a safe dict of min/max/null_count for a row-group column j."""
+    """Return a raw dict of min/max/null_count for a pyarrow row-group column j."""
     col = rg.column(j)
     stats = col.statistics
     if stats is None:
         return None
     out: Dict[str, Any] = {
-        "min": _iso(getattr(stats, "min", None)) if getattr(stats, "has_min_max", True) else None,
-        "max": _iso(getattr(stats, "max", None)) if getattr(stats, "has_min_max", True) else None,
+        "min": getattr(stats, "min", None) if getattr(stats, "has_min_max", True) else None,
+        "max": getattr(stats, "max", None) if getattr(stats, "has_min_max", True) else None,
     }
     if getattr(stats, "has_null_count", True):
         out["null_count"] = getattr(stats, "null_count", None)
@@ -267,11 +272,18 @@ def _decide_pass(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, A
         if s is None:
             return False
         mn, mx = s.get("min"), s.get("max")
+        nulls = s.get("null_count")
         if op == ">=":
             if mn is None or mn < val:
                 ok_all = False; break
+            # NULLs are never >= anything — can't prove pass if nulls exist
+            if nulls != 0:
+                ok_all = False; break
         elif op == "<=":
             if mx is None or mx > val:
+                ok_all = False; break
+            # NULLs are never <= anything — can't prove pass if nulls exist
+            if nulls != 0:
                 ok_all = False; break
         elif op == "==":
             if mn is None or mx is None or not (mn == val and mx == val):
@@ -296,12 +308,19 @@ def _decide_fail(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, A
         if s is None:
             continue
         mn, mx = s.get("min"), s.get("max")
+        nulls = s.get("null_count")
         if op == ">=":
             # If an RG has mx < val ⇒ all rows in that RG violate ⇒ dataset FAIL
             if mx is not None and mx < val:
                 return True
+            # NULLs are never >= anything — any null proves a violation
+            if isinstance(nulls, int) and nulls > 0:
+                return True
         elif op == "<=":
             if mn is not None and mn > val:
+                return True
+            # NULLs are never <= anything — any null proves a violation
+            if isinstance(nulls, int) and nulls > 0:
                 return True
         elif op == "==":
             # If an RG has range entirely not equal to val ⇒ all rows in that RG violate
@@ -309,11 +328,51 @@ def _decide_fail(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, A
                 return True
         elif op == "not_null":
             # Any rg with null_count > 0 proves at least one violation
-            nulls = s.get("null_count")
             if isinstance(nulls, int) and nulls > 0:
                 return True
         # For >, <, !=, ^= we typically cannot prove dataset-level FAIL with min/max alone.
     return False
+
+
+# ---------- footer metadata access ----------
+
+def _read_meta_pyarrow(path: str, filesystem: "pafs.FileSystem | None" = None) -> ParquetMeta:
+    """Read footer metadata via pyarrow (cloud filesystems and fallback path)."""
+    import pyarrow.parquet as pq
+
+    md = pq.ParquetFile(path, filesystem=filesystem).metadata
+    schema_names = _schema_names(md.schema)
+    row_groups: List[Dict[str, Dict[str, Any]]] = []
+    for i in range(md.num_row_groups):
+        rg = md.row_group(i)
+        per_col: Dict[str, Dict[str, Any]] = {}
+        for j in range(rg.num_columns):
+            name = _name_for_rg_col(rg, j, schema_names[j] if j < len(schema_names) else f"col_{j}")
+            s = _rg_col_stats(rg, j)
+            if s is not None:
+                per_col[name] = s
+        row_groups.append(per_col)
+    return ParquetMeta(
+        num_rows=md.num_rows,
+        schema_names=schema_names,
+        schema_types=_get_schema_types(md.schema),
+        row_groups=row_groups,
+    )
+
+
+def _read_meta(path: str, filesystem: "pafs.FileSystem | None" = None) -> ParquetMeta:
+    """
+    Read Parquet footer metadata for preplan.
+
+    Local files use the stdlib-only reader (avoids the ~175ms pyarrow import);
+    cloud filesystems and unparseable footers go through pyarrow.
+    """
+    if filesystem is None:
+        try:
+            return read_parquet_meta(path)
+        except ParquetMetaError as e:
+            _logger.debug(f"Pure-Python footer read failed for {path}: {e}; using pyarrow")
+    return _read_meta_pyarrow(path, filesystem)
 
 
 # ---------- public API ----------
@@ -322,7 +381,7 @@ def preplan_single_parquet(
     path: str,
     required_columns: List[str],
     predicates: List[Predicate],
-    filesystem: pafs.FileSystem | None = None,  # <-- Updated
+    filesystem: "pafs.FileSystem | None" = None,
 ) -> PrePlan:
     """
     Metadata-only pre-planner for a SINGLE Parquet file.
@@ -339,28 +398,30 @@ def preplan_single_parquet(
       - rule_decisions:      rule_id -> "pass_meta" | "fail_meta" | "unknown"
       - stats:               {"rg_total": N, "rg_kept": K}
     """
-    pf = pq.ParquetFile(path, filesystem=filesystem)  # <-- Updated
-    md = pf.metadata
-    schema_names = _schema_names(md.schema)
-    schema_types = _get_schema_types(md.schema)  # For dtype checks
+    md = _read_meta(path, filesystem)
+    schema_names = md.schema_names
+    schema_types = md.schema_types  # For dtype checks
 
-    # Pre-extract per-RG per-column stats into a simple map:
+    # Per-RG per-column stats with dates/datetimes ISO-stringified:
     # rg_stats[i][col_name] -> {"min":..., "max":..., "null_count":...}
-    rg_stats: List[Dict[str, Dict[str, Any]]] = []
-    for i in range(md.num_row_groups):
-        rg = md.row_group(i)
-        per_col: Dict[str, Dict[str, Any]] = {}
-        for j in range(rg.num_columns):
-            name = _name_for_rg_col(rg, j, schema_names[j] if j < len(schema_names) else f"col_{j}")
-            s = _rg_col_stats(rg, j)
-            if s is not None:
-                per_col[name] = s
-        rg_stats.append(per_col)
+    rg_stats: List[Dict[str, Dict[str, Any]]] = [
+        {
+            col: {**s, "min": _iso(s.get("min")), "max": _iso(s.get("max"))}
+            for col, s in per_col.items()
+        }
+        for per_col in md.row_groups
+    ]
 
     # Decide each rule at dataset-level (PASS/FAIL/UNKNOWN by metadata)
+    schema_names_set = set(schema_names)
     rule_decisions: Dict[str, Decision] = {}
     fail_details: Dict[str, Dict[str, Any]] = {}
     for rule_id, col, op, val in predicates:
+        # If column doesn't exist in schema, skip to Polars for proper error (BUG-014)
+        if op != "dtype" and col not in schema_names_set:
+            rule_decisions[rule_id] = "unknown"
+            continue
+
         # Handle dtype checks via schema (no row-group stats needed)
         if op == "dtype":
             actual_type = schema_types.get(col)
@@ -375,10 +436,18 @@ def preplan_single_parquet(
             continue
 
         # Handle row-group stats-based predicates
-        stats_iter = (rgc.get(col) for rgc in rg_stats)
-        if _decide_fail(op, val, stats_iter):
-            rule_decisions[rule_id] = "fail_meta"
-            continue
+        #
+        # Conditional rules (conditional_not_null, conditional_range) apply a
+        # WHERE filter before checking the column. Metadata can prove PASS
+        # (zero nulls in entire column → zero nulls in any subset) but cannot
+        # prove FAIL (nulls may all be outside the condition's filter).
+        is_conditional = "conditional_" in rule_id
+
+        if not is_conditional:
+            stats_iter = (rgc.get(col) for rgc in rg_stats)
+            if _decide_fail(op, val, stats_iter):
+                rule_decisions[rule_id] = "fail_meta"
+                continue
         # need a fresh iterator
         stats_iter = (rgc.get(col) for rgc in rg_stats)
         if _decide_pass(op, val, stats_iter):
@@ -484,11 +553,11 @@ def preplan_parquet_glob(
         first_file_path = first_file
 
     try:
-        pf = pq.ParquetFile(first_file_path, filesystem=filesystem)
-        schema_types = _get_schema_types(pf.metadata.schema)
-        total_rows_first_file = pf.metadata.num_rows
-    except Exception:
-        # Can't read first file - return unknown for all rules
+        first_meta = _read_meta(first_file_path, filesystem=filesystem)
+        schema_types = first_meta.schema_types
+        total_rows_first_file = first_meta.num_rows
+    except (OSError, ValueError) as e:
+        # File I/O or invalid Parquet format — return unknown for all rules
         return PrePlan(
             manifest_columns=list(required_columns) if required_columns else [],
             manifest_row_groups=[],

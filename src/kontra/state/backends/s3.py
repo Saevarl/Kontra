@@ -23,7 +23,7 @@ import logging
 import os
 import random
 import string
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -542,7 +542,6 @@ class S3Store(StateBackend):
         contract_fingerprint: str,
         limit: int = 10,
     ) -> List[ValidationState]:
-        """Get recent history with annotations loaded."""
         states = self.get_history(contract_fingerprint, limit=limit)
 
         fs = self._get_fs()

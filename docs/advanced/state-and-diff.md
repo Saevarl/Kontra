@@ -77,6 +77,8 @@ Credentials stay in config (or environment variables). Contracts stay clean and 
 
 When you run `kontra validate`, results are automatically saved to a state backend. This enables comparing runs over time.
 
+Contract identity is based on a fingerprint of the contract's `name` and `rules` fields. Renaming the `name` field creates a new fingerprint, so previous history and diff comparisons will not carry over. See [Contracts Reference](../reference/contracts.md#contract-identity-and-history) for details.
+
 ### View History
 
 ```bash

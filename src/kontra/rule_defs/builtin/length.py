@@ -18,9 +18,10 @@ At least one of `min` or `max` must be specified.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Union, TYPE_CHECKING
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
@@ -28,7 +29,7 @@ from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
 
 
-@register_rule("length")
+@register_rule("length", _builtin=True)
 class LengthRule(BaseRule):
     """
     Fails where string length is outside [min, max] bounds.
@@ -73,6 +74,8 @@ class LengthRule(BaseRule):
         return {self._column}
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+        import polars as pl
+
         # Check column exists before accessing
         col_check = self._check_columns(df, {self._column})
         if col_check is not None:
@@ -138,17 +141,6 @@ class LengthRule(BaseRule):
         return details
 
     def compile_predicate(self) -> Optional[Predicate]:
-        # Get string length
-        length_expr = pl.col(self._column).cast(pl.Utf8).str.len_chars()
-
-        # Build mask: True = failure
-        expr = pl.col(self._column).is_null()
-
-        if self._min_len is not None:
-            expr = expr | (length_expr < self._min_len)
-        if self._max_len is not None:
-            expr = expr | (length_expr > self._max_len)
-
         # Build message
         if self._min_len is not None and self._max_len is not None:
             msg = f"{self._column} length not in range [{self._min_len}, {self._max_len}]"
@@ -157,9 +149,24 @@ class LengthRule(BaseRule):
         else:
             msg = f"{self._column} length > {self._max_len}"
 
+        def _expr():
+            import polars as pl
+
+            # Get string length
+            length_expr = pl.col(self._column).cast(pl.Utf8).str.len_chars()
+
+            # Build mask: True = failure
+            expr = pl.col(self._column).is_null()
+
+            if self._min_len is not None:
+                expr = expr | (length_expr < self._min_len)
+            if self._max_len is not None:
+                expr = expr | (length_expr > self._max_len)
+            return expr
+
         return Predicate(
             rule_id=self.rule_id,
-            expr=expr,
+            expr_factory=_expr,
             message=msg,
             columns={self._column},
         )

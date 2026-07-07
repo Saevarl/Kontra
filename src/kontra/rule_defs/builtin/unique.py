@@ -1,13 +1,15 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
-import polars as pl
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
 
-@register_rule("unique")
+@register_rule("unique", _builtin=True)
 class UniqueRule(BaseRule):
     def __init__(self, name: str, params: Dict[str, Any]):
         super().__init__(name, params)
@@ -62,6 +64,8 @@ class UniqueRule(BaseRule):
 
     def _explain_failure(self, df: pl.DataFrame, column: str) -> Dict[str, Any]:
         """Generate detailed failure explanation."""
+        import polars as pl
+
         # Find duplicated values and their counts
         duplicates_df = (
             df.group_by(column)
@@ -100,6 +104,8 @@ class UniqueRule(BaseRule):
 
     def sample_predicate(self) -> Optional[Predicate]:
         """Return predicate for sampling duplicate rows (not for counting)."""
+        import polars as pl
+
         column = self.params["column"]
         col = pl.col(column)
         # Identifies all rows participating in duplicates for sampling

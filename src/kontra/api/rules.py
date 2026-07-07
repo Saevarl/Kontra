@@ -20,6 +20,17 @@ Usage:
 
 from typing import Any, Dict, List, Optional, Union
 
+VALID_SEVERITIES = ("blocking", "warning", "info")
+
+
+def _validate_severity(severity: str, rule_name: str) -> None:
+    """Validate that severity is one of the allowed values."""
+    if severity not in VALID_SEVERITIES:
+        raise ValueError(
+            f"{rule_name}() invalid severity '{severity}'. "
+            f"Must be one of: {', '.join(VALID_SEVERITIES)}"
+        )
+
 
 def _validate_column(column: Any, rule_name: str) -> str:
     """Validate that column is a non-empty string."""
@@ -41,6 +52,7 @@ def _build_rule(
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a rule dict, optionally with custom id, tally, and context."""
+    _validate_severity(severity, name)
     rule: Dict[str, Any] = {
         "name": name,
         "params": params,
@@ -235,6 +247,8 @@ def allowed_values(
             f"Use: rules.allowed_values('{column}', ['{values}']) instead of "
             f"rules.allowed_values('{column}', '{values}')"
         )
+    if isinstance(values, (list, tuple, set)) and len(values) == 0:
+        raise ValueError("allowed_values() requires a non-empty values list (empty list would always fail)")
     return _build_rule("allowed_values", {"column": column, "values": values}, severity, id, tally, context)
 
 
@@ -265,6 +279,8 @@ def regex(
     """
     import re
     _validate_column(column, "regex")
+    if pattern is None or not isinstance(pattern, str):
+        raise ValueError(f"regex() pattern must be a non-empty string, got {type(pattern).__name__}")
     # Validate regex pattern early - fail fast with helpful message
     try:
         re.compile(pattern)
@@ -404,6 +420,8 @@ def custom_sql_check(
     Returns:
         Rule dict for use with kontra.validate()
     """
+    if threshold < 0:
+        raise ValueError(f"custom_sql_check() threshold must be >= 0, got {threshold}")
     return _build_rule("custom_sql_check", {"sql": sql, "threshold": threshold}, severity, id, None, context)
 
 

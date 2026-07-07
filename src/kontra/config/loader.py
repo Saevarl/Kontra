@@ -1,8 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Set, Union
 import os
-import yaml
 
 from kontra.config.models import Contract, RuleSpec
 from kontra.errors import ContractNotFoundError
@@ -20,12 +19,118 @@ class ContractLoader:
 
     @staticmethod
     def from_path(path: Union[str, Path]) -> Contract:
+        import yaml
+
         p = Path(path)
         if not p.exists():
             raise ContractNotFoundError(str(p))
         with p.open("r") as f:
             raw = yaml.safe_load(f)
+        # Resolve extends before parsing
+        raw = ContractLoader._resolve_extends(raw, str(p.resolve()))
         return ContractLoader._parse_and_validate(raw, source=str(p))
+
+    @staticmethod
+    def _resolve_extends(
+        raw: Any,
+        source_path: str,
+        _visited: Optional[Set[str]] = None,
+    ) -> Any:
+        """
+        Resolve contract inheritance via the 'extends' field.
+
+        Recursively loads base contracts and prepends their rules.
+        Paths are resolved relative to the child contract's directory.
+
+        Only `rules` are inherited — `name` and `datasource` are NOT inherited.
+        Cycle detection prevents infinite loops.
+
+        Args:
+            raw: Raw YAML dict
+            source_path: Absolute path of the contract file being loaded
+            _visited: Set of already-visited absolute paths (cycle detection)
+
+        Returns:
+            The raw dict with base rules prepended and 'extends' key removed
+        """
+        if not isinstance(raw, dict):
+            return raw
+
+        extends = raw.get("extends")
+        if not extends:
+            return raw
+
+        if _visited is None:
+            _visited = set()
+
+        # Add current file to visited set
+        _visited.add(source_path)
+
+        # Normalize to list
+        extends_list = [extends] if isinstance(extends, str) else extends
+        if not isinstance(extends_list, list):
+            raise ValueError(
+                f"Contract 'extends' must be a string or list of strings, "
+                f"got {type(extends_list).__name__}"
+            )
+
+        source_dir = Path(source_path).parent
+        all_base_rules: List[Any] = []
+        seen_in_this_list: set = set()  # Track duplicates within this extends list (BUG-032)
+
+        for ext_path in extends_list:
+            if not isinstance(ext_path, str):
+                raise ValueError(
+                    f"Each entry in 'extends' must be a string path, "
+                    f"got {type(ext_path).__name__}"
+                )
+            resolved = (source_dir / ext_path).resolve()
+            key = str(resolved)
+
+            # Check for duplicate path in the same extends list (BUG-032)
+            if key in seen_in_this_list:
+                raise ValueError(
+                    f"Duplicate base contract path in 'extends': {ext_path} "
+                    f"(resolved to {key})"
+                )
+            seen_in_this_list.add(key)
+
+            if key in _visited:
+                raise ValueError(f"Circular contract inheritance detected: {key}")
+
+            if not resolved.exists():
+                raise ContractNotFoundError(str(resolved))
+
+            import yaml
+
+            with resolved.open("r") as f:
+                base_raw = yaml.safe_load(f)
+
+            if not isinstance(base_raw, dict):
+                raise ValueError(
+                    f"Base contract at {resolved} is not a valid YAML mapping"
+                )
+
+            # Recurse — base can extend another base
+            base_raw = ContractLoader._resolve_extends(
+                base_raw, str(resolved), _visited
+            )
+            base_rules = base_raw.get("rules", []) or []
+            if not base_rules:
+                import warnings
+                warnings.warn(
+                    f"Base contract at {resolved} has no 'rules' key. "
+                    f"No rules will be inherited from this base.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            all_base_rules.extend(base_rules)
+
+        # Prepend base rules, child rules come after
+        raw["rules"] = all_base_rules + (raw.get("rules") or [])
+        # Remove extends key — it's been resolved
+        raw.pop("extends", None)
+        return raw
 
     # ---------- NEW/UPDATED S3 LOADER ----------
     @staticmethod
@@ -59,6 +164,8 @@ class ContractLoader:
 
     @staticmethod
     def from_s3(uri: str) -> Contract:
+        import yaml
+
         """
         Load contract YAML from S3/MinIO using s3fs via fsspec with storage_options.
         Requires: pip install s3fs

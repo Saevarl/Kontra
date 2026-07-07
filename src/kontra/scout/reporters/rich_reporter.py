@@ -10,9 +10,8 @@ from typing import List
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.text import Text
 
-from kontra.scout.types import DatasetProfile, ColumnProfile
+from kontra.scout.types import DatasetProfile
 
 
 def render_rich(profile: DatasetProfile) -> str:
@@ -72,7 +71,6 @@ def _print_to_console(console: Console, profile: DatasetProfile) -> None:
     table.add_column("Cardinality")
     table.add_column("Info")
 
-    # Check if this is a metadata-only preset (scout/lite)
     is_metadata_only = profile.preset in ("scout", "lite")
 
     for col in profile.columns:

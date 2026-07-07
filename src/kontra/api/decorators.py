@@ -41,6 +41,7 @@ def validate(
     save: bool = False,
     sample: int = 0,
     sample_columns: Optional[Union[List[str], str]] = None,
+    **engine_kwargs: Any,
 ) -> Callable[[F], F]:
     """
     Decorator to validate data returned from a function.
@@ -59,6 +60,9 @@ def validate(
         save: Whether to save the validation result to state
         sample: Number of sample rows to collect for failures
         sample_columns: Columns to include in samples (None=all, list, or "relevant")
+        **engine_kwargs: Additional arguments passed to `kontra.validate()`:
+            tally, preplan, pushdown, projection, csv_mode, env, stats,
+            sample_budget, storage_options, only, columns.
 
     Returns:
         Decorated function
@@ -79,6 +83,16 @@ def validate(
         )
         def load_users() -> pl.DataFrame:
             return pl.read_parquet("users.parquet")
+
+        # With performance tuning
+        @kontra.validate_decorator(
+            rules=[rules.not_null("id")],
+            on_fail="warn",
+            tally=True,
+            preplan="off",
+        )
+        def load_large_dataset() -> pl.DataFrame:
+            return pl.read_parquet("big.parquet")
 
         # Custom callback - Kontra measures, you decide
         def notify_slack(result, data):
@@ -114,6 +128,7 @@ def validate(
                 save=save,
                 sample=sample,
                 sample_columns=sample_columns,
+                **engine_kwargs,
             )
 
             # Handle based on on_fail mode or callback
@@ -125,7 +140,6 @@ def validate(
                 return (data, result)
 
             if not result.passed:
-                # Check for blocking failures
                 blocking_failures = [
                     r for r in result.rules if not r.passed and r.severity == "blocking"
                 ]

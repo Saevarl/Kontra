@@ -271,7 +271,7 @@ class TestLazyLoadingHelpers:
 
     def test_ensure_builtin_rules_registered(self):
         """_ensure_builtin_rules_registered() should register all builtin rules."""
-        from kontra.engine.engine import _ensure_builtin_rules_registered
+        from kontra.engine.phases.compilation import _ensure_builtin_rules_registered
         from kontra.rule_defs.registry import get_all_rule_names
 
         _ensure_builtin_rules_registered()

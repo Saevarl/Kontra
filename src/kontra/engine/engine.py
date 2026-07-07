@@ -27,19 +27,15 @@ Principles
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, TYPE_CHECKING, Union
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
+    import pandas as pd
     import polars as pl
+    import pyarrow.fs as pafs
     from kontra.state.backends.base import StateBackend
     from kontra.state.types import ValidationState
 
-import pyarrow as pa
-import pyarrow.fs as pafs  # <-- Added
-import pyarrow.parquet as pq
-
-from kontra.config.loader import ContractLoader
-from kontra.config.models import Contract
 from kontra.connectors.handle import DatasetHandle
 from kontra.engine.executors.registry import (
     pick_executor,
@@ -53,62 +49,24 @@ from kontra.engine.materializers.registry import (
 )
 from kontra.engine.paths import ExecutionPath, get_database_type
 from kontra.engine.stats import RunTimers, basic_summary, columns_touched, now_ms, profile_for
-from kontra.reporters.rich_reporter import report_failure, report_success
+from kontra.connectors.uri_utils import (
+    is_s3_uri as _is_s3_uri,
+    is_azure_uri as _is_azure_uri,
+    is_parquet as _is_parquet,
+    create_s3_filesystem as _create_s3_filesystem,
+    create_azure_filesystem as _create_azure_filesystem,
+)
+from kontra.reporters.rich_reporter import report_failure, report_line, report_success
 from kontra.rule_defs.execution_plan import RuleExecutionPlan
-from kontra.rule_defs.factory import RuleFactory
 from kontra.logging import get_logger, log_exception
 
+from kontra.engine.phases.compilation import compile_rules
+from kontra.engine.phases.preplan import execute_preplan
+from kontra.engine.phases.pushdown import execute_pushdown
+from kontra.engine.phases.residual import execute_residual
+from kontra.engine.phases.merge import merge_results, build_summary
+
 _logger = get_logger(__name__)
-
-# Preplan (metadata-only) + static predicate extraction
-from kontra.preplan.planner import preplan_single_parquet, preplan_parquet_glob, is_glob_pattern
-from kontra.preplan.types import PrePlan
-from kontra.rule_defs.static_predicates import extract_static_predicates
-
-# Built-ins registered lazily - see _ensure_builtin_rules_registered()
-_builtin_rules_registered = False
-
-
-def _ensure_builtin_rules_registered() -> None:
-    """
-    Lazy import builtin rules to register them.
-
-    This defers loading polars until we actually need to build rules.
-    Called by ValidationEngine when loading contracts.
-
-    Raises:
-        ImportError: If polars is not installed (rules depend on it).
-    """
-    global _builtin_rules_registered
-    if _builtin_rules_registered:
-        return
-
-    try:
-        import kontra.rule_defs.builtin.allowed_values  # noqa: F401
-        import kontra.rule_defs.builtin.disallowed_values  # noqa: F401
-        import kontra.rule_defs.builtin.custom_sql_check  # noqa: F401
-        import kontra.rule_defs.builtin.dtype  # noqa: F401
-        import kontra.rule_defs.builtin.freshness  # noqa: F401
-        import kontra.rule_defs.builtin.max_rows  # noqa: F401
-        import kontra.rule_defs.builtin.min_rows  # noqa: F401
-        import kontra.rule_defs.builtin.not_null  # noqa: F401
-        import kontra.rule_defs.builtin.range  # noqa: F401
-        import kontra.rule_defs.builtin.length  # noqa: F401
-        import kontra.rule_defs.builtin.regex  # noqa: F401
-        import kontra.rule_defs.builtin.contains  # noqa: F401
-        import kontra.rule_defs.builtin.starts_with  # noqa: F401
-        import kontra.rule_defs.builtin.ends_with  # noqa: F401
-        import kontra.rule_defs.builtin.unique  # noqa: F401
-        import kontra.rule_defs.builtin.compare  # noqa: F401
-        import kontra.rule_defs.builtin.conditional_not_null  # noqa: F401
-        import kontra.rule_defs.builtin.conditional_range  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "Failed to load builtin rules. This usually means polars is not installed. "
-            "Install with: pip install polars"
-        ) from e
-
-    _builtin_rules_registered = True
 
 
 # --------------------------------------------------------------------------- #
@@ -177,7 +135,10 @@ def _resolve_datasource_uri(reference: str) -> str:
         from kontra.config.settings import resolve_datasource
         return resolve_datasource(reference)
     except (ValueError, ImportError):
-        # Not a named datasource or config not available - use as-is
+        # Not a named datasource or config not available - use as-is.
+        # Note: DatasourceTableError (datasource found, table missing) inherits
+        # from KontraError, not ValueError, so it propagates with a clear message
+        # instead of falling through to a misleading "Data file not found" error.
         return reference
 
 
@@ -202,113 +163,16 @@ def _get_display_name(contract: Optional["Contract"]) -> str:
     return contract.datasource
 
 
-def _is_s3_uri(val: str | None) -> bool:
-    return isinstance(val, str) and val.lower().startswith("s3://")
-
-
-def _is_azure_uri(val: str | None) -> bool:
-    """Check if URI is an Azure storage URI (ADLS Gen2 or Blob)."""
-    if not isinstance(val, str):
-        return False
-    lower = val.lower()
-    return lower.startswith(("abfs://", "abfss://", "az://"))
-
-
-def _s3_uri_to_path(uri: str) -> str:
-    """Convert s3://bucket/key to bucket/key (PyArrow S3FileSystem format)."""
-    if uri.lower().startswith("s3://"):
-        return uri[5:]  # Strip 's3://'
-    return uri
-
-
-def _create_s3_filesystem(handle: DatasetHandle) -> pafs.S3FileSystem:
-    """
-    Create a PyArrow S3FileSystem from handle's fs_opts (populated from env vars).
-    Supports MinIO and other S3-compatible storage via custom endpoints.
-    """
-    opts = handle.fs_opts or {}
-
-    # Map our fs_opts keys to PyArrow S3FileSystem kwargs
-    kwargs: Dict[str, Any] = {}
-    if opts.get("s3_access_key_id") and opts.get("s3_secret_access_key"):
-        kwargs["access_key"] = opts["s3_access_key_id"]
-        kwargs["secret_key"] = opts["s3_secret_access_key"]
-    if opts.get("s3_session_token"):
-        kwargs["session_token"] = opts["s3_session_token"]
-    if opts.get("s3_region"):
-        kwargs["region"] = opts["s3_region"]
-    if opts.get("s3_endpoint"):
-        # PyArrow expects endpoint_override without the scheme
-        endpoint = opts["s3_endpoint"]
-        # Strip scheme if present and set scheme kwarg
-        if endpoint.startswith("http://"):
-            endpoint = endpoint[7:]
-            kwargs["scheme"] = "http"
-        elif endpoint.startswith("https://"):
-            endpoint = endpoint[8:]
-            kwargs["scheme"] = "https"
-        kwargs["endpoint_override"] = endpoint
-
-    # MinIO and some S3-compatible storage require path-style URLs (not virtual-hosted)
-    # DUCKDB_S3_URL_STYLE=path -> force_virtual_addressing=False
-    url_style = opts.get("s3_url_style", "").lower()
-    if url_style == "path":
-        kwargs["force_virtual_addressing"] = False
-    elif url_style == "host":
-        kwargs["force_virtual_addressing"] = True
-    # If endpoint is set but no url_style, default to path-style (common for MinIO)
-    elif opts.get("s3_endpoint"):
-        kwargs["force_virtual_addressing"] = False
-
-    return pafs.S3FileSystem(**kwargs)
-
-
-def _create_azure_filesystem(handle: DatasetHandle) -> pafs.FileSystem:
-    """
-    Create a PyArrow AzureFileSystem from handle's fs_opts (populated from env vars).
-    Supports account key and SAS token authentication.
-
-    Priority: account_key > sas_token (only one auth method should be used)
-    """
-    opts = handle.fs_opts or {}
-
-    kwargs: Dict[str, Any] = {}
-    if opts.get("azure_account_name"):
-        kwargs["account_name"] = opts["azure_account_name"]
-
-    # Use only ONE auth method - account_key takes priority over sas_token
-    # PyArrow can crash or behave unexpectedly when both are provided
-    if opts.get("azure_account_key"):
-        kwargs["account_key"] = opts["azure_account_key"]
-    elif opts.get("azure_sas_token"):
-        # PyArrow requires SAS token WITH the leading '?'
-        sas = opts["azure_sas_token"]
-        if not sas.startswith("?"):
-            sas = "?" + sas
-        kwargs["sas_token"] = sas
-
-    return pafs.AzureFileSystem(**kwargs)
-
-
-def _azure_uri_to_path(uri: str) -> str:
-    """
-    Convert Azure URI to container/path format for PyArrow AzureFileSystem.
-
-    abfss://container@account.dfs.core.windows.net/path -> container/path
-    """
-    from urllib.parse import urlparse
-    parsed = urlparse(uri)
-    # netloc is "container@account.dfs.core.windows.net"
-    if "@" in parsed.netloc:
-        container = parsed.netloc.split("@", 1)[0]
-    else:
-        container = parsed.netloc.split(".")[0]
-    path_part = parsed.path.lstrip("/")
-    return f"{container}/{path_part}"
-
-
-def _is_parquet(path: str | None) -> bool:
-    return isinstance(path, str) and path.lower().endswith(".parquet")
+def _cloud_filesystem(handle: DatasetHandle) -> Optional["pafs.FileSystem"]:
+    """PyArrow filesystem for S3/Azure URIs; None for local paths or on credential failure."""
+    try:
+        if _is_s3_uri(handle.uri):
+            return _create_s3_filesystem(handle)
+        if _is_azure_uri(handle.uri):
+            return _create_azure_filesystem(handle)
+    except Exception as e:  # credential/config errors are non-fatal: preplan is optional
+        log_exception(_logger, f"Could not create cloud filesystem for {handle.scheme}", e)
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -369,6 +233,9 @@ class ValidationEngine:
         storage_options: Optional[Dict[str, Any]] = None,
         # Execution path hint (for lazy loading optimization)
         execution_path: Optional[ExecutionPath] = None,
+        # Goal-directed validation
+        only_rules: Optional[List[str]] = None,
+        only_columns: Optional[List[str]] = None,
     ):
         # Validate inputs
         if contract_path is None and inline_rules is None:
@@ -401,6 +268,13 @@ class ValidationEngine:
                 f"Must be one of: {', '.join(sorted(valid_stats_modes))}"
             )
 
+        # Type-check tally — string 'no'/'false' are truthy in Python (BUG F-017)
+        if tally is not None and not isinstance(tally, bool):
+            raise TypeError(
+                f"'tally' must be a bool or None, got {type(tally).__name__}: {tally!r}. "
+                f"Use tally=True or tally=False"
+            )
+
         self.contract_path = str(contract_path) if contract_path else None
         self.data_path = data_path
         self._input_dataframe = dataframe  # Store user-provided DataFrame
@@ -429,6 +303,8 @@ class ValidationEngine:
         self._rules: Optional[List] = None  # Built rules, for sample_failures()
         self._storage_options = storage_options  # Cloud storage credentials
         self._execution_path = execution_path  # Hint for lazy loading optimization
+        self._only_rules = only_rules  # Goal-directed: filter by rule name/ID
+        self._only_columns = only_columns  # Goal-directed: filter by column
 
         # Register materializers/executors based on execution path (lazy loading)
         self._register_components_for_path()
@@ -449,22 +325,9 @@ class ValidationEngine:
             register_default_executors()
             return
 
-        # Determine database type for database paths
         database_type = None
         if self._execution_path == "database":
-            # Get database type from data_path or handle
-            if self.data_path:
-                database_type = get_database_type(self.data_path)
-            elif self._handle and self._handle.scheme in ("postgres", "postgresql"):
-                database_type = "postgres"
-            elif self._handle and self._handle.scheme in ("mssql", "sqlserver"):
-                database_type = "sqlserver"
-            elif self._handle and self._handle.dialect:
-                # BYOC handle with dialect
-                if self._handle.dialect == "postgresql":
-                    database_type = "postgres"
-                elif self._handle.dialect == "sqlserver":
-                    database_type = "sqlserver"
+            database_type = self._infer_database_type()
 
         # Register only what's needed for this path
         try:
@@ -475,7 +338,152 @@ class ValidationEngine:
             register_default_materializers()
             register_default_executors()
 
+    def _infer_database_type(self) -> Optional[str]:
+        """Database flavor ("postgres"/"sqlserver") from the data path or handle."""
+        if self.data_path:
+            return get_database_type(self.data_path)
+        if self._handle is None:
+            return None
+        # BYOC handles carry scheme="byoc" and identify the flavor via dialect
+        for key in (self._handle.scheme, self._handle.dialect):
+            if key in ("postgres", "postgresql"):
+                return "postgres"
+            if key in ("mssql", "sqlserver"):
+                return "sqlserver"
+        return None
+
     # --------------------------------------------------------------------- #
+
+    def _build_handle(self, source_ref: str) -> DatasetHandle:
+        """Resolve a datasource reference (named, path, or URI) to a DatasetHandle."""
+        source_uri = _resolve_datasource_uri(source_ref)
+        return DatasetHandle.from_uri(source_uri, storage_options=self._storage_options)
+
+    def explain(self) -> "ExplainResult":
+        """
+        Show which tier each rule will execute on without running validation.
+
+        Actually runs the preplan phase (metadata-only, fast) to give accurate
+        tier predictions that match real execution behavior.
+
+        Returns:
+            ExplainResult with tier assignment for each rule
+        """
+        from kontra.api.results import ExplainResult, RuleExplainEntry
+
+        # Phase 1: Contract loading
+        self.contract = self._load_contract()
+
+        # Phase 2: Rule compilation
+        ctx = compile_rules(
+            contract=self.contract,
+            inline_built_rules=self._inline_built_rules,
+            global_tally=self.tally,
+            tally_is_override=self.tally_is_override,
+            only_rules=self._only_rules,
+            only_columns=self._only_columns,
+        )
+
+        # Phase 3: Determine data source characteristics
+        is_dataframe = self._input_dataframe is not None
+        handle = self._handle
+        if not is_dataframe and handle is None:
+            source_ref = self.data_path or self.contract.datasource
+            if source_ref and source_ref != "inline":
+                handle = self._build_handle(source_ref)
+
+        # Build index of SQL-capable rule IDs
+        sql_rule_ids = {spec["rule_id"] for spec in ctx.compiled_full.sql_rules}
+
+        # Phase 4: Run actual preplan (metadata-only, fast) for accurate predictions
+        preplan_handled_ids: set[str] = set()
+        is_parquet = handle is not None and _is_parquet(handle.uri)
+        is_postgres = handle is not None and handle.scheme in ("postgres", "postgresql")
+        is_sqlserver = handle is not None and handle.scheme in ("mssql", "sqlserver")
+
+        if not is_dataframe and handle is not None and self.preplan == "on":
+            try:
+                preplan_result = execute_preplan(
+                    handle=handle,
+                    ctx=ctx,
+                    preplan_mode=self.preplan,
+                    preplan_fs=_cloud_filesystem(handle),
+                )
+                preplan_handled_ids = preplan_result.handled_ids
+            except Exception as e:
+                # Preplan failed — not fatal for explain, just means no metadata tier
+                _logger.info("Explain preplan skipped: %s", e)
+
+        # Determine whether executor is available for SQL pushdown
+        has_executor = (
+            not is_dataframe
+            and self.pushdown == "on"
+            and handle is not None
+        )
+
+        # Build entries
+        entries: list[RuleExplainEntry] = []
+        tier_counts: Dict[str, int] = {"metadata": 0, "sql": 0, "polars": 0}
+
+        for rule in ctx.rules:
+            rid = rule.rule_id
+
+            # Extract column from rule_id
+            column = None
+            if rid.startswith("COL:"):
+                parts = rid.split(":")
+                if len(parts) >= 2:
+                    column = parts[1]
+
+            # 1. Check if preplan actually resolved this rule
+            if rid in preplan_handled_ids:
+                if is_parquet:
+                    reason = "Parquet metadata stats"
+                elif is_postgres:
+                    reason = "PostgreSQL catalog stats"
+                elif is_sqlserver:
+                    reason = "SQL Server catalog stats"
+                else:
+                    reason = "Metadata stats"
+                entries.append(RuleExplainEntry(rid, rule.name, "metadata", reason, column))
+                tier_counts["metadata"] += 1
+                continue
+
+            # 2. Check SQL pushdown eligibility
+            if has_executor and rid in sql_rule_ids:
+                if is_parquet or (handle and handle.uri and handle.uri.lower().endswith((".csv",))):
+                    executor_name = "DuckDB"
+                elif is_postgres:
+                    executor_name = "PostgreSQL"
+                elif is_sqlserver:
+                    executor_name = "SQL Server"
+                else:
+                    executor_name = "SQL"
+                reason = f"{executor_name} executor"
+                entries.append(RuleExplainEntry(rid, rule.name, "sql", reason, column))
+                tier_counts["sql"] += 1
+                continue
+
+            # 3. Polars (default)
+            # Determine if vectorized or fallback
+            has_pred = any(p.rule_id == rid for p in ctx.compiled_full.predicates)
+            if has_pred:
+                reason = "Vectorized predicate"
+            elif is_dataframe:
+                reason = "DataFrame mode"
+            else:
+                reason = "Fallback (non-vectorizable)"
+            entries.append(RuleExplainEntry(rid, rule.name, "polars", reason, column))
+            tier_counts["polars"] += 1
+
+        contract_name = _get_display_name(self.contract)
+
+        return ExplainResult(
+            contract_name=contract_name,
+            total_rules=len(entries),
+            rules=entries,
+            summary=tier_counts,
+        )
 
     def run(self) -> Dict[str, Any]:
         timers = RunTimers()
@@ -485,8 +493,24 @@ class ValidationEngine:
             result = self._run_impl(timers)
 
             # Save state if enabled
+            # Skip saving when filters are active (BUG F-015):
+            # Filtered runs produce partial results. Saving them would cause
+            # diff() to report "resolved" issues that were merely filtered out.
             if self.save_state:
-                self._save_validation_state(result)
+                if self._only_rules or self._only_columns:
+                    import warnings
+                    filters = []
+                    if self._only_rules:
+                        filters.append(f"only={self._only_rules}")
+                    if self._only_columns:
+                        filters.append(f"columns={self._only_columns}")
+                    warnings.warn(
+                        f"Skipping state save: validation was filtered ({', '.join(filters)}). "
+                        f"Filtered runs produce partial results that would corrupt diff history.",
+                        stacklevel=2,
+                    )
+                else:
+                    self._save_validation_state(result)
 
             return result
         finally:
@@ -530,13 +554,13 @@ class ValidationEngine:
             if self.contract:
                 contract_name = self.contract.name or Path(self.contract_path).stem
 
-            # Create state from result
             state = ValidationState.from_validation_result(
                 result=result,
                 contract_fingerprint=contract_fp,
                 dataset_fingerprint=dataset_fp,
                 contract_name=contract_name,
                 dataset_uri=source_uri,
+                tally=self.tally,
             )
 
             # Save
@@ -545,8 +569,7 @@ class ValidationEngine:
 
         except Exception as e:
             # Don't fail validation if state save fails
-            if os.getenv("KONTRA_VERBOSE"):
-                print(f"Warning: Failed to save validation state: {e}")
+            _logger.warning("Failed to save validation state: %s", e)
 
     def get_last_state(self) -> Optional["ValidationState"]:
         """Get the state from the last validation run."""
@@ -573,8 +596,7 @@ class ValidationEngine:
             if previous is None:
                 return None
 
-            # Build simple diff
-            return self._build_diff(previous, self._last_state)
+                return self._build_diff(previous, self._last_state)
 
         except Exception as e:
             log_exception(_logger, "Failed to compute diff", e)
@@ -700,20 +722,8 @@ class ValidationEngine:
         summary["total_rows"] = int(self.df.height) if self.df is not None else 0
         engine_label = "polars (dataframe mode)"
 
-        # Report
         if self.emit_report:
-            if summary["passed"]:
-                report_success(
-                    name=summary.get("dataset_name", "dataframe"),
-                    results=all_results,
-                    summary=summary,
-                )
-            else:
-                report_failure(
-                    name=summary.get("dataset_name", "dataframe"),
-                    results=all_results,
-                    summary=summary,
-                )
+            self._report(summary, all_results)
 
         result = {
             "summary": summary,
@@ -773,7 +783,6 @@ class ValidationEngine:
             return parts[-1] if parts[-1] else "validation"
 
         # For file paths, use the filename
-        from pathlib import Path
         return Path(dataset).name or dataset
 
     def _load_contract(self) -> Contract:
@@ -813,6 +822,11 @@ class ValidationEngine:
         # Store built rules to merge with factory-built rules later
         self._inline_built_rules = inline_built_rules
 
+        # Deferred: ContractLoader pulls yaml, Contract pulls pydantic —
+        # neither should load before a contract is actually built.
+        from kontra.config.loader import ContractLoader
+        from kontra.config.models import Contract
+
         # Load from file if path provided
         if self.contract_path:
             contract = (
@@ -831,563 +845,142 @@ class ValidationEngine:
         name = self._derive_contract_name(dataset)
         return Contract(
             name=name,
-            dataset=dataset,
+            datasource=dataset,
             rules=inline_specs,
         )
 
     def _run_impl(self, timers: RunTimers) -> Dict[str, Any]:
-        # 1) Contract (load from file and/or inline rules)
+        """
+        Main validation implementation.
+
+        Phases:
+        1. Contract loading
+        2. Rule compilation
+        3. DataFrame mode (early exit if user provided DataFrame)
+        4. Handle resolution
+        5. Preplan (metadata-only optimization)
+        6. Materializer setup
+        7. SQL pushdown
+        8. Residual Polars execution
+        9. Result merging
+        10. Summary and reporting
+        11. Stats collection
+        """
+        # ------------------------------------------------------------------ #
+        # Phase 1: Contract Loading
+        # ------------------------------------------------------------------ #
         t0 = now_ms()
         self.contract = self._load_contract()
         timers.contract_load_ms = now_ms() - t0
 
-        # 2) Rules & plan
-        # Ensure builtin rules are registered (lazy import to defer polars loading)
-        _ensure_builtin_rules_registered()
+        # ------------------------------------------------------------------ #
+        # Phase 2: Rule Compilation
+        # ------------------------------------------------------------------ #
         t0 = now_ms()
-        rules = RuleFactory(self.contract.rules).build_rules()
-        # Merge with any pre-built rule instances passed directly
-        if self._inline_built_rules:
-            rules = rules + self._inline_built_rules
-        self._rules = rules  # Store for sample_failures()
-        plan = RuleExecutionPlan(rules)
-        compiled_full = plan.compile()
+        ctx = compile_rules(
+            contract=self.contract,
+            inline_built_rules=self._inline_built_rules,
+            global_tally=self.tally,
+            tally_is_override=self.tally_is_override,
+            only_rules=self._only_rules,
+            only_columns=self._only_columns,
+        )
+        self._rules = ctx.rules  # Store for sample_failures()
         timers.compile_ms = now_ms() - t0
 
-        # Build rule_id -> severity mapping for injecting into preplan/SQL results
-        rule_severity_map = {r.rule_id: r.severity for r in rules}
-
-        # Build rule_id -> effective tally mapping
-        # Precedence:
-        #   1. CLI --tally flag (tally_is_override=True) - explicit user intent
-        #   2. Per-rule tally setting in contract
-        #   3. API tally= parameter (tally_is_override=False)
-        #   4. Default (False for speed)
-        def _effective_tally(rule) -> bool:
-            # Schema-level rules (dtype) ignore tally - they're binary, not countable
-            # Always return False so preplan can handle them
-            if rule.name == "dtype":
-                return False
-            # CLI tally override beats everything
-            if self.tally_is_override and self.tally is not None:
-                return self.tally
-            # Per-rule setting beats API default
-            if rule.tally is not None:
-                return rule.tally
-            # API default (if set)
-            if self.tally is not None:
-                return self.tally
-            # Ultimate default - False enables preplan/early-exit optimizations
-            return False
-
-        rule_tally_map = {r.rule_id: _effective_tally(r) for r in rules}
-
-        # Build rule_id -> context mapping for injecting into results
-        rule_context_map = {r.rule_id: r.context for r in rules if r.context}
-
         # ------------------------------------------------------------------ #
-        # DataFrame mode: If user provided a DataFrame, use Polars-only path
+        # Phase 3: DataFrame Mode (early exit)
         # ------------------------------------------------------------------ #
         if self._input_dataframe is not None:
-            return self._run_dataframe_mode(timers, rules, plan, compiled_full, rule_severity_map, rule_tally_map, rule_context_map)
+            return self._run_dataframe_mode(
+                timers, ctx.rules, ctx.plan, ctx.compiled_full,
+                ctx.severity_map, ctx.tally_map, ctx.context_map
+            )
 
-        # Dataset handle (used across phases)
-        # BYOC: if a pre-built handle was provided, use it directly
+        # ------------------------------------------------------------------ #
+        # Phase 4: Handle Resolution
+        # ------------------------------------------------------------------ #
         if self._handle is not None:
             handle = self._handle
-            source_uri = handle.uri
         else:
-            source_ref = self.data_path or self.contract.datasource
-            source_uri = _resolve_datasource_uri(source_ref)
-            handle = DatasetHandle.from_uri(source_uri, storage_options=self._storage_options)
+            handle = self._build_handle(self.data_path or self.contract.datasource)
             self._handle = handle  # Store for sample_failures() to access db_params
 
         # ------------------------------------------------------------------ #
-        # 3) Preplan (metadata-only; independent of pushdown/projection)
-        preplan_effective = False
-        handled_ids_meta: Set[str] = set()
-        meta_results_by_id: Dict[str, Dict[str, Any]] = {}
-        preplan_row_groups: Optional[List[int]] = None
-        preplan_columns: Optional[List[str]] = None
-        preplan_analyze_ms = 0
-        preplan_total_rows: Optional[int] = None  # Track row count from preplan metadata
-        preplan_summary: Dict[str, Any] = {
-            "enabled": self.preplan == "on",
-            "effective": False,
-            "rules_pass_meta": 0,
-            "rules_fail_meta": 0,
-            "rules_unknown": len(compiled_full.required_cols or []),
-            "row_groups_kept": None,
-            "row_groups_total": None,
-            "row_groups_pruned": None,
-        }
+        # Phase 5: Preplan (metadata-only optimization)
+        # ------------------------------------------------------------------ #
+        preplan_fs = _cloud_filesystem(handle)
 
-        # Get filesystem from handle; preplan needs this for S3/Azure/remote access.
-        preplan_fs: pafs.FileSystem | None = None
-        if _is_s3_uri(handle.uri):
-            try:
-                preplan_fs = _create_s3_filesystem(handle)
-            except Exception as e:
-                # If S3 libs aren't installed, this will fail.
-                # We'll let the ParquetFile call fail below and be caught.
-                log_exception(_logger, "Could not create S3 filesystem for preplan", e)
-        elif _is_azure_uri(handle.uri):
-            try:
-                preplan_fs = _create_azure_filesystem(handle)
-            except Exception as e:
-                # If Azure libs aren't available or creds invalid, fall back to no preplan
-                log_exception(_logger, "Could not create Azure filesystem for preplan", e)
-
-        if self.preplan == "on" and _is_parquet(handle.uri):
-            try:
-                t0 = now_ms()
-                static_preds = extract_static_predicates(rules=rules)
-
-                # Check for glob patterns - use different preplan strategy
-                if is_glob_pattern(handle.uri):
-                    # Glob patterns: use DuckDB-based expansion, schema-only preplan
-                    pre: PrePlan = preplan_parquet_glob(
-                        glob_path=handle.uri,
-                        required_columns=compiled_full.required_cols,
-                        predicates=static_preds,
-                        fs_opts=handle.fs_opts,
-                    )
-                else:
-                    # Single file: use pyarrow with full metadata preplan
-                    # PyArrow filesystems expect specific path formats:
-                    # - S3: 'bucket/key' (not 's3://bucket/key')
-                    # - Azure: 'container/path' (not 'abfss://container@account/path')
-                    if _is_s3_uri(handle.uri) and preplan_fs:
-                        preplan_path = _s3_uri_to_path(handle.uri)
-                    elif _is_azure_uri(handle.uri) and preplan_fs:
-                        preplan_path = _azure_uri_to_path(handle.uri)
-                    else:
-                        preplan_path = handle.uri
-                    pre: PrePlan = preplan_single_parquet(
-                        path=preplan_path,
-                        required_columns=compiled_full.required_cols,  # DC-driven columns
-                        predicates=static_preds,
-                        filesystem=preplan_fs,
-                    )
-                preplan_analyze_ms = now_ms() - t0
-
-                # Register metadata-based rule decisions (pass/fail), unknowns remain
-                # Skip rules with tally=True - preplan only returns binary (0/1), not exact counts
-                pass_meta = fail_meta = unknown = skipped_tally = 0
-                for rid, decision in pre.rule_decisions.items():
-                    # If rule needs exact counts (tally=True), skip preplan for this rule
-                    if rule_tally_map.get(rid, False):
-                        skipped_tally += 1
-                        unknown += 1
-                        continue
-
-                    if decision == "pass_meta":
-                        meta_results_by_id[rid] = {
-                            "rule_id": rid,
-                            "passed": True,
-                            "failed_count": 0,
-                            "message": "Proven by metadata (Parquet stats)",
-                            "execution_source": "metadata",
-                            "severity": rule_severity_map.get(rid, "blocking"),
-                            "tally": rule_tally_map.get(rid, False),
-                        }
-                        handled_ids_meta.add(rid)
-                        pass_meta += 1
-                    elif decision == "fail_meta":
-                        # Build appropriate message based on rule type
-                        details = pre.fail_details.get(rid, {})
-                        if details.get("expected") and details.get("actual"):
-                            # dtype mismatch - compact format
-                            msg = f"{details['expected']} ≠ {details['actual']}"
-                        else:
-                            msg = "Failed: violation proven by Parquet metadata"
-                        meta_results_by_id[rid] = {
-                            "rule_id": rid,
-                            "passed": False,
-                            "failed_count": 1,
-                            "message": msg,
-                            "execution_source": "metadata",
-                            "severity": rule_severity_map.get(rid, "blocking"),
-                            "tally": rule_tally_map.get(rid, False),
-                        }
-                        handled_ids_meta.add(rid)
-                        fail_meta += 1
-                    else:
-                        unknown += 1
-
-                preplan_row_groups = list(pre.manifest_row_groups or [])
-                preplan_columns = list(pre.manifest_columns or [])
-                preplan_effective = True
-                preplan_total_rows = pre.stats.get("total_rows")
-
-                rg_total = pre.stats.get("rg_total", None)
-                rg_kept = len(preplan_row_groups)
-                preplan_summary.update({
-                    "effective": True,
-                    "rules_pass_meta": pass_meta,
-                    "rules_fail_meta": fail_meta,
-                    "rules_unknown": unknown,
-                    "row_groups_kept": rg_kept if rg_total is not None else None,
-                    "row_groups_total": rg_total,
-                    "row_groups_pruned": (rg_total - rg_kept) if (rg_total is not None) else None,
-                })
-
-                if self.explain_preplan:
-                    print(
-                        "\n-- PREPLAN (metadata) --"
-                        f"\n  Row-groups kept: {preplan_summary.get('row_groups_kept')}/{preplan_summary.get('row_groups_total')}"
-                        f"\n  Rules: {pass_meta} pass, {fail_meta} fail, {unknown} unknown\n"
-                    )
-
-            except Exception as e:
-                # Distinguish between "preplan not available" vs "real errors"
-                err_str = str(e).lower()
-                err_type = type(e).__name__
-
-                # Re-raise errors that indicate real problems (auth, file not found, etc.)
-                is_auth_error = (
-                    "access denied" in err_str
-                    or "forbidden" in err_str
-                    or "unauthorized" in err_str
-                    or "credentials" in err_str
-                    or "authentication" in err_str
-                )
-                is_not_found = (
-                    isinstance(e, FileNotFoundError)
-                    or "not found" in err_str
-                    or "no such file" in err_str
-                    or "does not exist" in err_str
-                )
-                is_permission = isinstance(e, PermissionError)
-
-                if is_auth_error or is_not_found or is_permission:
-                    # These are real errors - don't silently skip
-                    raise RuntimeError(
-                        f"Unable to access file: {e}. "
-                        "Check file path and credentials."
-                    ) from e
-
-                # Otherwise, preplan optimization just isn't available (e.g., no stats)
-                if os.getenv("KONTRA_VERBOSE"):
-                    print(f"[INFO] Preplan skipped ({err_type}): {e}")
-                preplan_effective = False  # leave summary with effective=False
-
-        # PostgreSQL preplan (uses pg_stats metadata)
-        elif self.preplan == "on" and handle.scheme in ("postgres", "postgresql"):
-            try:
-                from kontra.preplan.postgres import preplan_postgres, can_preplan_postgres
-                if can_preplan_postgres(handle):
-                    t0 = now_ms()
-                    static_preds = extract_static_predicates(rules=rules)
-                    pre: PrePlan = preplan_postgres(
-                        handle=handle,
-                        required_columns=compiled_full.required_cols,
-                        predicates=static_preds,
-                    )
-                    preplan_analyze_ms = now_ms() - t0
-
-                    # Skip rules with tally=True - preplan only returns binary (0/1), not exact counts
-                    pass_meta = fail_meta = unknown = 0
-                    for rid, decision in pre.rule_decisions.items():
-                        # If rule needs exact counts (tally=True), skip preplan for this rule
-                        if rule_tally_map.get(rid, False):
-                            unknown += 1
-                            continue
-
-                        if decision == "pass_meta":
-                            meta_results_by_id[rid] = {
-                                "rule_id": rid,
-                                "passed": True,
-                                "failed_count": 0,
-                                "message": "Proven by metadata (PostgreSQL catalog)",
-                                "execution_source": "metadata",
-                                "severity": rule_severity_map.get(rid, "blocking"),
-                                "tally": rule_tally_map.get(rid, False),
-                            }
-                            handled_ids_meta.add(rid)
-                            pass_meta += 1
-                        elif decision == "fail_meta":
-                            # Build appropriate message based on rule type
-                            details = pre.fail_details.get(rid, {})
-                            if details.get("expected") and details.get("actual"):
-                                # dtype mismatch - compact format
-                                msg = f"{details['expected']} ≠ {details['actual']}"
-                            else:
-                                msg = "Failed: violation proven by PostgreSQL catalog metadata"
-                            meta_results_by_id[rid] = {
-                                "rule_id": rid,
-                                "passed": False,
-                                "failed_count": 1,
-                                "message": msg,
-                                "execution_source": "metadata",
-                                "severity": rule_severity_map.get(rid, "blocking"),
-                                "tally": rule_tally_map.get(rid, False),
-                            }
-                            handled_ids_meta.add(rid)
-                            fail_meta += 1
-                        else:
-                            unknown += 1
-
-                    preplan_effective = True
-                    preplan_summary.update({
-                        "effective": True,
-                        "rules_pass_meta": pass_meta,
-                        "rules_fail_meta": fail_meta,
-                        "rules_unknown": unknown,
-                    })
-            except Exception as e:
-                if os.getenv("KONTRA_VERBOSE"):
-                    print(f"[INFO] PostgreSQL preplan skipped: {e}")
-
-        # SQL Server preplan (uses sys.columns metadata)
-        elif self.preplan == "on" and handle.scheme in ("mssql", "sqlserver"):
-            try:
-                from kontra.preplan.sqlserver import preplan_sqlserver, can_preplan_sqlserver
-                if can_preplan_sqlserver(handle):
-                    t0 = now_ms()
-                    static_preds = extract_static_predicates(rules=rules)
-                    pre: PrePlan = preplan_sqlserver(
-                        handle=handle,
-                        required_columns=compiled_full.required_cols,
-                        predicates=static_preds,
-                    )
-                    preplan_analyze_ms = now_ms() - t0
-
-                    # Skip rules with tally=True - preplan only returns binary (0/1), not exact counts
-                    pass_meta = fail_meta = unknown = 0
-                    for rid, decision in pre.rule_decisions.items():
-                        # If rule needs exact counts (tally=True), skip preplan for this rule
-                        if rule_tally_map.get(rid, False):
-                            unknown += 1
-                            continue
-
-                        if decision == "pass_meta":
-                            meta_results_by_id[rid] = {
-                                "rule_id": rid,
-                                "passed": True,
-                                "failed_count": 0,
-                                "message": "Proven by metadata (SQL Server catalog)",
-                                "execution_source": "metadata",
-                                "severity": rule_severity_map.get(rid, "blocking"),
-                                "tally": rule_tally_map.get(rid, False),
-                            }
-                            handled_ids_meta.add(rid)
-                            pass_meta += 1
-                        elif decision == "fail_meta":
-                            # Build appropriate message based on rule type
-                            details = pre.fail_details.get(rid, {})
-                            if details.get("expected") and details.get("actual"):
-                                # dtype mismatch - compact format
-                                msg = f"{details['expected']} ≠ {details['actual']}"
-                            else:
-                                msg = "Failed: violation proven by SQL Server catalog metadata"
-                            meta_results_by_id[rid] = {
-                                "rule_id": rid,
-                                "passed": False,
-                                "failed_count": 1,
-                                "message": msg,
-                                "execution_source": "metadata",
-                                "severity": rule_severity_map.get(rid, "blocking"),
-                                "tally": rule_tally_map.get(rid, False),
-                            }
-                            handled_ids_meta.add(rid)
-                            fail_meta += 1
-                        else:
-                            unknown += 1
-
-                    preplan_effective = True
-                    preplan_summary.update({
-                        "effective": True,
-                        "rules_pass_meta": pass_meta,
-                        "rules_fail_meta": fail_meta,
-                        "rules_unknown": unknown,
-                    })
-            except Exception as e:
-                if os.getenv("KONTRA_VERBOSE"):
-                    print(f"[INFO] SQL Server preplan skipped: {e}")
+        preplan = execute_preplan(
+            handle=handle,
+            ctx=ctx,
+            preplan_mode=self.preplan,
+            preplan_fs=preplan_fs,
+            explain_preplan=self.explain_preplan,
+        )
 
         # ------------------------------------------------------------------ #
-        # 4) Materializer setup (orthogonal)
+        # Phase 6: Materializer Setup
+        # ------------------------------------------------------------------ #
         materializer = pick_materializer(handle)
         materializer_name = getattr(materializer, "name", "duckdb")
-        _staged_override_uri: Optional[str] = None
 
         # ------------------------------------------------------------------ #
-        # 5) SQL pushdown (independent of preplan/projection)
-        sql_results_by_id: Dict[str, Dict[str, Any]] = {}
-        handled_ids_sql: Set[str] = set()
-        available_cols: List[str] = []
-        sql_row_count: Optional[int] = None
-        executor_name = "none"
-        pushdown_effective = False
-        push_compile_ms = push_execute_ms = push_introspect_ms = 0
+        # Phase 7: SQL Pushdown
+        # ------------------------------------------------------------------ #
+        pushdown, handle, staging_tmpdir = execute_pushdown(
+            handle=handle,
+            ctx=ctx,
+            handled_ids_meta=preplan.handled_ids,
+            pushdown_mode=self.pushdown,
+            csv_mode=self.csv_mode,
+            show_plan=self.show_plan,
+        )
+        self._staging_tmpdir = staging_tmpdir
 
-        executor = None
-        if self.pushdown == "on":
-            # Exclude rules already decided by preplan
-            sql_rules_remaining = [s for s in compiled_full.sql_rules if s.get("rule_id") not in handled_ids_meta]
-            executor = pick_executor(handle, sql_rules_remaining)
-
-        if executor:
-            try:
-                # Inject effective tally into SQL specs (global override takes precedence)
-                sql_specs_for_compile = []
-                for s in compiled_full.sql_rules:
-                    if s.get("rule_id") not in handled_ids_meta:
-                        spec = dict(s)  # Copy to avoid mutating original
-                        rid = spec.get("rule_id")
-                        # Use effective tally from rule_tally_map (includes global override)
-                        spec["tally"] = rule_tally_map.get(rid, False)
-                        sql_specs_for_compile.append(spec)
-
-                # Compile
-                t0 = now_ms()
-                executor_name = getattr(executor, "name", "sql")
-                sql_plan_str = executor.compile(sql_specs_for_compile)
-                push_compile_ms = now_ms() - t0
-                if self.show_plan and sql_plan_str:
-                    print(f"\n-- {executor_name.upper()} SQL PLAN --\n{sql_plan_str}\n")
-
-                # Execute
-                t0 = now_ms()
-                duck_out = executor.execute(handle, sql_plan_str, csv_mode=self.csv_mode)
-                push_execute_ms = now_ms() - t0
-
-                # Inject severity and tally into SQL results
-                sql_results_raw = duck_out.get("results", [])
-                for r in sql_results_raw:
-                    r["severity"] = rule_severity_map.get(r.get("rule_id"), "blocking")
-                    r["tally"] = rule_tally_map.get(r.get("rule_id"), False)
-                sql_results_by_id = {r["rule_id"]: r for r in sql_results_raw}
-                handled_ids_sql = set(sql_results_by_id.keys())
-
-                # Get row count and cols from execute result (avoids separate introspect call)
-                t0 = now_ms()
-                sql_row_count = duck_out.get("row_count")
-                available_cols = duck_out.get("available_cols") or []
-
-                # Fallback to introspect if execute didn't return these
-                if sql_row_count is None or not available_cols:
-                    info = executor.introspect(handle, csv_mode=self.csv_mode)
-                    push_introspect_ms = now_ms() - t0
-                    sql_row_count = info.get("row_count") if sql_row_count is None else sql_row_count
-                    available_cols = info.get("available_cols") or available_cols
-                    staging = info.get("staging") or duck_out.get("staging")
-                else:
-                    push_introspect_ms = now_ms() - t0
-                    staging = duck_out.get("staging")
-
-                # Reuse staged Parquet (if the executor staged CSV → Parquet)
-                staging = staging or duck_out.get("staging")
-                if staging and staging.get("path"):
-                    _staged_override_uri = staging["path"]
-                    self._staging_tmpdir = staging.get("tmpdir")
-                    handle = DatasetHandle.from_uri(_staged_override_uri)
-                    materializer = pick_materializer(handle)
-                    materializer_name = getattr(materializer, "name", materializer_name)
-
-                pushdown_effective = True
-            except Exception as e:
-                if os.getenv("KONTRA_VERBOSE") or self.show_plan:
-                    print(f"[WARN] SQL pushdown failed ({type(e).__name__}): {e}")
-                executor = None  # fall back silently
+        # Update materializer if handle changed (CSV staged to Parquet)
+        if pushdown.staged_path:
+            materializer = pick_materializer(handle)
+            materializer_name = getattr(materializer, "name", materializer_name)
 
         # ------------------------------------------------------------------ #
-        # 6) Residual Polars execution (projection independent; manifest optional)
-        handled_all = handled_ids_meta | handled_ids_sql
-        compiled_residual = plan.without_ids(compiled_full, handled_all)
-
-        # Projection is DC-driven; independent of preplan/pushdown
-        required_cols_full = compiled_full.required_cols if self.enable_projection else []
-        required_cols_residual = compiled_residual.required_cols if self.enable_projection else []
-
-        if not compiled_residual.predicates and not compiled_residual.fallback_rules:
-            self.df = None
-            polars_out = {"results": []}
-            timers.data_load_ms = timers.execute_ms = 0
-        else:
-            # Lazy load polars only when residual rules exist
-            pl = _get_polars()
-
-            # Materialize minimal slice:
-            # If preplan produced a row-group manifest, honor it — otherwise let the materializer decide.
-            t0 = now_ms()
-            if preplan_effective and _is_parquet(handle.uri) and preplan_row_groups:
-                cols = (required_cols_residual or None) if self.enable_projection else None
-
-                # Reuse preplan filesystem if available, otherwise create from handle
-                residual_fs = preplan_fs
-                if residual_fs is None and _is_s3_uri(handle.uri):
-                    try:
-                        residual_fs = _create_s3_filesystem(handle)
-                    except Exception as e:
-                        # Let ParquetFile try default credentials
-                        log_exception(_logger, "Could not create S3 filesystem for residual load", e)
-                elif residual_fs is None and _is_azure_uri(handle.uri):
-                    try:
-                        residual_fs = _create_azure_filesystem(handle)
-                    except Exception as e:
-                        log_exception(_logger, "Could not create Azure filesystem for residual load", e)
-
-                # PyArrow filesystems expect specific path formats
-                if _is_s3_uri(handle.uri) and residual_fs:
-                    residual_path = _s3_uri_to_path(handle.uri)
-                elif _is_azure_uri(handle.uri) and residual_fs:
-                    residual_path = _azure_uri_to_path(handle.uri)
-                else:
-                    residual_path = handle.uri
-                pf = pq.ParquetFile(residual_path, filesystem=residual_fs)
-
-                pa_cols = cols if cols else None
-                rg_tables = [pf.read_row_group(i, columns=pa_cols) for i in preplan_row_groups]
-                pa_tbl = pa.concat_tables(rg_tables) if len(rg_tables) > 1 else rg_tables[0]
-                self.df = pl.from_arrow(pa_tbl)
-            else:
-                # Materializer respects projection (engine passes residual required cols)
-                self.df = materializer.to_polars(required_cols_residual or None)
-            timers.data_load_ms = now_ms() - t0
-
-            # Execute residual rules in Polars
-            t0 = now_ms()
-            PolarsBackend = _get_polars_backend()
-            polars_exec = PolarsBackend(executor=plan.execute_compiled)
-            polars_art = polars_exec.compile(compiled_residual)
-            polars_out = polars_exec.execute(self.df, polars_art, rule_tally_map)
-            timers.execute_ms = now_ms() - t0
+        # Phase 8: Residual Polars Execution
+        # ------------------------------------------------------------------ #
+        residual = execute_residual(
+            handle=handle,
+            ctx=ctx,
+            preplan=preplan,
+            pushdown=pushdown,
+            materializer=materializer,
+            preplan_fs=preplan_fs,
+            enable_projection=self.enable_projection,
+        )
+        self.df = residual.df
+        timers.data_load_ms = residual.load_ms
+        timers.execute_ms = residual.execute_ms
 
         # ------------------------------------------------------------------ #
-        # 7) Merge results — deterministic order: preplan → SQL → Polars
-        results: List[Dict[str, Any]] = list(meta_results_by_id.values())
-        results += [r for r in sql_results_by_id.values() if r["rule_id"] not in meta_results_by_id]
-        # Inject severity and tally into Polars results
-        for r in polars_out["results"]:
-            if r["rule_id"] not in meta_results_by_id and r["rule_id"] not in sql_results_by_id:
-                r["severity"] = rule_severity_map.get(r["rule_id"], "blocking")
-                r["tally"] = rule_tally_map.get(r["rule_id"], False)
-                results.append(r)
+        # Phase 9: Result Merging
+        # ------------------------------------------------------------------ #
+        results = merge_results(preplan, pushdown, residual, ctx)
 
-        # Inject context into all results
-        for r in results:
-            ctx = rule_context_map.get(r["rule_id"])
-            if ctx:
-                r["context"] = ctx
+        # ------------------------------------------------------------------ #
+        # Phase 10: Summary and Reporting
+        # ------------------------------------------------------------------ #
+        summary = build_summary(
+            results=results,
+            plan=ctx.plan,
+            contract=self.contract,
+            row_count=pushdown.row_count,
+            df_height=self.df.height if self.df is not None else None,
+            preplan_total_rows=preplan.total_rows,
+        )
 
-        # 8) Summary
-        summary = plan.summary(results)
-        summary["dataset_name"] = _get_display_name(self.contract)
-        # Row count priority: SQL executor > DataFrame > preplan metadata > 0
-        if sql_row_count is not None:
-            summary["total_rows"] = int(sql_row_count)
-        elif self.df is not None:
-            summary["total_rows"] = int(self.df.height)
-        elif preplan_total_rows is not None:
-            summary["total_rows"] = int(preplan_total_rows)
-        else:
-            summary["total_rows"] = 0
+        # Build engine label for stats
         engine_label = (
             f"{materializer_name}+polars "
-            f"(preplan:{'on' if preplan_effective else 'off'}, "
-            f"pushdown:{'on' if pushdown_effective else 'off'}, "
+            f"(preplan:{'on' if preplan.effective else 'off'}, "
+            f"pushdown:{'on' if pushdown.effective else 'off'}, "
             f"projection:{'on' if self.enable_projection else 'off'})"
         )
 
@@ -1397,93 +990,23 @@ class ValidationEngine:
             timers.report_ms = now_ms() - t0
 
         # ------------------------------------------------------------------ #
-        # 9) Stats (feature-attributed)
-        stats: Optional[Dict[str, Any]] = None
-        if self.stats_mode != "none":
-            if not available_cols:
-                available_cols = self._peek_available_columns(handle.uri)
+        # Phase 11: Stats Collection
+        # ------------------------------------------------------------------ #
+        stats = self._collect_stats(
+            timers=timers,
+            ctx=ctx,
+            preplan=preplan,
+            pushdown=pushdown,
+            residual=residual,
+            materializer=materializer,
+            materializer_name=materializer_name,
+            engine_label=engine_label,
+            handle=handle,
+        ) if self.stats_mode != "none" else None
 
-            ds_summary = basic_summary(self.df, available_cols=available_cols, nrows_override=sql_row_count)
-
-            loaded_cols = list(self.df.columns) if self.df is not None else []
-            proj = {
-                "enabled": self.enable_projection,
-                "available_count": len(available_cols or []) if available_cols is not None else len(loaded_cols),
-                "full": {
-                    "required_columns": required_cols_full or [],
-                    "required_count": len(required_cols_full or []),
-                },
-                "residual": {
-                    "required_columns": required_cols_residual or [],
-                    "required_count": len(required_cols_residual or []),
-                    "loaded_count": len(loaded_cols),
-                    "effective": self.enable_projection and bool(required_cols_residual)
-                                   and len(loaded_cols) <= len(required_cols_residual),
-                },
-            }
-
-            push = {
-                "enabled": self.pushdown == "on",
-                "effective": bool(pushdown_effective),
-                "executor": executor_name,
-                "rules_pushed": len(sql_results_by_id),
-                "breakdown_ms": {
-                    "compile": push_compile_ms,
-                    "execute": push_execute_ms,
-                    "introspect": push_introspect_ms,
-                },
-            }
-
-            res = {
-                "rules_local": len(polars_out["results"]) if "polars_out" in locals() else 0,
-            }
-
-            phases_ms = {
-                "contract_load": int(timers.contract_load_ms or 0),
-                "compile": int(timers.compile_ms or 0),
-                "preplan": int(preplan_analyze_ms or 0),
-                "pushdown": int(push_compile_ms + push_execute_ms + push_introspect_ms),
-                "data_load": int(timers.data_load_ms or 0),
-                "execute": int(timers.execute_ms or 0),
-                "report": int(timers.report_ms or 0),
-            }
-
-            stats = {
-                "stats_version": "2",
-                "run_meta": {
-                    "phases_ms": phases_ms,
-                    "duration_ms_total": sum(phases_ms.values()),
-                    "dataset_path": self.data_path or self.contract.datasource,
-                    "contract_path": self.contract_path,
-                    "engine": engine_label,
-                    "materializer": materializer_name,
-                    "preplan_requested": self.preplan,
-                    "preplan": "on" if preplan_effective else "off",
-                    "pushdown_requested": self.pushdown,
-                    "pushdown": "on" if pushdown_effective else "off",
-                    "csv_mode": self.csv_mode,
-                    "staged_override": bool(_staged_override_uri),
-                },
-                "dataset": ds_summary,
-                "preplan": preplan_summary,
-                "pushdown": push,
-                "projection": proj,
-                "residual": res,
-                "columns_touched": columns_touched([{"name": r.name, "params": r.params} for r in self.contract.rules]),
-                "columns_validated": columns_touched([{"name": r.name, "params": r.params} for r in self.contract.rules]),
-                "columns_loaded": loaded_cols,
-            }
-
-            if self.stats_mode == "profile" and self.df is not None:
-                stats["profile"] = profile_for(self.df, proj["residual"]["required_columns"])
-
-            if os.getenv("KONTRA_IO_DEBUG"):
-                io_dbg = getattr(materializer, "io_debug", None)
-                if callable(io_dbg):
-                    io = io_dbg()
-                    if io:
-                        stats["io"] = io
-
+        # ------------------------------------------------------------------ #
+        # Assemble Final Result
+        # ------------------------------------------------------------------ #
         out: Dict[str, Any] = {
             "dataset": self.contract.datasource,
             "results": results,
@@ -1493,8 +1016,111 @@ class ValidationEngine:
             out["stats"] = stats
         out.setdefault("run_meta", {})["engine_label"] = engine_label
 
-        # Ensure staged tempdir (if any) is cleaned after the whole run
         return out
+
+    def _collect_stats(
+        self,
+        timers: RunTimers,
+        ctx: Any,  # CompilationContext
+        preplan: Any,  # PreplanResult
+        pushdown: Any,  # PushdownResult
+        residual: Any,  # ResidualResult
+        materializer: Any,
+        materializer_name: str,
+        engine_label: str,
+        handle: DatasetHandle,
+    ) -> Dict[str, Any]:
+        """Collect validation statistics for stats_mode='summary' or 'profile'."""
+        available_cols = pushdown.available_cols
+        if not available_cols:
+            available_cols = self._peek_available_columns(handle.uri)
+
+        ds_summary = basic_summary(self.df, available_cols=available_cols, nrows_override=pushdown.row_count)
+
+        loaded_cols = list(self.df.columns) if self.df is not None else []
+        required_cols_full = ctx.compiled_full.required_cols if self.enable_projection else []
+        compiled_residual = ctx.plan.without_ids(ctx.compiled_full, preplan.handled_ids | pushdown.handled_ids)
+        required_cols_residual = compiled_residual.required_cols if self.enable_projection else []
+
+        proj = {
+            "enabled": self.enable_projection,
+            "available_count": len(available_cols or []) if available_cols is not None else len(loaded_cols),
+            "full": {
+                "required_columns": required_cols_full or [],
+                "required_count": len(required_cols_full or []),
+            },
+            "residual": {
+                "required_columns": required_cols_residual or [],
+                "required_count": len(required_cols_residual or []),
+                "loaded_count": len(loaded_cols),
+                "effective": self.enable_projection and bool(required_cols_residual)
+                               and len(loaded_cols) <= len(required_cols_residual),
+            },
+        }
+
+        push = {
+            "enabled": self.pushdown == "on",
+            "effective": pushdown.effective,
+            "executor": pushdown.executor_name,
+            "rules_pushed": len(pushdown.results_by_id),
+            "breakdown_ms": {
+                "compile": pushdown.compile_ms,
+                "execute": pushdown.execute_ms,
+                "introspect": pushdown.introspect_ms,
+            },
+        }
+
+        res = {
+            "rules_local": len(residual.results),
+        }
+
+        phases_ms = {
+            "contract_load": int(timers.contract_load_ms or 0),
+            "compile": int(timers.compile_ms or 0),
+            "preplan": int(preplan.analyze_ms or 0),
+            "pushdown": int(pushdown.compile_ms + pushdown.execute_ms + pushdown.introspect_ms),
+            "data_load": int(timers.data_load_ms or 0),
+            "execute": int(timers.execute_ms or 0),
+            "report": int(timers.report_ms or 0),
+        }
+
+        stats: Dict[str, Any] = {
+            "stats_version": "2",
+            "run_meta": {
+                "phases_ms": phases_ms,
+                "duration_ms_total": sum(phases_ms.values()),
+                "dataset_path": self.data_path or self.contract.datasource,
+                "contract_path": self.contract_path,
+                "engine": engine_label,
+                "materializer": materializer_name,
+                "preplan_requested": self.preplan,
+                "preplan": "on" if preplan.effective else "off",
+                "pushdown_requested": self.pushdown,
+                "pushdown": "on" if pushdown.effective else "off",
+                "csv_mode": self.csv_mode,
+                "staged_override": bool(pushdown.staged_path),
+            },
+            "dataset": ds_summary,
+            "preplan": preplan.summary,
+            "pushdown": push,
+            "projection": proj,
+            "residual": res,
+            "columns_touched": columns_touched([{"name": r.name, "params": r.params} for r in self.contract.rules]),
+            "columns_validated": columns_touched([{"name": r.name, "params": r.params} for r in self.contract.rules]),
+            "columns_loaded": loaded_cols,
+        }
+
+        if self.stats_mode == "profile" and self.df is not None:
+            stats["profile"] = profile_for(self.df, proj["residual"]["required_columns"])
+
+        if os.getenv("KONTRA_IO_DEBUG"):
+            io_dbg = getattr(materializer, "io_debug", None)
+            if callable(io_dbg):
+                io = io_dbg()
+                if io:
+                    stats["io"] = io
+
+        return stats
 
     # --------------------------------------------------------------------- #
 
@@ -1544,7 +1170,7 @@ class ValidationEngine:
                 severity_tag = f" [{severity}]"
 
             if passed:
-                print(f"  ✅ {rule_id}{source_tag}")
+                report_line(f"  ✅ {rule_id}{source_tag}")
             else:
                 msg = r.get("message", "Failed")
                 failed_count = r.get("failed_count", 0)
@@ -1569,7 +1195,7 @@ class ValidationEngine:
 
                 # Use different icon for warning/info
                 icon = "❌" if severity == "blocking" else ("⚠️" if severity == "warning" else "ℹ️")
-                print(f"  {icon} {rule_id}{source_tag}{severity_tag}{detail}")
+                report_line(f"  {icon} {rule_id}{source_tag}{severity_tag}{detail}")
 
                 # Show detailed explanation if available
                 details = r.get("details")
@@ -1584,23 +1210,21 @@ class ValidationEngine:
             expected_preview = ", ".join(expected[:5])
             if len(expected) > 5:
                 expected_preview += f" ... ({len(expected)} total)"
-            print(f"     Expected: {expected_preview}")
+            report_line(f"     Expected: {expected_preview}")
 
-        # Unexpected values (for allowed_values rule)
         unexpected = details.get("unexpected_values")
         if unexpected:
-            print("     Unexpected values:")
+            report_line("     Unexpected values:")
             for uv in unexpected[:5]:
                 val = uv.get("value", "?")
                 count = uv.get("count", 0)
-                print(f"       - \"{val}\" ({count:,} rows)")
+                report_line(f"       - \"{val}\" ({count:,} rows)")
             if len(unexpected) > 5:
-                print(f"       ... and {len(unexpected) - 5} more")
+                report_line(f"       ... and {len(unexpected) - 5} more")
 
-        # Suggestion
         suggestion = details.get("suggestion")
         if suggestion:
-            print(f"     Suggestion: {suggestion}")
+            report_line(f"     Suggestion: {suggestion}")
 
     # --------------------------------------------------------------------- #
 

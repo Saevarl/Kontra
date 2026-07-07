@@ -256,6 +256,9 @@ kontra validate contract.yml --pushdown off     # skip SQL, use Polars
 kontra validate contract.yml --tally            # exact counts (aggregates)
 kontra validate contract.yml --no-tally         # fail-fast (EXISTS)
 kontra validate contract.yml --stats summary    # show execution stats
+kontra validate contract.yml --explain          # preview tier assignments, don't run
+kontra validate contract.yml --only not_null,unique     # validate specific rules only
+kontra validate contract.yml --columns email,user_id    # validate specific columns only
 ```
 
 ### Python
@@ -293,3 +296,5 @@ Stats  •  rows=5,000,000  duration=1403ms  engine=duckdb+polars
 ```
 
 Each rule shows which path resolved it: `[metadata]` (preplan) or `[sql]` (pushdown).
+
+To preview tier assignments without running validation, use `--explain` or `explain=True` in the Python API.

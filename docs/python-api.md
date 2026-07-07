@@ -309,6 +309,10 @@ result = kontra.validate(
     tally=False,         # exact counts vs fail-fast
     projection=True,     # column pruning
 
+    # Filtering
+    only=["not_null"],   # rule names or IDs to validate
+    columns=["email"],   # only rules touching these columns
+
     # Sampling
     sample=5,            # samples per rule
     sample_budget=50,    # total samples across all rules
@@ -322,6 +326,36 @@ result = kontra.validate(
     save=True,           # save to history
 )
 ```
+
+### Filtering
+
+Validate a subset of rules or columns:
+
+```python
+# Only specific rules
+result = kontra.validate("data.parquet", "contract.yml", only=["not_null", "unique"])
+
+# Only rules touching specific columns (dataset-level rules always included)
+result = kontra.validate("data.parquet", "contract.yml", columns=["email", "user_id"])
+```
+
+`only` accepts rule names (e.g., `not_null`) or rule IDs (e.g., `COL:email:not_null`).
+
+### Execution Plan Preview
+
+See which tier each rule will execute on without running validation:
+
+```python
+plan = kontra.validate("data.parquet", "contract.yml", explain=True)
+
+plan.total_rules     # int
+plan.summary         # {"metadata": 2, "sql": 3, "polars": 1}
+
+for entry in plan.rules:
+    print(f"{entry.rule_id}: {entry.tier}")
+```
+
+Returns an `ExplainResult` instead of `ValidationResult`. Also available as `kontra.explain(data, contract)`.
 
 ### Dry Run
 
@@ -569,6 +603,7 @@ All `to_llm()` outputs are designed for token efficiency. See [Agents & Services
 | Function | Description |
 |----------|-------------|
 | `kontra.validate(data, contract, **opts)` | Validate data |
+| `kontra.explain(data, contract, **opts)` | Preview execution plan |
 | `kontra.profile(data, preset, **opts)` | Profile data |
 | `kontra.draft(profile)` | Draft rules from profile |
 | `kontra.diff(contract, **opts)` | Compare validation runs |
@@ -594,6 +629,7 @@ See [Transformation Probes](reference/probes.md) for details.
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |
 | `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved`, `to_llm()` |
 | `Suggestions` | `filter()`, `to_dict()`, `to_yaml()`, `save()` |
+| `ExplainResult` | `total_rules`, `rules`, `summary`, `to_dict()`, `to_llm()` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 
 ### Errors

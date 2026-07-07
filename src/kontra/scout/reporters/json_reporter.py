@@ -36,12 +36,12 @@ def build_compact_json(profile: DatasetProfile) -> Dict[str, Any]:
 
 
 def _strip_nulls(obj: Any) -> Any:
-    """Recursively remove None values and empty lists/dicts."""
+    """Recursively remove None values for compact output."""
     if isinstance(obj, dict):
         return {
             k: _strip_nulls(v)
             for k, v in obj.items()
-            if v is not None and v != [] and v != {}
+            if v is not None
         }
     elif isinstance(obj, list):
         return [_strip_nulls(item) for item in obj if item is not None]

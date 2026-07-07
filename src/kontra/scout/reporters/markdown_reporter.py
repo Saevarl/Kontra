@@ -43,7 +43,6 @@ def render_markdown(profile: DatasetProfile) -> str:
     lines.append("| Column | Type | Nulls | Distinct | Cardinality |")
     lines.append("|--------|------|-------|----------|-------------|")
 
-    # Check if this is a metadata-only preset (scout/lite)
     is_metadata_only = profile.preset in ("scout", "lite")
 
     for col in profile.columns:

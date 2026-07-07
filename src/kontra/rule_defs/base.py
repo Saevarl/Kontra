@@ -1,6 +1,6 @@
 # src/kontra/rule_defs/base.py
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Set, Union
 
 if TYPE_CHECKING:
     import polars as pl
@@ -108,7 +108,7 @@ class BaseRule(ABC):
             "message": message if failed_count > 0 else "Passed",
         }
 
-    def _check_columns(self, df: "pl.DataFrame", columns: Set[str]) -> Dict[str, Any] | None:
+    def _check_columns(self, df: "pl.DataFrame", columns: Union[Set[str], List[str]]) -> Dict[str, Any] | None:
         """
         Check if required columns exist in the DataFrame.
 
@@ -117,13 +117,17 @@ class BaseRule(ABC):
 
         Args:
             df: The DataFrame to check
-            columns: Set of required column names
+            columns: Set or list of required column names
 
         Returns:
             Failure result dict if columns missing, None if all present
         """
         if not columns:
             return None
+
+        # Accept both list and set (BUG-034)
+        if not isinstance(columns, set):
+            columns = set(columns)
 
         available = set(df.columns)
         missing = columns - available

@@ -15,31 +15,17 @@ if TYPE_CHECKING:
     import polars as pl
 
 from kontra.connectors.handle import DatasetHandle
-from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
+from kontra.connectors.sqlserver import SqlServerConnectionParams
 from kontra.connectors.detection import parse_table_reference, get_default_schema, SQLSERVER
-from contextlib import contextmanager
+from kontra.connectors.db_utils import get_connection_ctx, ss_quote_ident as _esc_ident
 
 from .base import BaseMaterializer
 from .registry import register_materializer
 
 
-@contextmanager
 def _get_connection_ctx(handle: DatasetHandle):
-    """
-    Get a connection context for either BYOC or URI-based handles.
-
-    For BYOC, yields the external connection directly (not owned by us).
-    For URI-based, yields a new connection (owned by context manager).
-    """
-    if handle.scheme == "byoc" and handle.external_conn is not None:
-        # BYOC: yield external connection directly, don't close it
-        yield handle.external_conn
-    elif handle.db_params:
-        # URI-based: use our connection manager
-        with get_connection(handle.db_params) as conn:
-            yield conn
-    else:
-        raise ValueError("Handle has neither external_conn nor db_params")
+    """Get a connection context for SQL Server handles."""
+    return get_connection_ctx(handle, "sqlserver")
 
 
 @register_materializer("sqlserver")
@@ -165,8 +151,3 @@ class SqlServerMaterializer(BaseMaterializer):
         return self._last_io_debug
 
 
-def _esc_ident(name: str) -> str:
-    """Escape a SQL Server identifier (column/table name)."""
-    # SQL Server uses [brackets] for quoting identifiers
-    # Double any internal brackets
-    return "[" + name.replace("]", "]]") + "]"

@@ -32,8 +32,7 @@ def render_profile(
         return render_markdown(profile)
     elif format == "llm":
         return render_llm(profile)
-    else:
-        return render_rich(profile)
+    return render_rich(profile)
 
 
 __all__ = ["render_profile", "render_json", "render_markdown", "render_rich", "render_llm"]

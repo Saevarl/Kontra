@@ -8,12 +8,13 @@ Supports Parquet and CSV files (local + S3/HTTP).
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 
-_logger = logging.getLogger(__name__)
+from kontra.logging import get_logger
+
+_logger = get_logger(__name__)
 
 try:
     import pyarrow.parquet as pq
@@ -82,10 +83,9 @@ class DuckDBBackend:
             try:
                 meta = self._get_parquet_metadata()
                 if meta:
-                    if os.getenv("KONTRA_VERBOSE"):
-                        print(f"[INFO] Parquet metadata: {meta.num_rows} rows from footer")
+                    _logger.info(f"Parquet metadata: {meta.num_rows} rows from footer")
                     return meta.num_rows
-            except (OSError, IOError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 _logger.debug(f"Could not get row count from Parquet metadata: {e}")
 
         # Fall back to query
@@ -99,7 +99,7 @@ class DuckDBBackend:
                 meta = self._get_parquet_metadata()
                 if meta:
                     return meta.serialized_size
-            except (OSError, IOError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 _logger.debug(f"Could not get size from Parquet metadata: {e}")
         return None
 
@@ -170,7 +170,6 @@ class DuckDBBackend:
 
     @property
     def source_format(self) -> str:
-        """Return source format."""
         return self.handle.format or "unknown"
 
     # ----------------------------- Internal methods -----------------------------
@@ -276,7 +275,7 @@ class DuckDBBackend:
             self._parquet_metadata = pf.metadata
             return self._parquet_metadata
 
-        except (OSError, IOError, ValueError) as e:
+        except (OSError, ValueError) as e:
             _logger.debug(f"Could not read Parquet metadata: {e}")
             return None
 
@@ -348,7 +347,6 @@ class DuckDBBackend:
                     if stats.num_values is not None:
                         col_stats[col_name]["num_values"] += stats.num_values
 
-        # Build result dict
         result: Dict[str, Dict[str, Any]] = {}
 
         for col_name, raw_type in schema:

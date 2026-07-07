@@ -29,6 +29,7 @@ from kontra.config.settings import (
 from kontra.errors import (
     ConfigParseError,
     ConfigValidationError,
+    DatasourceTableError,
     UnknownEnvironmentError,
 )
 
@@ -447,7 +448,7 @@ datasources:
         assert "staging_db" in str(exc_info.value)
 
     def test_unknown_table_raises(self, tmp_path, monkeypatch):
-        """Unknown table raises ValueError."""
+        """Unknown table in known datasource raises DatasourceTableError."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".kontra").mkdir()
         (tmp_path / ".kontra" / "config.yml").write_text("""
@@ -460,10 +461,31 @@ datasources:
     tables:
       users: public.users
 """)
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(DatasourceTableError) as exc_info:
             resolve_datasource("prod_db.orders")
-        assert "Unknown table" in str(exc_info.value)
-        assert "orders" in str(exc_info.value)
+        error_msg = str(exc_info.value)
+        assert "Unknown table 'orders' in datasource 'prod_db'" in error_msg
+        assert "users" in error_msg  # shows available tables
+
+    def test_unknown_table_not_swallowed_as_file_path(self, tmp_path, monkeypatch):
+        """DatasourceTableError is NOT a ValueError, so fallback handlers don't swallow it."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".kontra").mkdir()
+        (tmp_path / ".kontra" / "config.yml").write_text("""
+version: "1"
+datasources:
+  local_data:
+    type: files
+    base_path: ./data
+    tables:
+      users: users.parquet
+""")
+        # DatasourceTableError should NOT be caught by except ValueError
+        with pytest.raises(DatasourceTableError):
+            resolve_datasource("local_data.nonexistent")
+
+        # Verify it's NOT a ValueError (this is the key distinction)
+        assert not issubclass(DatasourceTableError, ValueError)
 
     def test_env_var_substitution_in_datasource(self, tmp_path, monkeypatch):
         """Environment variables are substituted in datasource configs."""
@@ -607,3 +629,49 @@ datasources:
         with pytest.raises(ValueError) as exc_info:
             resolve_datasource("users")
         assert "No config file exists" in str(exc_info.value)
+
+
+class TestBackwardCompatibility:
+    """BUG-001: Pre-0.6.4 configs with preplan: auto should not crash."""
+
+    def test_preplan_auto_accepted(self):
+        """preplan: 'auto' is accepted by DefaultsConfig."""
+        cfg = DefaultsConfig(preplan="auto")
+        assert cfg.preplan == "auto"
+
+    def test_preplan_auto_env_accepted(self):
+        """preplan: 'auto' is accepted by EnvironmentConfig."""
+        from kontra.config.settings import EnvironmentConfig
+        cfg = EnvironmentConfig(preplan="auto")
+        assert cfg.preplan == "auto"
+
+    def test_effective_config_auto_maps_to_on(self, tmp_path, monkeypatch):
+        """preplan: auto in config file is mapped to 'on' in effective config."""
+        config_dir = tmp_path / ".kontra"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yml"
+        config_file.write_text(yaml.dump({
+            "version": "1",
+            "defaults": {"preplan": "auto"},
+        }))
+        monkeypatch.chdir(tmp_path)
+        from kontra.config.settings import resolve_effective_config
+        effective = resolve_effective_config()
+        assert effective.preplan == "on"
+
+
+class TestDefaultPreset:
+    """BUG-002: Default scout_preset should be 'scan', not 'standard'."""
+
+    def test_default_preset_is_scan(self):
+        """EffectiveConfig default scout_preset is 'scan'."""
+        from kontra.config.settings import EffectiveConfig
+        cfg = EffectiveConfig()
+        assert cfg.scout_preset == "scan"
+
+    def test_config_show_default_preset(self):
+        """to_dict() shows 'scan' as default preset."""
+        from kontra.config.settings import EffectiveConfig
+        cfg = EffectiveConfig()
+        d = cfg.to_dict()
+        assert d["profile"]["preset"] == "scan"

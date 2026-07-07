@@ -24,6 +24,7 @@ def compare(
     *,
     sample_limit: int = 5,
     save: bool = False,
+    storage_options: Optional[Dict[str, Any]] = None,
 ) -> CompareResult:
     """
     Compare two datasets to measure transformation effects.
@@ -66,15 +67,14 @@ def compare(
         key = [key]
 
     # Load data if paths provided
-    before_df = load_data(before)
-    after_df = load_data(after)
+    before_df = load_data(before, storage_options=storage_options)
+    after_df = load_data(after, storage_options=storage_options)
 
     # Compute the comparison
     result = _compute_compare(before_df, after_df, key, sample_limit)
 
-    # TODO: Implement save functionality
     if save:
-        pass
+        raise NotImplementedError("Probe save not yet implemented")
 
     return result
 

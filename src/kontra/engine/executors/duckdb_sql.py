@@ -15,19 +15,22 @@ to avoid a second CSV parse.
 """
 
 import logging
-import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-import duckdb
+if TYPE_CHECKING:
+    import duckdb
 
-_logger = logging.getLogger(__name__)
+from kontra.logging import get_logger
+
+_logger = get_logger(__name__)
 
 # --- Kontra Imports ---
 from kontra.engine.backends.duckdb_session import create_duckdb_connection
 from kontra.engine.backends.duckdb_utils import esc_ident, lit_str
 from kontra.connectors.handle import DatasetHandle
+from kontra.connectors.uri_utils import is_azure_uri
 from kontra.engine.sql_utils import (
     esc_ident as sql_esc_ident,
     # Aggregate functions (exact counts)
@@ -68,16 +71,65 @@ from kontra.engine.sql_utils import (
     RULE_KIND_TO_FAILURE_MODE,
 )
 
-# Optional: s3fs + polars for fallback when DuckDB httpfs fails
-try:
-    import s3fs
-    import polars as pl
-    _HAS_S3FS = True
-except ImportError:
-    _HAS_S3FS = False
+def _has_s3fs() -> bool:
+    """s3fs + polars availability for the S3 CSV fallback (lazy: keeps module import light)."""
+    try:
+        import polars  # noqa: F401
+        import s3fs  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 from .base import SqlExecutor
 from .registry import register_executor
+
+
+# ------------------------------ Azure error helper -------------------------- #
+
+def _raise_if_azure_error(handle: DatasetHandle, exc: duckdb.Error) -> None:
+    """
+    If the handle points to an Azure URI, wrap the DuckDB error with a clear message.
+
+    Raises AzureAccessError for Azure URIs, otherwise does nothing (caller re-raises).
+    """
+    if is_azure_uri(handle.uri):
+        from kontra.errors import AzureAccessError
+        raise AzureAccessError(handle.uri, str(exc)) from exc
+
+
+# ------------------------------ Column helpers ------------------------------ #
+
+def _get_required_columns(spec: Dict[str, Any]) -> set:
+    """Extract the set of column names required by a rule spec."""
+    cols = set()
+    kind = spec.get("kind")
+
+    # Single column rules
+    if kind in ("not_null", "unique", "allowed_values", "disallowed_values",
+                "range", "length", "regex", "contains", "starts_with", "ends_with",
+                "freshness", "dtype"):
+        col = spec.get("column")
+        if col:
+            cols.add(col)
+
+    # Two column rules
+    elif kind == "compare":
+        if spec.get("left"):
+            cols.add(spec["left"])
+        if spec.get("right"):
+            cols.add(spec["right"])
+
+    # Conditional rules (column + when_column)
+    elif kind in ("conditional_not_null", "conditional_range"):
+        if spec.get("column"):
+            cols.add(spec["column"])
+        if spec.get("when_column"):
+            cols.add(spec["when_column"])
+
+    # Dataset rules (min_rows, max_rows) don't need columns
+    # custom_agg rules - we can't easily determine columns, assume valid
+
+    return cols
 
 
 # ------------------------------- CSV helpers -------------------------------- #
@@ -128,8 +180,10 @@ def _stage_csv_to_parquet_with_s3fs(
     Returns:
         (parquet_path, tmpdir) — tmpdir MUST be kept alive by the caller.
     """
-    if not _HAS_S3FS:
+    if not _has_s3fs():
         raise ImportError("s3fs and polars required for S3 CSV fallback")
+    import polars as pl
+    import s3fs
 
     tmpdir = tempfile.TemporaryDirectory(prefix="kontra_csv_stage_s3fs_")
     stage_path = Path(tmpdir.name) / "kontra_stage.parquet"
@@ -163,8 +217,7 @@ def _stage_csv_to_parquet_with_s3fs(
         df = pl.read_csv(f)
     df.write_parquet(str(stage_path))
 
-    if os.getenv("KONTRA_VERBOSE"):
-        print(f"[INFO] Staged S3 CSV via s3fs+Polars: {handle.uri} → {stage_path}")
+    _logger.info(f"Staged S3 CSV via s3fs+Polars: {handle.uri} → {stage_path}")
 
     return str(stage_path), tmpdir
 
@@ -182,13 +235,19 @@ def _create_source_view(
     Returns:
         (owned_tmpdir, staged_parquet_path, mode_used)
     """
+    import duckdb
+
     _install_httpfs(con, handle)
 
     if not _is_csv(handle):
-        con.execute(
-            f"CREATE OR REPLACE VIEW {esc_ident(view)} AS "
-            f"SELECT * FROM read_parquet({lit_str(handle.uri)})"
-        )
+        try:
+            con.execute(
+                f"CREATE OR REPLACE VIEW {esc_ident(view)} AS "
+                f"SELECT * FROM read_parquet({lit_str(handle.uri)})"
+            )
+        except duckdb.Error as e:
+            _raise_if_azure_error(handle, e)
+            raise
         return None, None, "parquet"
 
     mode = (csv_mode or "auto").lower()
@@ -223,9 +282,8 @@ def _create_source_view(
         )
         is_s3 = (handle.scheme or "").lower() == "s3"
 
-        if is_connection_error and is_s3 and _HAS_S3FS:
-            if os.getenv("KONTRA_VERBOSE"):
-                print(f"[INFO] DuckDB httpfs failed for S3 CSV, falling back to s3fs+Polars: {e}")
+        if is_connection_error and is_s3 and _has_s3fs():
+            _logger.info(f"DuckDB httpfs failed for S3 CSV, falling back to s3fs+Polars: {e}")
             staged_path, tmpdir = _stage_csv_to_parquet_with_s3fs(handle)
         else:
             raise
@@ -566,6 +624,8 @@ class DuckDBSqlExecutor(SqlExecutor):
             "staging": {"path": <parquet_path>|None, "tmpdir": <TemporaryDirectory>|None}
           }
         """
+        import duckdb
+
         exists_specs = compiled_plan.get("exists_specs", [])
         aggregate_selects = compiled_plan.get("aggregate_selects", [])
 
@@ -587,6 +647,37 @@ class DuckDBSqlExecutor(SqlExecutor):
 
         try:
             tmpdir, staged_path, _ = _create_source_view(con, handle, view, csv_mode=csv_mode)
+
+            # Get available columns to filter out rules with missing columns
+            cur = con.execute(f"SELECT * FROM {esc_ident(view)} LIMIT 0")
+            available_cols_set = {d[0] for d in cur.description} if cur.description else set()
+
+            # Filter exists_specs to only include rules with valid columns
+            valid_exists_specs = []
+            for spec in exists_specs:
+                cols_needed = _get_required_columns(spec)
+                if cols_needed <= available_cols_set:
+                    valid_exists_specs.append(spec)
+                else:
+                    # Rule has missing columns - skip SQL, will fall back to Polars
+                    missing = cols_needed - available_cols_set
+                    _logger.debug(f"Skipping SQL for {spec.get('rule_id')}: missing columns {missing}")
+            exists_specs = valid_exists_specs
+
+            # Filter aggregate_specs similarly
+            aggregate_specs_list = compiled_plan.get("aggregate_specs", [])
+            valid_aggregate_specs = []
+            valid_aggregate_selects = []
+            for i, spec in enumerate(aggregate_specs_list):
+                cols_needed = _get_required_columns(spec)
+                if cols_needed <= available_cols_set:
+                    valid_aggregate_specs.append(spec)
+                    if i < len(aggregate_selects):
+                        valid_aggregate_selects.append(aggregate_selects[i])
+                else:
+                    missing = cols_needed - available_cols_set
+                    _logger.debug(f"Skipping SQL for {spec.get('rule_id')}: missing columns {missing}")
+            aggregate_selects = valid_aggregate_selects
 
             # Phase 1: EXISTS checks (early termination for tally=False)
             if exists_specs:
@@ -674,9 +765,10 @@ class DuckDBSqlExecutor(SqlExecutor):
                 "row_count": row_count,
                 "available_cols": available_cols,
             }
-        except duckdb.Error:
+        except duckdb.Error as e:
             if tmpdir is not None:
                 tmpdir.cleanup()
+            _raise_if_azure_error(handle, e)
             raise
         finally:
             try:
@@ -699,6 +791,8 @@ class DuckDBSqlExecutor(SqlExecutor):
             "staging": {"path": <parquet_path>|None, "tmpdir": <TemporaryDirectory>|None}
           }
         """
+        import duckdb
+
         con = create_duckdb_connection(handle)
         view = "_data"
         tmpdir: Optional[tempfile.TemporaryDirectory] = None
@@ -715,9 +809,10 @@ class DuckDBSqlExecutor(SqlExecutor):
                 "available_cols": cols,
                 "staging": {"path": staged_path, "tmpdir": tmpdir},
             }
-        except duckdb.Error:
+        except duckdb.Error as e:
             if tmpdir is not None:
                 tmpdir.cleanup()
+            _raise_if_azure_error(handle, e)
             raise
         finally:
             try:

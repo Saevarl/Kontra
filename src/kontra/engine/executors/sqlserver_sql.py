@@ -23,7 +23,7 @@ NOT supported (falls back to Polars):
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
@@ -99,8 +99,7 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
         elif handle.db_params:
             params: SqlServerConnectionParams = handle.db_params
             return f"{self._esc(params.schema)}.{self._esc(params.table)}"
-        else:
-            raise ValueError("Handle has neither table_ref nor db_params")
+        raise ValueError("Handle has neither table_ref nor db_params")
 
     def _get_schema_and_table(self, handle: DatasetHandle) -> Tuple[str, str]:
         """
@@ -115,8 +114,7 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
         elif handle.db_params:
             params: SqlServerConnectionParams = handle.db_params
             return params.schema, params.table
-        else:
-            raise ValueError("Handle has neither table_ref nor db_params")
+        raise ValueError("Handle has neither table_ref nor db_params")
 
     def introspect(self, handle: DatasetHandle, **kwargs) -> Dict[str, Any]:
         """

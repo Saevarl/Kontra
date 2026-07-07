@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Callable, Dict, List
 from kontra.connectors.handle import DatasetHandle
 
 if TYPE_CHECKING:
-    # Import from the new base file
     from .base import BaseMaterializer as Materializer
     from .duckdb import DuckDBMaterializer  # noqa: F401
     from .polars_connector import PolarsConnectorMaterializer  # noqa: F401
@@ -71,11 +70,10 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
                 "SQL Server materializer not registered. "
                 "Ensure pymssql is installed: pip install pymssql"
             )
-        else:
-            raise RuntimeError(
-                f"Unsupported BYOC dialect: {handle.dialect}. "
-                "Supported: postgresql, sqlserver"
-            )
+        raise RuntimeError(
+            f"Unsupported BYOC dialect: {handle.dialect}. "
+            "Supported: postgresql, sqlserver"
+        )
 
     # PostgreSQL: use dedicated materializer
     if handle.scheme in ("postgres", "postgresql"):

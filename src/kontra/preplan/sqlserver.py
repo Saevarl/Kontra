@@ -19,59 +19,11 @@ from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.sqlserver import SqlServerConnectionParams, get_connection
 
 from .types import PrePlan, Decision
+from .dtype_utils import ss_dtype_matches as _sqlserver_dtype_matches
 
 
 # Predicate format: (rule_id, column, op, value)
 Predicate = Tuple[str, str, str, Any]
-
-
-def _sqlserver_dtype_matches(sql_type: str, expected: str) -> bool:
-    """
-    Check if SQL Server data type matches expected dtype specification.
-
-    Args:
-        sql_type: Type name from sys.types (e.g., 'int', 'varchar', 'bigint')
-        expected: User's expected dtype (e.g., 'int', 'string', 'int64')
-    """
-    sql_type = (sql_type or "").lower()
-    expected = expected.lower()
-
-    # Integer family
-    if expected in ("int", "integer"):
-        return sql_type in ("tinyint", "smallint", "int", "bigint")
-    if expected in ("int8", "int16"):
-        return sql_type in ("tinyint", "smallint")
-    if expected == "int32":
-        return sql_type == "int"
-    if expected == "int64":
-        return sql_type == "bigint"
-
-    # Float family
-    if expected in ("float", "float64", "double"):
-        return sql_type in ("float", "real", "decimal", "numeric", "money", "smallmoney")
-    if expected == "float32":
-        return sql_type == "real"
-    if expected == "numeric":
-        return sql_type in ("tinyint", "smallint", "int", "bigint", "float", "real", "decimal", "numeric")
-
-    # String family
-    if expected in ("string", "str", "utf8", "text"):
-        return sql_type in ("char", "varchar", "text", "nchar", "nvarchar", "ntext")
-
-    # Boolean
-    if expected in ("bool", "boolean"):
-        return sql_type == "bit"
-
-    # Date/time
-    if expected == "date":
-        return sql_type == "date"
-    if expected == "datetime":
-        return sql_type in ("datetime", "datetime2", "smalldatetime", "datetimeoffset")
-    if expected == "time":
-        return sql_type == "time"
-
-    # Exact match fallback
-    return expected == sql_type
 
 
 def fetch_sqlserver_metadata(

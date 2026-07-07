@@ -1,12 +1,14 @@
 from __future__ import annotations
-from typing import Dict, Any, Optional
-import polars as pl
+from typing import Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.state.types import FailureMode
 
-@register_rule("max_rows")
+@register_rule("max_rows", _builtin=True)
 class MaxRowsRule(BaseRule):
     rule_scope = "dataset"
     supports_tally = False

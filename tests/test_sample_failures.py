@@ -668,12 +668,22 @@ class TestEagerSampling:
     def test_samples_populated_during_validation(self):
         """Samples are populated during validate() call when sample > 0."""
         df = pl.DataFrame({"email": [None, "a@b.com", None]})
-        result = kontra.validate(df, rules=[rules.not_null("email")], sample=5)
+        # Use tally=True to get all samples (fail-fast caps at 1)
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=5, tally=True)
 
         r = result.rules[0]
         assert r.samples is not None
         assert len(r.samples) == 2
         assert r.samples_source == "polars"
+
+    def test_fail_fast_caps_samples_at_one(self):
+        """In fail-fast mode (tally=False), samples are capped at 1 per rule."""
+        df = pl.DataFrame({"email": [None, "a@b.com", None, None, None]})
+        result = kontra.validate(df, rules=[rules.not_null("email")], sample=5, tally=False)
+
+        r = result.rules[0]
+        assert r.samples is not None
+        assert len(r.samples) == 1  # Capped at 1 in fail-fast mode
 
     def test_passing_rule_has_empty_samples(self):
         """Passing rules have samples=[] and reason=rule_passed."""
@@ -728,6 +738,7 @@ class TestEagerSampling:
             ],
             sample=3,
             sample_budget=4,  # Only enough for ~1 rule
+            tally=True,  # Need tally=True to get multiple samples per rule
         )
 
         # Sort by failed_count to find worst offenders
@@ -826,7 +837,8 @@ class TestEagerSamplingWithParquet:
 
     def test_parquet_preplan_still_samples(self, parquet_with_nulls):
         """Parquet files with preplan still get samples (file can be read)."""
-        result = kontra.validate(parquet_with_nulls, rules=[rules.not_null("email")], sample=5)
+        # Use tally=True to get multiple samples (fail-fast caps at 1)
+        result = kontra.validate(parquet_with_nulls, rules=[rules.not_null("email")], sample=5, tally=True)
 
         r = result.rules[0]
         # Even if preplan was used, we can still sample from file
@@ -997,6 +1009,34 @@ class TestSampleColumnProjection:
         assert "_duplicate_count" in sample_keys
         assert "code" in sample_keys
         assert "row_index" in sample_keys
+
+    def test_comma_separated_string_columns(self, df_many_columns):
+        """sample_columns as comma-separated string restricts output columns."""
+        result = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            sample=5,
+            sample_columns="id,email",
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        sample_keys = set(r.samples[0].keys())
+        assert sample_keys == {"row_index", "id", "email"}
+
+    def test_comma_separated_string_with_spaces(self, df_many_columns):
+        """sample_columns as comma-separated string with spaces works."""
+        result = kontra.validate(
+            df_many_columns,
+            rules=[rules.not_null("email")],
+            sample=5,
+            sample_columns="id, email",
+            save=False
+        )
+        r = result.rules[0]
+        assert r.samples is not None
+        sample_keys = set(r.samples[0].keys())
+        assert sample_keys == {"row_index", "id", "email"}
 
     def test_token_efficiency(self, df_many_columns):
         """Column projection reduces JSON output size."""

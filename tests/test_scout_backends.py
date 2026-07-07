@@ -143,6 +143,75 @@ class TestPostgreSQLBackendUnit:
         assert result["stale_ratio"] == 1.0
         assert result["is_fresh"] is False
 
+    def test_check_stats_staleness_fresh(self, pg_backend):
+        """check_stats_staleness returns None when stats are fresh."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (
+            10000,  # n_live_tup
+            500,  # n_mod_since_analyze (5% stale)
+            datetime(2024, 1, 15, 10, 30, 0),  # last_analyze
+            datetime(2024, 1, 14, 5, 0, 0),  # last_autoanalyze
+        )
+        pg_backend._conn.cursor.return_value.__enter__ = MagicMock(
+            return_value=mock_cursor
+        )
+        pg_backend._conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = pg_backend.check_stats_staleness()
+        assert result is None  # Fresh stats, no warning
+
+    def test_check_stats_staleness_never_analyzed(self, pg_backend):
+        """check_stats_staleness warns when table was never ANALYZEd."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (
+            10000,  # n_live_tup
+            0,  # n_mod_since_analyze
+            None,  # last_analyze (never)
+            None,  # last_autoanalyze (never)
+        )
+        pg_backend._conn.cursor.return_value.__enter__ = MagicMock(
+            return_value=mock_cursor
+        )
+        pg_backend._conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = pg_backend.check_stats_staleness()
+        assert result is not None
+        assert "never been ANALYZEd" in result
+        assert "Run ANALYZE" in result
+
+    def test_check_stats_staleness_significant_drift(self, pg_backend):
+        """check_stats_staleness warns when many rows modified since ANALYZE."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = (
+            10000,  # n_live_tup
+            5000,  # n_mod_since_analyze (50% stale)
+            datetime(2024, 1, 15, 10, 30, 0),  # last_analyze
+            None,  # last_autoanalyze
+        )
+        pg_backend._conn.cursor.return_value.__enter__ = MagicMock(
+            return_value=mock_cursor
+        )
+        pg_backend._conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = pg_backend.check_stats_staleness()
+        assert result is not None
+        assert "5,000 rows modified" in result
+        assert "50%" in result
+        assert "Run ANALYZE" in result
+
+    def test_check_stats_staleness_no_stats_row(self, pg_backend):
+        """check_stats_staleness warns when no pg_stat_user_tables row exists."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = None  # No row
+        pg_backend._conn.cursor.return_value.__enter__ = MagicMock(
+            return_value=mock_cursor
+        )
+        pg_backend._conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = pg_backend.check_stats_staleness()
+        assert result is not None
+        assert "never been ANALYZEd" in result
+
     def test_classify_columns(self, pg_backend):
         """classify_columns correctly categorizes column cardinality."""
         pg_backend._pg_stats = {
@@ -349,6 +418,9 @@ class TestBackendInterface:
         assert hasattr(PostgreSQLBackend, "fetch_low_cardinality_values_batched")
         assert hasattr(PostgreSQLBackend, "classify_columns")
 
+        # Check staleness check method
+        assert hasattr(PostgreSQLBackend, "check_stats_staleness")
+
     def test_sqlserver_has_required_methods(self):
         """SqlServerBackend has all required optimization methods."""
         from kontra.scout.backends.sqlserver_backend import SqlServerBackend
@@ -371,3 +443,90 @@ class TestBackendInterface:
         # Check metadata-only methods
         assert hasattr(DuckDBBackend, "supports_metadata_only")
         assert hasattr(DuckDBBackend, "profile_metadata_only")
+
+
+class TestDatasetProfileWarnings:
+    """Tests for DatasetProfile warnings field."""
+
+    def test_warnings_default_empty(self):
+        """DatasetProfile warnings default to empty list."""
+        from kontra.scout.types import DatasetProfile
+
+        profile = DatasetProfile(
+            source_uri="test.parquet",
+            source_format="parquet",
+            profiled_at="2024-01-01T00:00:00Z",
+            engine_version="0.1.0",
+        )
+        assert profile.warnings == []
+
+    def test_warnings_in_to_dict(self):
+        """Warnings are included in to_dict output when present."""
+        from kontra.scout.types import DatasetProfile
+
+        profile = DatasetProfile(
+            source_uri="test.parquet",
+            source_format="parquet",
+            profiled_at="2024-01-01T00:00:00Z",
+            engine_version="0.1.0",
+            warnings=["pg_stats may be stale"],
+        )
+        d = profile.to_dict()
+        assert "warnings" in d
+        assert d["warnings"] == ["pg_stats may be stale"]
+
+    def test_warnings_omitted_from_to_dict_when_empty(self):
+        """Warnings key is omitted from to_dict when empty (cleaner output)."""
+        from kontra.scout.types import DatasetProfile
+
+        profile = DatasetProfile(
+            source_uri="test.parquet",
+            source_format="parquet",
+            profiled_at="2024-01-01T00:00:00Z",
+            engine_version="0.1.0",
+        )
+        d = profile.to_dict()
+        assert "warnings" not in d
+
+    def test_warnings_roundtrip_from_dict(self):
+        """Warnings survive to_dict -> from_dict round-trip."""
+        from kontra.scout.types import DatasetProfile
+
+        original = DatasetProfile(
+            source_uri="postgres:///public.users",
+            source_format="postgres",
+            profiled_at="2024-01-01T00:00:00Z",
+            engine_version="0.1.0",
+            warnings=["pg_stats may be stale: table has never been ANALYZEd."],
+        )
+        d = original.to_dict()
+        restored = DatasetProfile.from_dict(d)
+        assert restored.warnings == original.warnings
+
+    def test_warnings_in_to_llm(self):
+        """Warnings appear in to_llm output."""
+        from kontra.scout.types import DatasetProfile
+
+        profile = DatasetProfile(
+            source_uri="postgres:///public.users",
+            source_format="postgres",
+            profiled_at="2024-01-01T00:00:00Z",
+            engine_version="0.1.0",
+            warnings=["pg_stats may be stale"],
+        )
+        llm_output = profile.to_llm()
+        assert "WARNING: pg_stats may be stale" in llm_output
+
+    def test_warnings_in_repr(self):
+        """Warnings appear in repr output."""
+        from kontra.scout.types import DatasetProfile
+
+        profile = DatasetProfile(
+            source_uri="postgres:///public.users",
+            source_format="postgres",
+            profiled_at="2024-01-01T00:00:00Z",
+            engine_version="0.1.0",
+            warnings=["pg_stats may be stale"],
+        )
+        repr_output = repr(profile)
+        assert "Warning: pg_stats may be stale" in repr_output

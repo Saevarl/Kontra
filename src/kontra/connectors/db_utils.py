@@ -9,10 +9,14 @@ postgres.py and sqlserver.py.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, unquote
 import os
+
+if TYPE_CHECKING:
+    from kontra.connectors.handle import DatasetHandle
 
 
 @dataclass
@@ -249,3 +253,85 @@ def _validate_required_fields(
             f"  {config.uri_example.split('/')[0]}///{config.default_schema}.users "
             f"(with {config.env_database} set)"
         )
+
+
+def mask_credentials(uri: str) -> str:
+    """
+    Mask credentials in a URI for safe display in logs/output.
+
+    Handles patterns like:
+    - postgres://user:password@host/db -> postgres://user:***@host/db
+    - mssql://sa:Secret123!@host/db -> mssql://sa:***@host/db
+    - Any URI with ://user:password@ pattern (including @ in password)
+
+    Args:
+        uri: URI that may contain credentials
+
+    Returns:
+        URI with password masked as '***'
+    """
+    if not uri or "://" not in uri:
+        return uri
+
+    # Use urlparse for robust handling of credentials
+    try:
+        parsed = urlparse(uri)
+        if parsed.password:
+            # Reconstruct with masked password
+            # netloc format: user:password@host:port
+            if parsed.port:
+                new_netloc = f"{parsed.username}:***@{parsed.hostname}:{parsed.port}"
+            else:
+                new_netloc = f"{parsed.username}:***@{parsed.hostname}"
+            return uri.replace(parsed.netloc, new_netloc)
+    except (ValueError, AttributeError):
+        pass  # URI parsing failed
+
+    return uri
+
+
+# --------------------------------------------------------------------------- #
+# Connection context manager
+# --------------------------------------------------------------------------- #
+
+@contextmanager
+def get_connection_ctx(handle: "DatasetHandle", dialect: str):
+    """
+    Get a connection context for either BYOC or URI-based handles.
+
+    For BYOC, yields the external connection directly (not owned by us).
+    For URI-based, yields a new connection (owned by context manager).
+
+    Args:
+        handle: DatasetHandle with connection info
+        dialect: "postgres" or "sqlserver"
+    """
+    if handle.scheme == "byoc" and handle.external_conn is not None:
+        # BYOC: yield external connection directly, don't close it
+        yield handle.external_conn
+    elif handle.db_params:
+        # URI-based: use our connection manager
+        if dialect == "postgres":
+            from kontra.connectors.postgres import get_connection
+        elif dialect in ("sqlserver", "mssql"):
+            from kontra.connectors.sqlserver import get_connection
+        else:
+            raise ValueError(f"Unknown dialect: {dialect}")
+        with get_connection(handle.db_params) as conn:
+            yield conn
+    else:
+        raise ValueError("Handle has neither external_conn nor db_params")
+
+
+# --------------------------------------------------------------------------- #
+# Identifier quoting
+# --------------------------------------------------------------------------- #
+
+def pg_quote_ident(name: str) -> str:
+    """Escape a PostgreSQL identifier (column/table name)."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def ss_quote_ident(name: str) -> str:
+    """Escape a SQL Server identifier (column/table name)."""
+    return "[" + name.replace("]", "]]") + "]"

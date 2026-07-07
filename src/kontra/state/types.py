@@ -112,7 +112,6 @@ class Annotation:
 
     @classmethod
     def from_json(cls, json_str: str) -> "Annotation":
-        """Deserialize from JSON string."""
         return cls.from_dict(json.loads(json_str))
 
     def to_llm(self) -> str:
@@ -423,6 +422,7 @@ class ValidationState:
 
     # Optional context
     duration_ms: Optional[int] = None
+    tally: Optional[bool] = None  # Tally mode used during validation (None = unknown / old run)
 
     # Database-assigned ID for normalized schema (v0.5)
     id: Optional[int] = None
@@ -444,6 +444,8 @@ class ValidationState:
             "rules": [r.to_dict(include_annotations=include_annotations) for r in self.rules],
             "duration_ms": self.duration_ms,
         }
+        if self.tally is not None:
+            d["tally"] = self.tally
         if self.id is not None:
             d["id"] = self.id
         if include_annotations and self.annotations:
@@ -474,12 +476,12 @@ class ValidationState:
             summary=StateSummary.from_dict(d["summary"]),
             rules=[RuleState.from_dict(r) for r in d["rules"]],
             duration_ms=d.get("duration_ms"),
+            tally=d.get("tally"),
             id=d.get("id"),
             annotations=annotations,
         )
 
     def to_json(self, indent: int = 2, include_annotations: bool = False) -> str:
-        """Serialize to JSON string."""
         return json.dumps(
             self.to_dict(include_annotations=include_annotations),
             indent=indent,
@@ -488,7 +490,6 @@ class ValidationState:
 
     @classmethod
     def from_json(cls, json_str: str) -> "ValidationState":
-        """Deserialize from JSON string."""
         return cls.from_dict(json.loads(json_str))
 
     @classmethod
@@ -499,6 +500,7 @@ class ValidationState:
         dataset_fingerprint: Optional[str],
         contract_name: str,
         dataset_uri: str,
+        tally: Optional[bool] = None,
     ) -> ValidationState:
         """
         Create a ValidationState from engine.run() result.
@@ -509,6 +511,7 @@ class ValidationState:
             dataset_fingerprint: Hash of dataset metadata (optional)
             contract_name: Name from contract
             dataset_uri: URI of the dataset
+            tally: Tally mode used during validation (None = per-rule default)
         """
         summary_data = result.get("summary", {})
         results_list = result.get("results", [])
@@ -567,6 +570,7 @@ class ValidationState:
             summary=summary,
             rules=rules,
             duration_ms=duration_ms,
+            tally=tally,
         )
 
     def get_rule(self, rule_id: str) -> Optional[RuleState]:
@@ -577,11 +581,9 @@ class ValidationState:
         return None
 
     def get_failed_rules(self) -> List[RuleState]:
-        """Get all failed rules."""
         return [r for r in self.rules if not r.passed]
 
     def get_passed_rules(self) -> List[RuleState]:
-        """Get all passed rules."""
         return [r for r in self.rules if r.passed]
 
     def to_llm(self) -> str:
@@ -785,6 +787,9 @@ class StateDiff:
     has_regressions: bool = False
     has_improvements: bool = False
 
+    # Warnings (metadata differences that may cause misleading diffs)
+    warnings: List[str] = field(default_factory=list)
+
     # Rule-level changes
     new_failures: List[RuleDiff] = field(default_factory=list)
     resolved: List[RuleDiff] = field(default_factory=list)
@@ -806,6 +811,16 @@ class StateDiff:
         """
         diff = cls(before=before, after=after)
         diff.status_changed = before.summary.passed != after.summary.passed
+
+        # Detect tally mode change (F-023)
+        if before.tally is not None and after.tally is not None:
+            if before.tally != after.tally:
+                before_label = "tally=True (exact counts)" if before.tally else "tally=False (early-stop)"
+                after_label = "tally=True (exact counts)" if after.tally else "tally=False (early-stop)"
+                diff.warnings.append(
+                    f"Tally mode changed between runs: {before_label} -> {after_label}. "
+                    f"Count differences may reflect the mode change, not actual data changes."
+                )
 
         # Index rules by ID
         before_rules = {r.rule_id: r for r in before.rules}
@@ -896,7 +911,7 @@ class StateDiff:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return {
+        d: Dict[str, Any] = {
             "before_run_at": self.before.run_at.isoformat(),
             "after_run_at": self.after.run_at.isoformat(),
             "contract_name": self.after.contract_name,
@@ -913,9 +928,11 @@ class StateDiff:
             "regressions": [r.to_dict() for r in self.regressions],
             "improvements": [r.to_dict() for r in self.improvements],
         }
+        if self.warnings:
+            d["warnings"] = self.warnings
+        return d
 
     def to_json(self, indent: int = 2) -> str:
-        """Serialize to JSON string."""
         return json.dumps(self.to_dict(), indent=indent, default=str)
 
     def to_llm(self) -> str:
@@ -940,6 +957,11 @@ class StateDiff:
         lines.append(f"# Diff: {self.after.contract_name}")
         lines.append(f"comparing: {before_ts} → {after_ts}")
         lines.append(f"status: {status}")
+
+        # Warnings about metadata differences
+        if self.warnings:
+            for warning in self.warnings:
+                lines.append(f"WARNING: {warning}")
 
         # Summary change
         if self.status_changed:

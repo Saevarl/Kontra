@@ -8,14 +8,15 @@ Uses pg_stats for efficient metadata queries and standard SQL for profiling.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.postgres import PostgresConnectionParams, get_connection
 from kontra.scout.dtype_mapping import normalize_dtype
 
-_logger = logging.getLogger(__name__)
+from kontra.logging import get_logger
+
+_logger = get_logger(__name__)
 
 # Lazy-loaded psycopg exception (psycopg may not be installed)
 _PsycopgError = None
@@ -63,7 +64,6 @@ class PostgreSQLBackend:
         self._conn = get_connection(self.params)
 
     def close(self) -> None:
-        """Close the connection."""
         if self._conn:
             self._conn.close()
             self._conn = None
@@ -120,8 +120,7 @@ class PostgreSQLBackend:
                 return int(row[0]) if row else 0
 
             # Use estimate for large tables
-            if os.getenv("KONTRA_VERBOSE"):
-                print(f"[INFO] pg_class estimate: {estimate} rows")
+            _logger.info(f"pg_class estimate: {estimate} rows")
             return int(estimate)
 
     def get_estimated_size_bytes(self) -> Optional[int]:
@@ -189,7 +188,6 @@ class PostgreSQLBackend:
             return []
 
     def fetch_distinct_values(self, column: str) -> List[Any]:
-        """Fetch all distinct values."""
         col = self.esc_ident(column)
         table = self._qualified_table()
         sql = f"""
@@ -207,7 +205,6 @@ class PostgreSQLBackend:
             return []
 
     def fetch_sample_values(self, column: str, limit: int) -> List[Any]:
-        """Fetch sample values."""
         col = self.esc_ident(column)
         table = self._qualified_table()
         sql = f"""
@@ -230,7 +227,6 @@ class PostgreSQLBackend:
 
     @property
     def source_format(self) -> str:
-        """Return source format."""
         return "postgres"
 
     # ----------------------------- Internal methods -----------------------------
@@ -383,6 +379,47 @@ class PostgreSQLBackend:
                 "stale_ratio": stale_ratio,
                 "is_fresh": stale_ratio < 0.2,
             }
+
+    def check_stats_staleness(self) -> Optional[str]:
+        """
+        Check if pg_stats may be stale and return a warning message if so.
+
+        Returns None if stats appear fresh, or a warning string if stale.
+
+        Heuristics:
+        - last_analyze and last_autoanalyze are both NULL -> never analyzed
+        - n_mod_since_analyze / n_live_tup > 0.2 -> significant drift
+        """
+        try:
+            freshness = self.get_table_freshness()
+        except _get_db_error() as e:
+            _logger.debug(f"Could not check stats staleness: {e}")
+            return None
+
+        last_analyze = freshness.get("last_analyze")
+        last_autoanalyze = freshness.get("last_autoanalyze")
+        stale_ratio = freshness.get("stale_ratio", 0.0)
+        n_live_tup = freshness.get("n_live_tup", 0)
+
+        # Never analyzed: stats are defaults (nulls=0, distinct=row_count)
+        if last_analyze is None and last_autoanalyze is None:
+            return (
+                "pg_stats may be stale: table has never been ANALYZEd. "
+                "Profile values (null counts, distinct counts) are estimates from "
+                "default statistics and may be inaccurate. Run ANALYZE on this table "
+                "for accurate profiling."
+            )
+
+        # Significant drift since last ANALYZE
+        if stale_ratio > 0.2 and n_live_tup > 0:
+            n_mod = freshness.get("n_mod_since_analyze", 0)
+            return (
+                f"pg_stats may be stale: {n_mod:,} rows modified since last ANALYZE "
+                f"({stale_ratio:.0%} of table). Profile values are estimates and "
+                f"may not reflect current data. Run ANALYZE for accurate results."
+            )
+
+        return None
 
     def supports_strategic_standard(self) -> bool:
         """Check if this backend supports strategic standard profiling."""

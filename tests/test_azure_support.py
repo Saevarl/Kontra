@@ -283,7 +283,7 @@ class TestAzureUriToPath:
 
     def test_abfss_with_account_in_netloc(self):
         """abfss://container@account.dfs.../path -> container/path"""
-        from kontra.engine.engine import _azure_uri_to_path
+        from kontra.connectors.uri_utils import azure_uri_to_path as _azure_uri_to_path
 
         uri = "abfss://mycontainer@myaccount.dfs.core.windows.net/folder/file.parquet"
         result = _azure_uri_to_path(uri)
@@ -291,7 +291,7 @@ class TestAzureUriToPath:
 
     def test_abfs_with_account_in_netloc(self):
         """abfs://container@account.dfs.../path -> container/path"""
-        from kontra.engine.engine import _azure_uri_to_path
+        from kontra.connectors.uri_utils import azure_uri_to_path as _azure_uri_to_path
 
         uri = "abfs://data@storage.dfs.core.windows.net/path/to/data.parquet"
         result = _azure_uri_to_path(uri)
@@ -299,7 +299,7 @@ class TestAzureUriToPath:
 
     def test_nested_path(self):
         """Nested paths are preserved."""
-        from kontra.engine.engine import _azure_uri_to_path
+        from kontra.connectors.uri_utils import azure_uri_to_path as _azure_uri_to_path
 
         uri = "abfss://container@account.dfs.core.windows.net/a/b/c/d.parquet"
         result = _azure_uri_to_path(uri)
@@ -307,7 +307,7 @@ class TestAzureUriToPath:
 
     def test_root_path(self):
         """File at container root."""
-        from kontra.engine.engine import _azure_uri_to_path
+        from kontra.connectors.uri_utils import azure_uri_to_path as _azure_uri_to_path
 
         uri = "abfss://container@account.dfs.core.windows.net/file.parquet"
         result = _azure_uri_to_path(uri)
@@ -367,26 +367,26 @@ class TestAzurePreplanHelpers:
 
     def test_is_azure_uri_abfss(self):
         """_is_azure_uri detects abfss:// URIs."""
-        from kontra.engine.engine import _is_azure_uri
+        from kontra.connectors.uri_utils import is_azure_uri as _is_azure_uri
 
         assert _is_azure_uri("abfss://container@account.dfs.core.windows.net/file.parquet")
         assert _is_azure_uri("ABFSS://container@account.dfs.core.windows.net/file.parquet")
 
     def test_is_azure_uri_abfs(self):
         """_is_azure_uri detects abfs:// URIs."""
-        from kontra.engine.engine import _is_azure_uri
+        from kontra.connectors.uri_utils import is_azure_uri as _is_azure_uri
 
         assert _is_azure_uri("abfs://container@account.dfs.core.windows.net/file.parquet")
 
     def test_is_azure_uri_az(self):
         """_is_azure_uri detects az:// URIs."""
-        from kontra.engine.engine import _is_azure_uri
+        from kontra.connectors.uri_utils import is_azure_uri as _is_azure_uri
 
         assert _is_azure_uri("az://container/path/file.parquet")
 
     def test_is_azure_uri_not_azure(self):
         """_is_azure_uri returns False for non-Azure URIs."""
-        from kontra.engine.engine import _is_azure_uri
+        from kontra.connectors.uri_utils import is_azure_uri as _is_azure_uri
 
         assert not _is_azure_uri("s3://bucket/key.parquet")
         assert not _is_azure_uri("/local/path/file.parquet")
@@ -395,7 +395,7 @@ class TestAzurePreplanHelpers:
 
     def test_create_azure_filesystem_with_account_key(self):
         """_create_azure_filesystem creates filesystem with account key."""
-        from kontra.engine.engine import _create_azure_filesystem
+        from kontra.connectors.uri_utils import create_azure_filesystem as _create_azure_filesystem
         from kontra.connectors.handle import DatasetHandle
         import pyarrow.fs as pafs
 
@@ -415,7 +415,7 @@ class TestAzurePreplanHelpers:
 
     def test_create_azure_filesystem_with_sas_token(self):
         """_create_azure_filesystem creates filesystem with SAS token."""
-        from kontra.engine.engine import _create_azure_filesystem
+        from kontra.connectors.uri_utils import create_azure_filesystem as _create_azure_filesystem
         from kontra.connectors.handle import DatasetHandle
         import pyarrow.fs as pafs
 
@@ -432,3 +432,197 @@ class TestAzurePreplanHelpers:
 
         fs = _create_azure_filesystem(handle)
         assert isinstance(fs, pafs.AzureFileSystem)
+
+
+class TestAzureCrypticErrorWrapping:
+    """F-030: Azure nonexistent container/file should give clear error, not cryptic DuckDB error."""
+
+    def test_materializer_wraps_duckdb_error_for_azure_uri(self):
+        """DuckDBMaterializer wraps DuckDB errors for Azure URIs with AzureAccessError."""
+        import duckdb
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.errors import AzureAccessError
+        from kontra.engine.materializers.duckdb import _raise_if_azure_error
+
+        handle = DatasetHandle(
+            uri="abfss://nonexistent@account.dfs.core.windows.net/missing.parquet",
+            scheme="abfss",
+            path="abfss://nonexistent@account.dfs.core.windows.net/missing.parquet",
+            format="parquet",
+            fs_opts={},
+        )
+
+        # Simulate a DuckDB error for Azure URI
+        duckdb_err = duckdb.Error(
+            "NotImplementedException: abfss do not manage recursive lookup patterns"
+        )
+        with pytest.raises(AzureAccessError) as exc_info:
+            _raise_if_azure_error(handle, duckdb_err)
+
+        error = exc_info.value
+        assert "Azure file not found or inaccessible" in str(error)
+        assert "nonexistent@account" in str(error)
+        assert "Check the container name" in str(error)
+
+    def test_executor_wraps_duckdb_error_for_azure_uri(self):
+        """DuckDB SQL executor wraps DuckDB errors for Azure URIs with AzureAccessError."""
+        import duckdb
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.errors import AzureAccessError
+        from kontra.engine.executors.duckdb_sql import _raise_if_azure_error
+
+        handle = DatasetHandle(
+            uri="abfs://container@account.dfs.core.windows.net/data.parquet",
+            scheme="abfs",
+            path="abfs://container@account.dfs.core.windows.net/data.parquet",
+            format="parquet",
+            fs_opts={},
+        )
+
+        duckdb_err = duckdb.Error("IOException: No such file or directory")
+        with pytest.raises(AzureAccessError) as exc_info:
+            _raise_if_azure_error(handle, duckdb_err)
+
+        error = exc_info.value
+        assert "Azure file not found or inaccessible" in str(error)
+        assert "container@account" in str(error)
+
+    def test_no_wrapping_for_non_azure_uri(self):
+        """Non-Azure URIs should NOT be wrapped — DuckDB error passes through."""
+        import duckdb
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.engine.materializers.duckdb import _raise_if_azure_error
+
+        handle = DatasetHandle(
+            uri="s3://bucket/data.parquet",
+            scheme="s3",
+            path="s3://bucket/data.parquet",
+            format="parquet",
+            fs_opts={},
+        )
+
+        duckdb_err = duckdb.Error("some S3 error")
+        # Should NOT raise — caller would re-raise the original error
+        _raise_if_azure_error(handle, duckdb_err)
+
+    def test_az_scheme_also_wrapped(self):
+        """az:// scheme (Azure Blob) errors are also wrapped."""
+        import duckdb
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.errors import AzureAccessError
+        from kontra.engine.materializers.duckdb import _raise_if_azure_error
+
+        handle = DatasetHandle(
+            uri="az://mycontainer/path/file.parquet",
+            scheme="az",
+            path="az://mycontainer/path/file.parquet",
+            format="parquet",
+            fs_opts={},
+        )
+
+        duckdb_err = duckdb.Error("some azure error")
+        with pytest.raises(AzureAccessError) as exc_info:
+            _raise_if_azure_error(handle, duckdb_err)
+
+        assert "az://mycontainer/path/file.parquet" in str(exc_info.value)
+
+    def test_azure_error_preserves_cause_chain(self):
+        """AzureAccessError preserves the original DuckDB error as __cause__."""
+        import duckdb
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.errors import AzureAccessError
+        from kontra.engine.materializers.duckdb import _raise_if_azure_error
+
+        handle = DatasetHandle(
+            uri="abfss://container@account.dfs.core.windows.net/data.parquet",
+            scheme="abfss",
+            path="abfss://container@account.dfs.core.windows.net/data.parquet",
+            format="parquet",
+            fs_opts={},
+        )
+
+        original_err = duckdb.Error("NotImplementedException: abfss recursive lookup")
+        with pytest.raises(AzureAccessError) as exc_info:
+            _raise_if_azure_error(handle, original_err)
+
+        # Verify error chain is preserved
+        assert exc_info.value.__cause__ is original_err
+
+    def test_azure_access_error_has_suggestions(self):
+        """AzureAccessError includes actionable suggestions."""
+        from kontra.errors import AzureAccessError
+
+        error = AzureAccessError(
+            "abfss://container@account.dfs.core.windows.net/file.parquet",
+            "NotImplementedException: abfss do not manage recursive lookup patterns"
+        )
+
+        error_str = str(error)
+        assert "AZURE_STORAGE_ACCOUNT_NAME" in error_str
+        assert "AZURE_STORAGE_ACCOUNT_KEY" in error_str
+        assert "Check the container name" in error_str
+
+    def test_materializer_to_polars_wraps_azure_error(self):
+        """DuckDBMaterializer.to_polars() wraps DuckDB errors for Azure URIs."""
+        import duckdb
+        from unittest.mock import patch, MagicMock
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.errors import AzureAccessError
+
+        handle = DatasetHandle(
+            uri="abfss://container@account.dfs.core.windows.net/data.parquet",
+            scheme="abfss",
+            path="abfss://container@account.dfs.core.windows.net/data.parquet",
+            format="parquet",
+            fs_opts={},
+        )
+
+        # Mock create_duckdb_connection to return a mock that raises on execute
+        mock_con = MagicMock()
+        mock_con.execute.side_effect = duckdb.Error(
+            "NotImplementedException: abfss do not manage recursive lookup patterns"
+        )
+
+        with patch(
+            "kontra.engine.backends.duckdb_session.create_duckdb_connection",
+            return_value=mock_con,
+        ):
+            from kontra.engine.materializers.duckdb import DuckDBMaterializer
+            mat = DuckDBMaterializer(handle)
+
+            with pytest.raises(AzureAccessError) as exc_info:
+                mat.to_polars(None)
+
+            assert "Azure file not found or inaccessible" in str(exc_info.value)
+
+    def test_materializer_schema_wraps_azure_error(self):
+        """DuckDBMaterializer.schema() wraps DuckDB errors for Azure URIs."""
+        import duckdb
+        from unittest.mock import patch, MagicMock
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.errors import AzureAccessError
+
+        handle = DatasetHandle(
+            uri="abfss://container@account.dfs.core.windows.net/data.parquet",
+            scheme="abfss",
+            path="abfss://container@account.dfs.core.windows.net/data.parquet",
+            format="parquet",
+            fs_opts={},
+        )
+
+        mock_con = MagicMock()
+        mock_con.execute.side_effect = duckdb.Error(
+            "IOException: No such file"
+        )
+
+        with patch(
+            "kontra.engine.backends.duckdb_session.create_duckdb_connection",
+            return_value=mock_con,
+        ):
+            from kontra.engine.materializers.duckdb import DuckDBMaterializer
+            mat = DuckDBMaterializer(handle)
+
+            with pytest.raises(AzureAccessError) as exc_info:
+                mat.schema()
+
+            assert "Azure file not found or inaccessible" in str(exc_info.value)

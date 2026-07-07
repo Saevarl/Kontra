@@ -8,7 +8,7 @@ Ensures user-provided SQL is read-only before executing on production databases.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Set, Tuple
+from typing import Optional, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -195,11 +195,12 @@ def validate_sql(
             dialect=sqlglot_dialect,
         )
 
-    # Check statement type - must be SELECT (or WITH for CTEs)
+    # Check statement type - must be SELECT (or WITH for CTEs, or UNION/INTERSECT/EXCEPT)
     is_select = isinstance(stmt, exp.Select)
     is_cte_select = isinstance(stmt, exp.With) and allow_cte
+    is_set_operation = isinstance(stmt, (exp.Union, exp.Intersect, exp.Except))
 
-    if not (is_select or is_cte_select):
+    if not (is_select or is_cte_select or is_set_operation):
         stmt_type = type(stmt).__name__
         return ValidationResult(
             is_safe=False,
@@ -217,7 +218,6 @@ def validate_sql(
                 dialect=sqlglot_dialect,
             )
 
-    # Check for forbidden functions
     forbidden_found = _check_forbidden_functions(stmt)
     if forbidden_found:
         return ValidationResult(
@@ -442,9 +442,8 @@ def format_table_reference(
     elif dialect in ("sqlserver", "mssql", "tsql"):
         # SQL Server: [schema].[table]
         return f"[{schema}].[{table}]"
-    else:
-        # Default: schema.table
-        return f"{schema}.{table}"
+    # Default: schema.table
+    return f"{schema}.{table}"
 
 
 def replace_table_placeholder(
@@ -515,8 +514,8 @@ def to_count_query(sql: str, dialect: str = "postgres") -> Tuple[bool, str]:
     if parsed is None:
         return False, "Failed to parse SQL"
 
-    # Verify it's a SELECT statement (or WITH/CTE)
-    if not isinstance(parsed, (exp.Select, exp.With)):
+    # Verify it's a SELECT statement (or WITH/CTE, or set operation)
+    if not isinstance(parsed, (exp.Select, exp.With, exp.Union, exp.Intersect, exp.Except)):
         return False, f"Expected SELECT statement, got {type(parsed).__name__}"
 
     # Check if we need to wrap (complex query) or can rewrite (simple query)
@@ -551,7 +550,6 @@ def _needs_wrapping(parsed: exp.Expression) -> bool:
     if parsed.find(exp.Group):
         return True
 
-    # Check for LIMIT or OFFSET
     if parsed.find(exp.Limit) or parsed.find(exp.Offset):
         return True
 

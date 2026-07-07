@@ -13,7 +13,7 @@ from kontra.cli.constants import (
     EXIT_VALIDATION_FAILED,
 )
 from kontra.cli.renderers import print_rich_stats
-from kontra.errors import ContractNotFoundError
+from kontra.errors import ContractNotFoundError, DatasourceTableError
 
 
 def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) -> None:
@@ -172,13 +172,12 @@ def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) 
         typer.echo(f"\nRun without --dry-run to execute:")
         typer.echo(f"  kontra validate {contract_path}")
         raise typer.Exit(code=EXIT_SUCCESS)
-    else:
-        typer.secho(
-            f"✗ Validation would fail ({checks_failed} issues)", fg=typer.colors.RED
-        )
-        for issue in issues:
-            typer.echo(f"  - {issue}")
-        raise typer.Exit(code=EXIT_CONFIG_ERROR)
+    typer.secho(
+        f"✗ Validation would fail ({checks_failed} issues)", fg=typer.colors.RED
+    )
+    for issue in issues:
+        typer.echo(f"  - {issue}")
+    raise typer.Exit(code=EXIT_CONFIG_ERROR)
 
 
 def register(app: typer.Typer) -> None:
@@ -285,6 +284,21 @@ def register(app: typer.Typer) -> None:
             "--storage-options",
             help='Cloud storage credentials as JSON, e.g. \'{"aws_access_key_id": "...", "aws_region": "us-east-1"}\'',
         ),
+        only: Optional[str] = typer.Option(
+            None,
+            "--only",
+            help="Run only these rules (comma-separated names or IDs, e.g. 'not_null,unique' or 'COL:email:not_null').",
+        ),
+        columns_filter: Optional[str] = typer.Option(
+            None,
+            "--columns",
+            help="Run only rules touching these columns (comma-separated, e.g. 'email,user_id'). Dataset-level rules always included.",
+        ),
+        explain_mode: bool = typer.Option(
+            False,
+            "--explain",
+            help="Show execution plan (which tier each rule runs on) without running validation.",
+        ),
         verbose: bool = typer.Option(
             False, "--verbose", "-v", help="Enable verbose errors."
         ),
@@ -355,7 +369,7 @@ def register(app: typer.Typer) -> None:
             if data:
                 try:
                     resolved_data = resolve_datasource(data)
-                except ValueError as e:
+                except (ValueError, DatasourceTableError) as e:
                     typer.secho(f"Datasource error: {e}", fg=typer.colors.RED)
                     raise typer.Exit(code=EXIT_CONFIG_ERROR)
 
@@ -409,6 +423,40 @@ def register(app: typer.Typer) -> None:
                     )
                     raise typer.Exit(code=EXIT_CONFIG_ERROR)
 
+            # Parse --only and --columns (comma-separated)
+            parsed_only = [s.strip() for s in only.split(",") if s.strip()] if only else None
+            parsed_columns = [s.strip() for s in columns_filter.split(",") if s.strip()] if columns_filter else None
+
+            # --- EXPLAIN MODE ---
+            if explain_mode:
+                from kontra.engine.engine import ValidationEngine
+
+                eng = ValidationEngine(
+                    contract_path=contract,
+                    data_path=resolved_data,
+                    emit_report=False,
+                    stats_mode="none",
+                    preplan=effective_preplan,
+                    pushdown=effective_pushdown,
+                    tally=tally,
+                    tally_is_override=(tally is not None),
+                    enable_projection=enable_projection,
+                    csv_mode=effective_csv_mode,
+                    save_state=False,
+                    storage_options=parsed_storage_options,
+                    only_rules=parsed_only,
+                    only_columns=parsed_columns,
+                )
+                explain_result = eng.explain()
+
+                if effective_output_format == "json":
+                    import json as _json
+                    typer.echo(_json.dumps(explain_result.to_dict(), indent=2))
+                else:
+                    typer.echo(explain_result.render())
+
+                raise typer.Exit(code=EXIT_SUCCESS)
+
             eng = ValidationEngine(
                 contract_path=contract,
                 data_path=resolved_data,
@@ -429,6 +477,9 @@ def register(app: typer.Typer) -> None:
                 save_state=not no_state,
                 # Cloud storage
                 storage_options=parsed_storage_options,
+                # Goal-directed filtering
+                only_rules=parsed_only,
+                only_columns=parsed_columns,
             )
 
             # Show progress spinner for non-JSON output
@@ -488,6 +539,10 @@ def register(app: typer.Typer) -> None:
                 typer.secho(f"\n{traceback.format_exc()}", fg=typer.colors.YELLOW)
             raise typer.Exit(code=EXIT_CONFIG_ERROR)
 
+        except DatasourceTableError as e:
+            typer.secho(f"Datasource error: {e}", fg=typer.colors.RED)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+
         except ValueError as e:
             from kontra.errors import format_error_for_cli
 
@@ -523,4 +578,10 @@ def register(app: typer.Typer) -> None:
             else:
                 typer.secho(f"Error: {msg}", fg=typer.colors.RED)
                 typer.secho("Use --verbose for full traceback.", fg=typer.colors.YELLOW)
+
+            # YAML errors are config errors, not runtime errors
+            import yaml
+
+            if isinstance(e, yaml.YAMLError):
+                raise typer.Exit(code=EXIT_CONFIG_ERROR)
             raise typer.Exit(code=EXIT_RUNTIME_ERROR)

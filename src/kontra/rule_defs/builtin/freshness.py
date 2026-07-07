@@ -21,9 +21,10 @@ The rule passes if MAX(column) >= NOW() - max_age.
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set, TYPE_CHECKING
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.predicates import Predicate
@@ -80,7 +81,7 @@ def parse_duration(duration_str: str) -> timedelta:
     return total
 
 
-@register_rule("freshness")
+@register_rule("freshness", _builtin=True)
 class FreshnessRule(BaseRule):
     """
     Validates that a timestamp column contains recent data.
@@ -112,6 +113,8 @@ class FreshnessRule(BaseRule):
         return {self.params["column"]}
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+        import polars as pl
+
         column = self.params["column"]
         max_age = parse_duration(str(self.params["max_age"]))
 

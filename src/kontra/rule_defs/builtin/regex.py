@@ -1,7 +1,9 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 import re
-import polars as pl
+
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
@@ -10,7 +12,7 @@ from kontra.state.types import FailureMode
 from kontra.errors import RuleParameterError
 
 
-@register_rule("regex")
+@register_rule("regex", _builtin=True)
 class RegexRule(BaseRule):
     """
     Fails where `column` does not match the regex `pattern`. NULLs are failures.
@@ -26,8 +28,28 @@ class RegexRule(BaseRule):
 
     def __init__(self, name: str, params: Dict[str, Any]):
         super().__init__(name, params)
+        # Validate regex pattern is a string (BUG-057)
+        pattern = params.get("pattern")
+        if pattern is None or not isinstance(pattern, str):
+            raise RuleParameterError(
+                "regex", "pattern",
+                f"pattern must be a non-None string, got {type(pattern).__name__}"
+            )
+        # Check for lookahead/lookbehind (valid Python regex but unsupported by Polars) (BUG-019)
+        _UNSUPPORTED_PATTERNS = [
+            (r"(?=", "lookahead"),
+            (r"(?!", "negative lookahead"),
+            (r"(?<=", "lookbehind"),
+            (r"(?<!", "negative lookbehind"),
+        ]
+        for marker, desc in _UNSUPPORTED_PATTERNS:
+            if marker in pattern:
+                raise RuleParameterError(
+                    "regex", "pattern",
+                    f"Pattern uses {desc} ({marker}...) which is not supported by the execution engine. "
+                    f"Rewrite the pattern without {desc}.\n  Pattern: {pattern}"
+                )
         # Validate regex pattern early to provide helpful error message
-        pattern = params.get("pattern", "")
         try:
             re.compile(pattern)
         except re.error as e:
@@ -39,6 +61,8 @@ class RegexRule(BaseRule):
             )
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+        import polars as pl
+
         column = self.params["column"]
         pattern = self.params["pattern"]
 
@@ -92,14 +116,19 @@ class RegexRule(BaseRule):
     def compile_predicate(self) -> Optional[Predicate]:
         column = self.params["column"]
         pattern = self.params["pattern"]
-        expr = (
-            ~pl.col(column)
-            .cast(pl.Utf8)
-            .str.contains(pattern)  # regex by default
-        ).fill_null(True)
+
+        def _expr():
+            import polars as pl
+
+            return (
+                ~pl.col(column)
+                .cast(pl.Utf8)
+                .str.contains(pattern)  # regex by default
+            ).fill_null(True)
+
         return Predicate(
             rule_id=self.rule_id,
-            expr=expr,
+            expr_factory=_expr,
             message=f"{column} failed regex pattern {pattern}",
             columns={column},
         )

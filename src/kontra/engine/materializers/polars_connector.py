@@ -21,9 +21,10 @@ Notes
 Polars ≥ 1.34 removed `columns=` from scan_*; apply projection via `.select()`.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.connectors.handle import DatasetHandle
 from .base import BaseMaterializer
@@ -68,6 +69,8 @@ class PolarsConnectorMaterializer(BaseMaterializer):
         """
         Return column names using a lazy scan. Never raises — empty list on failure.
         """
+        import polars as pl
+
         uri = self.handle.uri
         fmt = _infer_format(uri, getattr(self.handle, "format", None))
 
@@ -85,7 +88,7 @@ class PolarsConnectorMaterializer(BaseMaterializer):
     # Materialization
     # ------------------------------------------------------------------ #
 
-    def to_polars(self, columns: Optional[List[str]]) -> pl.DataFrame:
+    def to_polars(self, columns: Optional[List[str]]) -> "pl.DataFrame":
         """
         Materialize dataset into a Polars DataFrame.
 
@@ -94,6 +97,8 @@ class PolarsConnectorMaterializer(BaseMaterializer):
         1) Attempt legacy connectors path (if installed) to preserve behavior.
         2) Otherwise, native Polars scan with projection via `.select()`.
         """
+        import polars as pl
+
         # --- Legacy path (optional/back-compat) --------------------------------
         try:
             from kontra.connectors.factory import ConnectorFactory  # type: ignore
@@ -124,13 +129,11 @@ class PolarsConnectorMaterializer(BaseMaterializer):
                 )
             elif "://" in uri:
                 raise IOError(f"Unsupported data source URI: {uri}")
-            else:
-                # Assume it's a file path - check if it exists
-                from pathlib import Path
-                if not Path(uri).exists():
-                    raise IOError(f"Data file not found: '{uri}'. Check that the path is correct.")
-                else:
-                    raise IOError(f"Unsupported file format: '{uri}'. Kontra supports .parquet and .csv files.")
+            # Assume it's a file path - check if it exists
+            from pathlib import Path
+            if not Path(uri).exists():
+                raise IOError(f"Data file not found: '{uri}'. Check that the path is correct.")
+            raise IOError(f"Unsupported file format: '{uri}'. Kontra supports .parquet and .csv files.")
 
         if columns:
             lf = lf.select([pl.col(c) for c in columns])

@@ -58,57 +58,85 @@ _logger = get_logger(__name__)
 # Lazy Loading Support
 # =============================================================================
 
-# Cache for lazily loaded modules/classes
-_lazy_cache: Dict[str, Any] = {}
+# Attributes resolved on first access via PEP 562 module __getattr__.
+# Covers heavy deps (polars via probes) and pydantic (via config.settings),
+# keeping `import kontra` fast.
+_LAZY_ATTRS: Dict[str, tuple] = {
+    "ValidationEngine": ("kontra.engine.engine", "ValidationEngine"),
+    "ScoutProfiler": ("kontra.scout.profiler", "ScoutProfiler"),
+    "pl": ("polars", None),
+    "compare": ("kontra.probes", "compare"),
+    "profile_relationship": ("kontra.probes", "profile_relationship"),
+    "KontraConfig": ("kontra.config.settings", "KontraConfig"),
+    "resolve_datasource": ("kontra.config.settings", "resolve_datasource"),
+    "resolve_effective_config": ("kontra.config.settings", "resolve_effective_config"),
+    "list_datasources": ("kontra.config.settings", "list_datasources"),
+}
 
 
 def __getattr__(name: str) -> Any:
-    """
-    Lazy load heavy dependencies on first access.
+    """Lazy load heavy dependencies on first attribute access (PEP 562)."""
+    try:
+        module_name, attr = _LAZY_ATTRS[name]
+    except KeyError:
+        raise AttributeError(f"module 'kontra' has no attribute '{name}'") from None
+    import importlib
 
-    This allows `import kontra` to be fast while still supporting:
-    - kontra.ValidationEngine (for advanced usage)
-    - kontra.ScoutProfiler (for advanced usage)
-    """
-    if name == "ValidationEngine":
-        if "ValidationEngine" not in _lazy_cache:
-            from kontra.engine.engine import ValidationEngine
-            _lazy_cache["ValidationEngine"] = ValidationEngine
-        return _lazy_cache["ValidationEngine"]
-
-    if name == "ScoutProfiler":
-        if "ScoutProfiler" not in _lazy_cache:
-            from kontra.scout.profiler import ScoutProfiler
-            _lazy_cache["ScoutProfiler"] = ScoutProfiler
-        return _lazy_cache["ScoutProfiler"]
-
-    if name == "pl":
-        # Support kontra.pl for users who expect polars to be accessible
-        if "pl" not in _lazy_cache:
-            import polars as pl
-            _lazy_cache["pl"] = pl
-        return _lazy_cache["pl"]
-
-    # Transformation probes (import polars)
-    if name == "compare":
-        if "compare" not in _lazy_cache:
-            from kontra.probes import compare
-            _lazy_cache["compare"] = compare
-        return _lazy_cache["compare"]
-
-    if name == "profile_relationship":
-        if "profile_relationship" not in _lazy_cache:
-            from kontra.probes import profile_relationship
-            _lazy_cache["profile_relationship"] = profile_relationship
-        return _lazy_cache["profile_relationship"]
-
-    raise AttributeError(f"module 'kontra' has no attribute '{name}'")
+    module = importlib.import_module(module_name)
+    value = module if attr is None else getattr(module, attr)
+    globals()[name] = value  # cache so later access bypasses __getattr__
+    return value
 
 
 def _is_pandas_dataframe(obj: Any) -> bool:
     """Check if object is a pandas DataFrame without importing pandas."""
-    # Check module name to avoid importing pandas
-    return type(obj).__module__.startswith("pandas") and type(obj).__name__ == "DataFrame"
+    return (
+        hasattr(obj, "__dataframe__")
+        and type(obj).__module__.startswith("pandas")
+        and type(obj).__name__ == "DataFrame"
+    )
+
+
+def _is_polars_dataframe(obj: Any) -> bool:
+    """Check if object is a polars DataFrame without importing polars.
+
+    If polars was never imported, obj cannot be a polars DataFrame — this
+    keeps string-path validations from paying the ~115ms polars import.
+    """
+    import sys
+
+    pl_mod = sys.modules.get("polars")
+    return pl_mod is not None and isinstance(obj, pl_mod.DataFrame)
+
+
+def _normalize_to_dataframe(data: Any) -> Any:
+    """
+    Convert list[dict], dict, or pandas DataFrame to Polars DataFrame.
+
+    Returns the original data unchanged if it's not one of these types.
+    """
+    import polars as pl
+
+    if isinstance(data, list):
+        if not data:
+            return pl.DataFrame()
+        # Only list-of-dicts is valid per docs (BUG-058)
+        if not isinstance(data[0], dict):
+            from kontra.errors import InvalidDataError
+            raise InvalidDataError(
+                f"List data must be a list of dicts, got list of {type(data[0]).__name__}. "
+                f"Example: [{{'col': 1}}, {{'col': 2}}]"
+            )
+        return pl.DataFrame(data)
+    if isinstance(data, dict) and not isinstance(data, pl.DataFrame):
+        if not data:
+            return pl.DataFrame()
+        first_val = next(iter(data.values()))
+        is_columnar = isinstance(first_val, (list, tuple))
+        return pl.DataFrame(data) if is_columnar else pl.DataFrame([data])
+    if _is_pandas_dataframe(data):
+        return pl.from_pandas(data)
+    return data
 
 
 # Data file extensions that should not be passed to state functions
@@ -136,6 +164,8 @@ from kontra.api.results import (
     ValidationResult,
     RuleResult,
     DryRunResult,
+    ExplainResult,
+    RuleExplainEntry,
     Diff,
     Suggestions,
     SuggestedRule,
@@ -156,13 +186,19 @@ from kontra.api.decorators import validate as validate_decorator
 # Errors
 from kontra.errors import ValidationError, StateCorruptedError, ContractNotFoundError
 
-# Configuration
-from kontra.config.settings import (
-    resolve_datasource,
-    resolve_effective_config,
-    list_datasources,
-    KontraConfig,
-)
+# Configuration symbols (KontraConfig, resolve_datasource, ...) are lazy via
+# __getattr__: config.settings pulls in pydantic, which costs ~80ms at import.
+#
+# The subpackage import below must stay: loading `kontra.config` here lets the
+# import machinery bind the `config` attribute NOW, so that `def config(...)`
+# further down permanently overwrites it (pitfall #14: submodule/attribute
+# clash). Without it, the first lazy import of kontra.config.* would clobber
+# the config() function with the subpackage module. The package __init__ is
+# lazy, so this costs nothing.
+import kontra.config  # noqa: F401
+
+if TYPE_CHECKING:
+    from kontra.config.settings import KontraConfig
 
 
 # =============================================================================
@@ -178,11 +214,11 @@ def validate(
     rules: Optional[List[Dict[str, Any]]] = None,
     emit_report: bool = False,
     save: bool = True,
-    preplan: str = "on",
-    pushdown: str = "on",
+    preplan: Optional[str] = "on",
+    pushdown: Optional[str] = "on",
     tally: Optional[bool] = None,
     projection: bool = True,
-    csv_mode: str = "auto",
+    csv_mode: Optional[str] = "auto",
     env: Optional[str] = None,
     stats: str = "none",
     dry_run: bool = False,
@@ -190,8 +226,11 @@ def validate(
     sample_budget: int = 50,
     sample_columns: Optional[Union[List[str], str]] = None,
     storage_options: Optional[Dict[str, Any]] = None,
+    only: Optional[List[str]] = None,
+    columns: Optional[List[str]] = None,
+    explain: bool = False,
     **kwargs,
-) -> Union[ValidationResult, DryRunResult]:
+) -> Union["ValidationResult", "DryRunResult", "ExplainResult"]:
     """
     Validate data against a contract and/or inline rules.
 
@@ -234,11 +273,19 @@ def validate(
             For Azure:
                 - account_name, account_key, sas_token, etc.
             These override environment variables when provided.
+        only: Filter to rules matching these names or rule IDs.
+            Example: ["not_null", "unique"] or ["COL:email:not_null"]
+        columns: Filter to rules that touch any of these columns.
+            Dataset-level rules (min_rows, max_rows) are always included.
+            Example: ["email", "user_id"]
+        explain: If True, return ExplainResult showing which tier each rule
+            would execute on, without running validation.
         **kwargs: Additional arguments passed to ValidationEngine
 
     Returns:
         ValidationResult with .passed, .rules, .to_llm(), etc.
         DryRunResult if dry_run=True, with .valid, .rules_count, .columns_needed
+        ExplainResult if explain=True, with .rules, .summary, .to_llm()
 
     Example:
         # With contract file
@@ -286,14 +333,95 @@ def validate(
         else:
             print(f"Contract errors: {check.errors}")
     """
-    from kontra.errors import InvalidDataError, InvalidPathError
-    from kontra.connectors.detection import is_database_connection, is_cursor_object
+    # Phase dispatch. Side-effect order is load-bearing: arg normalization ->
+    # dry_run/explain early exits -> data resolution -> config resolution ->
+    # engine construction -> run -> result assembly.
+    data, contract = _normalize_and_check_args(
+        data=data, contract=contract, rules=rules,
+        tally=tally, only=only, columns=columns,
+    )
+
+    if dry_run:
+        return _dry_run(contract, rules)
+
+    if explain:
+        return _explain_plan(
+            data=data,
+            contract=contract,
+            rules=rules,
+            preplan=preplan,
+            pushdown=pushdown,
+            tally=tally,
+            storage_options=storage_options,
+            only=only,
+            columns=columns,
+        )
+
+    # Resolve data from the contract's datasource, then validate the argument.
+    data = _resolve_data_from_contract(data=data, contract=contract)
+    is_byoc = _check_data_and_detect_byoc(data=data, table=table)
+
+    # Resolve config (always, for severity_weights and other settings)
+    from kontra.config.settings import resolve_effective_config
+
+    cfg = resolve_effective_config(env_name=env)
+
+    # Detect execution path early (enables lazy loading optimization in engine)
     from kontra.engine.paths import detect_execution_path
 
-    # ==========================================================================
-    # Input validation - catch invalid data types early with clear errors
-    # ==========================================================================
+    execution_path = detect_execution_path(data, table=table)
 
+    engine_kwargs = _build_engine_kwargs(
+        contract=contract,
+        emit_report=emit_report,
+        save=save,
+        preplan=preplan,
+        pushdown=pushdown,
+        tally=tally,
+        projection=projection,
+        csv_mode=csv_mode,
+        stats=stats,
+        rules=rules,
+        storage_options=storage_options,
+        execution_path=execution_path,
+        only=only,
+        columns=columns,
+        extra_kwargs=kwargs,
+    )
+
+    engine = _construct_engine(
+        data=data, table=table, is_byoc=is_byoc, engine_kwargs=engine_kwargs,
+    )
+
+    raw_result = _run_engine(engine=engine, data=data)
+
+    return _assemble_result(
+        engine=engine,
+        data=data,
+        raw_result=raw_result,
+        is_byoc=is_byoc,
+        sample=sample,
+        sample_budget=sample_budget,
+        sample_columns=sample_columns,
+        severity_weights=cfg.severity_weights,
+        tally=tally,
+    )
+
+
+def _normalize_and_check_args(
+    *,
+    data: Any,
+    contract: Optional[str],
+    rules: Optional[List[Dict[str, Any]]],
+    tally: Optional[bool],
+    only: Optional[List[str]],
+    columns: Optional[List[str]],
+) -> tuple:
+    """Auto-detect a YAML `data` arg as the contract, then type/presence-check call args.
+
+    Returns the possibly-rewritten (data, contract). Raises early with clear
+    errors so bad arguments never reach the engine.
+    """
     # Auto-detect: if data looks like a YAML contract file and contract is None, use it as contract
     if isinstance(data, str) and (data.endswith('.yaml') or data.endswith('.yml')) and contract is None:
         contract = data
@@ -303,97 +431,30 @@ def validate(
     if contract is None and rules is None:
         raise ValueError("Either contract or rules must be provided")
 
-    # ==========================================================================
-    # Dry run - validate contract/rules syntax without executing
-    # Data can be None for dry_run since we're not actually validating
-    # ==========================================================================
-    if dry_run:
-        from kontra.config.loader import ContractLoader
-        from kontra.rule_defs.factory import RuleFactory
-        from kontra.rule_defs.execution_plan import RuleExecutionPlan
-        from kontra.engine.engine import _ensure_builtin_rules_registered
-
-        # Ensure builtin rules are registered before building rules
-        _ensure_builtin_rules_registered()
-
-        errors: List[str] = []
-        contract_name: Optional[str] = None
-        datasource: Optional[str] = None
-        all_rule_specs: List[Any] = []
-
-        # Load contract if provided
-        if contract is not None:
-            try:
-                contract_obj = ContractLoader.from_path(contract)
-                contract_name = contract_obj.name
-                datasource = contract_obj.datasource
-                all_rule_specs.extend(contract_obj.rules)
-            except ContractNotFoundError as e:
-                errors.append(str(e))
-            except ValueError as e:
-                errors.append(f"Contract parse error: {e}")
-            except Exception as e:
-                errors.append(f"Contract error: {e}")
-
-        # Add inline rules if provided
-        inline_built_rules = []  # Already-built BaseRule instances
-        if rules is not None:
-            # Convert inline rules to RuleSpec format (or pass through BaseRule instances)
-            from kontra.config.models import RuleSpec
-            from kontra.rule_defs.base import BaseRule as BaseRuleType
-            for i, r in enumerate(rules):
-                try:
-                    if isinstance(r, BaseRuleType):
-                        # Already a rule instance - use directly
-                        inline_built_rules.append(r)
-                    elif isinstance(r, dict):
-                        spec = RuleSpec(
-                            name=r.get("name", ""),
-                            id=r.get("id"),
-                            params=r.get("params", {}),
-                            severity=r.get("severity", "blocking"),
-                            context=r.get("context", {}),
-                        )
-                        all_rule_specs.append(spec)
-                    else:
-                        errors.append(
-                            f"Inline rule {i}: expected dict or BaseRule, "
-                            f"got {type(r).__name__}"
-                        )
-                except Exception as e:
-                    errors.append(f"Inline rule {i} error: {e}")
-
-        # Try to build rules and extract required columns
-        columns_needed: List[str] = []
-        rules_count = 0
-
-        if not errors and (all_rule_specs or inline_built_rules):
-            try:
-                built_rules = RuleFactory(all_rule_specs).build_rules() if all_rule_specs else []
-                # Merge with already-built rule instances
-                built_rules = list(built_rules) + inline_built_rules
-                rules_count = len(built_rules)
-
-                # Extract required columns
-                plan = RuleExecutionPlan(built_rules)
-                compiled = plan.compile()
-                columns_needed = list(compiled.required_cols or [])
-            except Exception as e:
-                errors.append(f"Rule build error: {e}")
-
-        return DryRunResult(
-            valid=len(errors) == 0,
-            rules_count=rules_count,
-            columns_needed=columns_needed,
-            contract_name=contract_name,
-            datasource=datasource,
-            errors=errors,
+    # Type-check tally — string 'no'/'false' are truthy in Python (BUG F-017)
+    if tally is not None and not isinstance(tally, bool):
+        raise TypeError(
+            f"'tally' must be a bool or None, got {type(tally).__name__}: {tally!r}. "
+            f"Use tally=True or tally=False"
         )
 
-    # ==========================================================================
-    # Input validation for actual validation (not dry_run)
-    # ==========================================================================
+    # Type-check only and columns — strings iterate chars silently (BUG-026)
+    if isinstance(only, str):
+        raise TypeError(
+            f"'only' must be a list of strings, not a string. "
+            f"Use only=[{only!r}] instead of only={only!r}"
+        )
+    if isinstance(columns, str):
+        raise TypeError(
+            f"'columns' must be a list of strings, not a string. "
+            f"Use columns=[{columns!r}] instead of columns={columns!r}"
+        )
 
+    return data, contract
+
+
+def _resolve_data_from_contract(*, data: Any, contract: Optional[str]) -> Any:
+    """If no data was given, pull the datasource from the contract YAML."""
     # If data is None but contract is provided, try to extract datasource from contract
     if data is None and contract is not None:
         from kontra.config.loader import ContractLoader
@@ -413,6 +474,14 @@ def validate(
         except ValueError:
             raise  # Re-raise our custom error
 
+    return data
+
+
+def _check_data_and_detect_byoc(*, data: Any, table: Optional[str]) -> bool:
+    """Reject None/cursor data and detect the BYOC (connection + table) pattern."""
+    from kontra.errors import InvalidDataError
+    from kontra.connectors.detection import is_database_connection, is_cursor_object
+
     # Check for None
     if data is None:
         raise InvalidDataError("NoneType", detail="Data cannot be None. Provide a file path, DataFrame, or datasource name.")
@@ -425,7 +494,6 @@ def validate(
         )
 
     # Check for BYOC pattern: connection object + table
-
     is_byoc = False
     if is_database_connection(data):
         if table is None:
@@ -440,18 +508,37 @@ def validate(
             "For other data types, use file paths, URIs, or named datasources."
         )
 
-    # Resolve config (always, for severity_weights and other settings)
-    cfg = resolve_effective_config(env_name=env)
+    return is_byoc
 
-    # Detect execution path early (enables lazy loading optimization in engine)
-    execution_path = detect_execution_path(data, table=table)
 
-    # Lazy import heavy dependencies (only loaded when validate() is called)
-    import polars as pl
-    from kontra.engine.engine import ValidationEngine
+def _build_engine_kwargs(
+    *,
+    contract: Optional[str],
+    emit_report: bool,
+    save: bool,
+    preplan: Optional[str],
+    pushdown: Optional[str],
+    tally: Optional[bool],
+    projection: bool,
+    csv_mode: Optional[str],
+    stats: str,
+    rules: Optional[List[Dict[str, Any]]],
+    storage_options: Optional[Dict[str, Any]],
+    execution_path: Any,
+    only: Optional[List[str]],
+    columns: Optional[List[str]],
+    extra_kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Coerce None toggles to defaults and assemble the ValidationEngine kwargs."""
+    # Coerce None toggles to defaults (BUG-038)
+    if preplan is None:
+        preplan = "on"
+    if pushdown is None:
+        pushdown = "on"
+    if csv_mode is None:
+        csv_mode = "auto"
 
-    # Build engine kwargs
-    engine_kwargs = {
+    return {
         "contract_path": contract,
         "emit_report": emit_report,
         "save_state": save,
@@ -464,8 +551,23 @@ def validate(
         "inline_rules": rules,
         "storage_options": storage_options,
         "execution_path": execution_path,
-        **kwargs,
+        "only_rules": only,
+        "only_columns": columns,
+        **extra_kwargs,
     }
+
+
+def _construct_engine(
+    *,
+    data: Any,
+    table: Optional[str],
+    is_byoc: bool,
+    engine_kwargs: Dict[str, Any],
+) -> "ValidationEngine":
+    """Dispatch on the input data type to build the appropriate ValidationEngine."""
+    from kontra.errors import InvalidDataError, InvalidPathError
+    # Lazy import heavy dependencies (only loaded when validate() is called)
+    from kontra.engine.engine import ValidationEngine
 
     # Normalize and create engine
     if is_byoc:
@@ -473,52 +575,30 @@ def validate(
         from kontra.connectors.handle import DatasetHandle
 
         handle = DatasetHandle.from_connection(data, table)
-        engine = ValidationEngine(handle=handle, **engine_kwargs)
+        return ValidationEngine(handle=handle, **engine_kwargs)
     elif isinstance(data, str):
         # File path/URI or datasource name
         # Validate: check if it's a directory (common mistake)
         if os.path.isdir(data):
             raise InvalidPathError(data, "Path is a directory, not a file")
-        engine = ValidationEngine(data_path=data, **engine_kwargs)
-    elif isinstance(data, list):
-        # list[dict] - flat tabular JSON (e.g., API response)
-        if not data:
-            # Empty list - create empty DataFrame (valid for dataset-level rules like min_rows)
-            df = pl.DataFrame()
-        else:
-            df = pl.DataFrame(data)
-        engine = ValidationEngine(dataframe=df, **engine_kwargs)
-    elif isinstance(data, dict) and not isinstance(data, pl.DataFrame):
-        # Dict input - could be single-row or columnar format
-        # Note: check for pl.DataFrame first since it's also dict-like in some contexts
-        if not data:
-            # Empty dict - create empty DataFrame
-            df = pl.DataFrame()
-        else:
-            # Detect format: columnar {"a": [1,2], "b": [3,4]} vs single-row {"a": 1, "b": 2}
-            # If all values are lists/tuples, treat as columnar (dict-of-lists)
-            first_val = next(iter(data.values()))
-            is_columnar = isinstance(first_val, (list, tuple))
-            if is_columnar:
-                # Dict-of-lists format - pass directly to DataFrame
-                df = pl.DataFrame(data)
-            else:
-                # Single-row dict - wrap in list
-                df = pl.DataFrame([data])
-        engine = ValidationEngine(dataframe=df, **engine_kwargs)
-    elif isinstance(data, pl.DataFrame):
-        # Polars DataFrame
-        engine = ValidationEngine(dataframe=data, **engine_kwargs)
-    elif _is_pandas_dataframe(data):
-        # pandas DataFrame - will be converted by engine
-        engine = ValidationEngine(dataframe=data, **engine_kwargs)
+        return ValidationEngine(data_path=data, **engine_kwargs)
+    elif isinstance(data, (list, dict)) or _is_pandas_dataframe(data):
+        df = _normalize_to_dataframe(data)
+        return ValidationEngine(dataframe=df, **engine_kwargs)
+    elif _is_polars_dataframe(data):
+        return ValidationEngine(dataframe=data, **engine_kwargs)
     else:
         # Invalid data type
         raise InvalidDataError(type(data).__name__)
 
+
+def _run_engine(*, engine: "ValidationEngine", data: Any) -> Any:
+    """Run the engine, rewrapping internal data-source OSErrors as InvalidDataError."""
+    from kontra.errors import InvalidDataError
+
     # Run validation
     try:
-        raw_result = engine.run()
+        return engine.run()
     except OSError as e:
         # Catch internal errors about data sources and wrap in user-friendly error
         error_str = str(e)
@@ -541,34 +621,40 @@ def validate(
                 raise InvalidDataError(type(data).__name__) from None
         raise
 
-    # Determine data source for sample_failures()
-    # Priority: DataFrame > handle (with db_params) > data path
-    if isinstance(data, pl.DataFrame):
+
+def _assemble_result(
+    *,
+    engine: "ValidationEngine",
+    data: Any,
+    raw_result: Any,
+    is_byoc: bool,
+    sample: int,
+    sample_budget: int,
+    sample_columns: Optional[Union[List[str], str]],
+    severity_weights: Any,
+    tally: Optional[bool],
+) -> "ValidationResult":
+    """Resolve sample data source + loaded frame, then build the ValidationResult."""
+    # Data source for sample_failures(): DataFrame > handle (has db_params
+    # for reconnection) > raw path string > loaded frame (list/dict input)
+    if _is_polars_dataframe(data):
         data_source = data
     elif is_byoc:
-        # Store the handle for BYOC
         data_source = engine._handle
     elif isinstance(data, str):
-        # For URI strings, store the handle if available (has db_params for reconnection)
-        # Otherwise fall back to the string
-        if engine._handle is not None and engine._handle.db_params is not None:
-            data_source = engine._handle
-        else:
-            data_source = engine._handle if engine._handle is not None else data
+        data_source = engine._handle if engine._handle is not None else data
     else:
-        # list[dict] or dict - store as DataFrame
         data_source = engine.df
 
-    # Determine loaded data to expose via result.data
-    # Priority: engine.df (loaded for Polars) > input DataFrame
+    # Loaded data exposed via result.data: engine.df when Polars ran; the
+    # input frame when passed directly; None when preplan/pushdown handled all
     if engine.df is not None:
         loaded_data = engine.df
-    elif isinstance(data, pl.DataFrame):
-        loaded_data = data  # User passed DataFrame directly
+    elif _is_polars_dataframe(data):
+        loaded_data = data
     else:
-        loaded_data = None  # Preplan/pushdown handled everything, no data loaded
+        loaded_data = None
 
-    # Wrap in ValidationResult with data source and rules for sample_failures()
     return ValidationResult.from_engine_result(
         raw_result,
         data_source=data_source,
@@ -576,9 +662,135 @@ def validate(
         sample=sample,
         sample_budget=sample_budget,
         sample_columns=sample_columns,
-        severity_weights=cfg.severity_weights,
+        severity_weights=severity_weights,
         data=loaded_data,
+        tally=tally,
     )
+
+
+def _dry_run(contract: Optional[str], rules: Optional[List[Dict[str, Any]]]) -> "DryRunResult":
+    """Check contract/rule syntax without touching data (validate(dry_run=True))."""
+    from kontra.config.loader import ContractLoader
+    from kontra.rule_defs.factory import RuleFactory
+    from kontra.rule_defs.execution_plan import RuleExecutionPlan
+    from kontra.engine.phases.compilation import _ensure_builtin_rules_registered
+
+    _ensure_builtin_rules_registered()
+
+    errors: List[str] = []
+    contract_name: Optional[str] = None
+    datasource: Optional[str] = None
+    all_rule_specs: List[Any] = []
+
+    if contract is not None:
+        try:
+            contract_obj = ContractLoader.from_path(contract)
+            contract_name = contract_obj.name
+            datasource = contract_obj.datasource
+            all_rule_specs.extend(contract_obj.rules)
+        except ContractNotFoundError as e:
+            errors.append(str(e))
+        except ValueError as e:
+            errors.append(f"Contract parse error: {e}")
+        except Exception as e:  # any load failure is a *finding*, not a crash
+            errors.append(f"Contract error: {e}")
+
+    inline_built_rules = []  # Already-built BaseRule instances
+    if rules is not None:
+        from kontra.config.models import RuleSpec
+        from kontra.rule_defs.base import BaseRule as BaseRuleType
+        for i, r in enumerate(rules):
+            try:
+                if isinstance(r, BaseRuleType):
+                    inline_built_rules.append(r)
+                elif isinstance(r, dict):
+                    all_rule_specs.append(RuleSpec(
+                        name=r.get("name", ""),
+                        id=r.get("id"),
+                        params=r.get("params", {}),
+                        severity=r.get("severity", "blocking"),
+                        context=r.get("context", {}),
+                    ))
+                else:
+                    errors.append(
+                        f"Inline rule {i}: expected dict or BaseRule, "
+                        f"got {type(r).__name__}"
+                    )
+            except Exception as e:  # bad rule spec is a finding, not a crash
+                errors.append(f"Inline rule {i} error: {e}")
+
+    columns_needed: List[str] = []
+    rules_count = 0
+    if not errors and (all_rule_specs or inline_built_rules):
+        try:
+            built_rules = RuleFactory(all_rule_specs).build_rules() if all_rule_specs else []
+            built_rules = list(built_rules) + inline_built_rules
+            rules_count = len(built_rules)
+            compiled = RuleExecutionPlan(built_rules).compile()
+            columns_needed = list(compiled.required_cols or [])
+        except Exception as e:  # rule construction failure is a finding
+            errors.append(f"Rule build error: {e}")
+
+    return DryRunResult(
+        valid=len(errors) == 0,
+        rules_count=rules_count,
+        columns_needed=columns_needed,
+        contract_name=contract_name,
+        datasource=datasource,
+        errors=errors,
+    )
+
+
+def _explain_plan(
+    *,
+    data: Any,
+    contract: Optional[str],
+    rules: Optional[List[Dict[str, Any]]],
+    preplan: Optional[str],
+    pushdown: Optional[str],
+    tally: Optional[bool],
+    storage_options: Optional[Dict[str, Any]],
+    only: Optional[List[str]],
+    columns: Optional[List[str]],
+) -> "ExplainResult":
+    """Show which tier each rule would run on (validate(explain=True))."""
+    from kontra.engine.engine import ValidationEngine
+
+    # Resolve data source (needed for tier detection)
+    explain_data_path = None
+    if isinstance(data, str):
+        explain_data_path = data
+    elif data is None and contract is not None:
+        from kontra.config.loader import ContractLoader
+        try:
+            contract_obj = ContractLoader.from_path(contract)
+            if contract_obj.datasource and contract_obj.datasource != "inline":
+                explain_data_path = contract_obj.datasource
+        except (ContractNotFoundError, ValueError):
+            pass  # Will be caught by engine
+
+    engine_kwargs = {
+        "contract_path": contract,
+        "data_path": explain_data_path,
+        "emit_report": False,
+        "save_state": False,
+        "preplan": preplan,
+        "pushdown": pushdown,
+        "tally": tally,
+        "inline_rules": rules,
+        "storage_options": storage_options,
+        "only_rules": only,
+        "only_columns": columns,
+    }
+
+    if data is not None and not isinstance(data, str):
+        import polars as pl
+        if isinstance(data, (list, dict)) or _is_pandas_dataframe(data):
+            engine_kwargs["dataframe"] = _normalize_to_dataframe(data)
+        elif isinstance(data, pl.DataFrame):
+            engine_kwargs["dataframe"] = data
+
+    return ValidationEngine(**engine_kwargs).explain()
 
 
 def profile(
@@ -627,6 +839,19 @@ def profile(
     import warnings
     import polars as pl
     from kontra.scout.profiler import ScoutProfiler, _DEPRECATED_PRESETS
+    from kontra.errors import InvalidDataError
+
+    # Input validation — match validate() behavior (BUG-059)
+    if data is None:
+        raise InvalidDataError(
+            "NoneType",
+            detail="profile() requires data. Pass a file path, DataFrame, or named datasource.",
+        )
+    if isinstance(data, bool) or (isinstance(data, (int, float)) and not isinstance(data, bool)):
+        raise InvalidDataError(
+            type(data).__name__,
+            detail=f"profile() received {type(data).__name__}, expected file path, DataFrame, or list of dicts.",
+        )
 
     # Warn on deprecated preset names
     if preset in _DEPRECATED_PRESETS:
@@ -638,27 +863,7 @@ def profile(
         )
 
     # Convert list/dict/pandas to Polars DataFrame
-    if isinstance(data, list):
-        if not data:
-            data = pl.DataFrame()
-        else:
-            data = pl.DataFrame(data)
-    elif isinstance(data, dict) and not isinstance(data, pl.DataFrame):
-        if not data:
-            data = pl.DataFrame()
-        else:
-            # Detect format: columnar {"a": [1,2], "b": [3,4]} vs single-row {"a": 1, "b": 2}
-            first_val = next(iter(data.values()))
-            is_columnar = isinstance(first_val, (list, tuple))
-            if is_columnar:
-                data = pl.DataFrame(data)
-            else:
-                data = pl.DataFrame([data])
-    elif hasattr(data, "__dataframe__"):
-        # Pandas DataFrame (or any dataframe-protocol compatible)
-        import pandas as pd
-        if isinstance(data, pd.DataFrame):
-            data = pl.from_pandas(data)
+    data = _normalize_to_dataframe(data)
 
     if isinstance(data, pl.DataFrame):
         # Handle empty DataFrame (no columns) - DuckDB can't read parquet with no columns
@@ -701,21 +906,46 @@ def profile(
         # Resolve named datasources (e.g., "prod_db.users" -> actual URI)
         resolved_data = data
         if isinstance(data, str):
+            from kontra.config.settings import resolve_datasource
+
             try:
                 resolved_data = resolve_datasource(data)
             except ValueError:
-                # Not a named datasource - use as-is (file path or URI)
+                # Not a named datasource - use as-is (file path or URI).
+                # DatasourceTableError (datasource found, table missing) inherits
+                # from KontraError, not ValueError, so it propagates correctly.
                 pass
 
-        profiler = ScoutProfiler(
-            resolved_data,
-            preset=preset,
-            columns=columns,
-            sample_size=sample,
-            storage_options=storage_options,
-            **kwargs,
-        )
-        return profiler.profile()
+        try:
+            profiler = ScoutProfiler(
+                resolved_data,
+                preset=preset,
+                columns=columns,
+                sample_size=sample,
+                storage_options=storage_options,
+                **kwargs,
+            )
+            return profiler.profile()
+        except FileNotFoundError as e:
+            raise InvalidDataError(
+                "file",
+                detail=f"File not found: {resolved_data}",
+            ) from e
+        except Exception as e:
+            err_str = str(e).lower()
+            is_not_found = (
+                "no such file" in err_str
+                or "does not exist" in err_str
+                or "not found" in err_str
+                or "no files found" in err_str
+            )
+            if is_not_found:
+                raise InvalidDataError(
+                    "file",
+                    detail=f"File not found: {resolved_data}",
+                ) from e
+            # Re-raise non-file-related errors
+            raise
 
 
 def draft(
@@ -761,7 +991,7 @@ def draft(
         high_conf.save("contracts/users.yml")
 
         # Or use directly
-        result = kontra.validate(df, rules=suggestions.to_dict())
+        result = kontra.validate(df, rules=suggestions.to_rules_list())
     """
     # If already a DatasetProfile, use directly
     if isinstance(data, DatasetProfile):
@@ -922,52 +1152,49 @@ def suggest_rules(
 
 
 def explain(
-    data: Union[str, "pl.DataFrame"],
-    contract: str,
-    **kwargs,
-) -> Dict[str, Any]:
+    data: Union[str, "pl.DataFrame", "pd.DataFrame", List[Dict[str, Any]], Dict[str, Any], Any, None] = None,
+    contract: Optional[str] = None,
+    *,
+    rules: Optional[List[Dict[str, Any]]] = None,
+    preplan: str = "on",
+    pushdown: str = "on",
+    only: Optional[List[str]] = None,
+    columns: Optional[List[str]] = None,
+    storage_options: Optional[Dict[str, Any]] = None,
+) -> ExplainResult:
     """
     Show execution plan without running validation.
 
     Args:
-        data: DataFrame or path/URI to data file
+        data: Data source (file path, URI, DataFrame, etc.)
         contract: Path to contract YAML file
+        rules: Inline rule dicts
+        preplan: "on" | "off"
+        pushdown: "on" | "off"
+        only: Filter to rule names or IDs
+        columns: Filter to rules touching these columns
+        storage_options: Cloud storage credentials
 
     Returns:
-        Dict with preplan_rules, sql_rules, polars_rules, required_columns
+        ExplainResult with tier assignment per rule
 
     Example:
-        plan = kontra.explain(df, "contract.yml")
-        print(f"Columns needed: {plan['required_columns']}")
-        for rule in plan['sql_rules']:
-            print(f"{rule['rule_id']}: {rule['sql']}")
+        plan = kontra.explain("data.parquet", "contract.yml")
+        print(plan.render())
+        for entry in plan.rules:
+            print(f"{entry.rule_id}: {entry.tier}")
     """
-    # For now, return basic plan info
-    # TODO: Implement full explain with SQL preview
-    from kontra.config.loader import ContractLoader
-    from kontra.rule_defs.factory import RuleFactory
-    from kontra.rule_defs.execution_plan import RuleExecutionPlan
-
-    contract_obj = ContractLoader.from_path(contract)
-    rules = RuleFactory(contract_obj.rules).build_rules()
-    plan = RuleExecutionPlan(rules)
-    compiled = plan.compile()
-
-    # sql_rules may be Rule objects or dicts depending on compilation
-    sql_rules_info = []
-    for r in compiled.sql_rules:
-        if hasattr(r, "rule_id"):
-            sql_rules_info.append({"rule_id": r.rule_id, "name": r.name})
-        elif isinstance(r, dict):
-            sql_rules_info.append({"rule_id": r.get("rule_id", ""), "name": r.get("name", "")})
-
-    return {
-        "required_columns": list(compiled.required_cols or []),
-        "total_rules": len(rules),
-        "predicates": len(compiled.predicates),
-        "fallback_rules": len(compiled.fallback_rules),
-        "sql_rules": sql_rules_info,
-    }
+    return validate(
+        data=data,
+        contract=contract,
+        rules=rules,
+        preplan=preplan,
+        pushdown=pushdown,
+        only=only,
+        columns=columns,
+        storage_options=storage_options,
+        explain=True,
+    )
 
 
 def diff(
@@ -1005,7 +1232,7 @@ def diff(
 
     store = get_default_store()
     if store is None:
-        return None
+        return Diff.empty("No state store configured")
 
     # Validate that contract is a YAML file, not a data file (BUG-014)
     if os.path.isfile(contract):
@@ -1028,12 +1255,12 @@ def diff(
                     break
 
             if contract_fp is None:
-                return None
+                return Diff.empty(f"No history found for contract '{contract}'")
 
         # Get history for this contract
         states = store.get_history(contract_fp, limit=100)
         if len(states) < 2:
-            return None
+            return Diff.empty("Need at least 2 validation runs to compute a diff")
 
         # states are newest first, so [0] is latest, [1] is previous
         after_state = states[0]
@@ -1048,7 +1275,7 @@ def diff(
         raise StateCorruptedError(contract, str(e))
     except FileNotFoundError:
         # No history available - this is normal
-        return None
+        return Diff.empty("No history available")
     except Exception as e:
         # For other exceptions, log and re-raise as state corruption
         # since we've already handled the "no history" case
@@ -1142,39 +1369,23 @@ def list_runs(contract: str) -> List[Dict[str, Any]]:
     """
     List past validation runs for a contract.
 
+    .. deprecated::
+        Use :func:`get_history` instead, which supports filtering by date,
+        limit, and failed-only.
+
     Args:
         contract: Contract name or path
 
     Returns:
-        List of run summaries with id, timestamp, passed, etc.
+        List of run summaries (same schema as get_history).
     """
-    from kontra.state.backends import get_default_store
-
-    store = get_default_store()
-    if store is None:
-        return []
-
-    try:
-        contract_fp = _resolve_contract_fingerprint(contract, store, "list_runs")
-        if contract_fp is None:
-            return []
-
-        states = store.get_history(contract_fp, limit=100)
-        return [
-            {
-                "id": s.run_at.isoformat(),
-                "fingerprint": s.contract_fingerprint,
-                "timestamp": s.run_at,
-                "passed": s.summary.passed,
-                "total_rules": s.summary.total_rules,
-                "failed_count": s.summary.failed_rules,
-                "dataset": s.dataset_uri,
-            }
-            for s in states
-        ]
-    except Exception as e:
-        log_exception(_logger, "Failed to list runs", e)
-        return []
+    import warnings
+    warnings.warn(
+        "kontra.list_runs() is deprecated, use kontra.get_history() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return get_history(contract, limit=100)
 
 
 def get_run(
@@ -1209,9 +1420,12 @@ def get_run(
 
         state = None
         if run_id:
-            # Find specific run by timestamp ID
+            # Find specific run - try multiple match strategies:
+            # 1. Match by state.id (the run_id from get_history)
+            # 2. Match by timestamp ISO format
             for s in states:
-                if s.run_at.isoformat() == run_id:
+                state_id = str(s.id) if s.id else None
+                if state_id == run_id or s.run_at.isoformat() == run_id:
                     state = s
                     break
         else:
@@ -1219,11 +1433,17 @@ def get_run(
             state = states[0]
 
         if state is None:
+            if run_id:
+                raise ValueError(f"Run not found: {run_id}")
             return None
 
         # Convert state to ValidationResult
+        # Ensure passed is bool, not None (BUG-043)
+        passed = state.summary.passed
+        if passed is None:
+            passed = state.summary.blocking_failures == 0
         return ValidationResult(
-            passed=state.summary.passed,
+            passed=passed,
             dataset=state.dataset_uri,
             total_rows=state.summary.row_count or 0,
             total_rules=state.summary.total_rules,
@@ -1244,7 +1464,7 @@ def get_run(
                 for r in state.rules
             ],
         )
-    except Exception as e:
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as e:
         log_exception(_logger, "Failed to get run", e)
         return None
 
@@ -1272,7 +1492,7 @@ def has_runs(contract: str) -> bool:
 
         states = store.get_history(contract_fp, limit=1)
         return len(states) > 0
-    except Exception as e:
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as e:
         log_exception(_logger, "Failed to check runs", e)
         return False
 
@@ -1328,10 +1548,12 @@ def resolve(name: str) -> str:
         uri = kontra.resolve("users")
         uri = kontra.resolve("prod_db.users")
     """
+    from kontra.config.settings import resolve_datasource
+
     return resolve_datasource(name)
 
 
-def config(env: Optional[str] = None) -> KontraConfig:
+def config(env: Optional[str] = None) -> "KontraConfig":
     """
     Get effective configuration.
 
@@ -1346,6 +1568,8 @@ def config(env: Optional[str] = None) -> KontraConfig:
         cfg = kontra.config(env="production")
         print(cfg.preplan)  # "on"
     """
+    from kontra.config.settings import resolve_effective_config
+
     return resolve_effective_config(env_name=env)
 
 
@@ -1438,6 +1662,19 @@ def annotate(
             },
         )
     """
+    # Validate annotation inputs (BUG-044, BUG-045)
+    _VALID_ANNOTATION_TYPES = {
+        "resolution", "root_cause", "false_positive",
+        "acknowledged", "suppressed", "note",
+    }
+    if annotation_type not in _VALID_ANNOTATION_TYPES:
+        raise ValueError(
+            f"Invalid annotation_type '{annotation_type}'. "
+            f"Must be one of: {', '.join(sorted(_VALID_ANNOTATION_TYPES))}"
+        )
+    if not summary or not summary.strip():
+        raise ValueError("summary must be a non-empty string")
+
     from kontra.state.backends import get_default_store
     from kontra.state.types import Annotation
     from kontra.state.fingerprint import fingerprint_contract
@@ -1521,7 +1758,7 @@ def annotate(
 
         raise RuntimeError("Backend does not support annotations")
 
-    except Exception as e:
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as e:
         raise RuntimeError(f"Failed to save annotation: {e}") from e
 
 
@@ -1641,7 +1878,7 @@ def get_run_with_annotations(
             ],
             annotations=[a.to_dict() for a in state.annotations] if state.annotations else None,
         )
-    except Exception as e:
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as e:
         log_exception(_logger, "Failed to get run with annotations", e)
         return None
 
@@ -1713,7 +1950,7 @@ def get_annotations(
         )
 
         return [a.to_dict() for a in annotations]
-    except Exception as e:
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, OSError) as e:
         log_exception(_logger, "Failed to get annotations", e)
         return []
 
@@ -1744,6 +1981,14 @@ def set_config(path: Optional[str]) -> None:
         kontra.set_config(None)
     """
     global _config_path_override
+    if path is not None and not os.path.exists(path):
+        import warnings
+        warnings.warn(
+            f"Config path does not exist: {path}. "
+            f"Config will be ignored until the file is created.",
+            UserWarning,
+            stacklevel=2,
+        )
     _config_path_override = path
 
 
@@ -1915,7 +2160,7 @@ def health() -> Dict[str, Any]:
     """
     from kontra.rule_defs.registry import RULE_REGISTRY
     from kontra.config.settings import find_config_file
-    from kontra.engine.engine import _ensure_builtin_rules_registered
+    from kontra.engine.phases.compilation import _ensure_builtin_rules_registered
     from pathlib import Path
 
     # Ensure builtin rules are registered before checking the registry
@@ -1991,6 +2236,8 @@ __all__ = [
     "ValidationResult",
     "RuleResult",
     "DryRunResult",
+    "ExplainResult",
+    "RuleExplainEntry",
     "Diff",
     "Suggestions",
     "SuggestedRule",

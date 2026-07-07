@@ -650,13 +650,16 @@ class TestSuggestions:
         assert all(r.name == "not_null" for r in not_null_only)
 
     def test_suggestions_to_dict(self, sample_df):
-        """to_dict() returns list of rule dicts."""
+        """to_dict() returns dict with metadata and rules list (BUG-009)."""
         profile = kontra.scout(sample_df, preset="lite")
         suggestions = kontra.suggest_rules(profile)
 
-        rules_list = suggestions.to_dict()
-        assert isinstance(rules_list, list)
-        assert all("name" in r and "params" in r for r in rules_list)
+        result = suggestions.to_dict()
+        assert isinstance(result, dict)
+        assert "rules" in result
+        assert "count" in result
+        assert isinstance(result["rules"], list)
+        assert all("name" in r and "params" in r for r in result["rules"])
 
     def test_suggestions_to_yaml(self, sample_df):
         """to_yaml() returns YAML contract string."""
@@ -684,8 +687,8 @@ class TestSuggestions:
         profile = kontra.scout(sample_df, preset="lite")
         suggestions = kontra.suggest_rules(profile)
 
-        # Use suggestions directly
-        result = kontra.validate(sample_df, rules=suggestions.to_dict(), save=False)
+        # Use suggestions directly via to_rules_list()
+        result = kontra.validate(sample_df, rules=suggestions.to_rules_list(), save=False)
         assert isinstance(result, ValidationResult)
 
 
@@ -698,12 +701,13 @@ class TestExplainFunction:
     """Tests for kontra.explain()."""
 
     def test_explain_returns_plan(self, sample_df, sample_contract):
-        """explain() returns execution plan."""
+        """explain() returns ExplainResult."""
+        from kontra.api.results import ExplainResult
         plan = kontra.explain(sample_df, str(sample_contract))
 
-        assert isinstance(plan, dict)
-        assert "required_columns" in plan
-        assert "total_rules" in plan
+        assert isinstance(plan, ExplainResult)
+        assert plan.total_rules > 0
+        assert len(plan.rules) == plan.total_rules
 
 
 # =============================================================================
@@ -773,10 +777,27 @@ class TestHistoryFunctions:
         result = kontra.has_runs("nonexistent_contract")
         assert result is False
 
-    def test_list_runs_no_history(self):
-        """list_runs returns empty list when no history."""
-        result = kontra.list_runs("nonexistent_contract")
+    def test_list_runs_no_history(self, tmp_path):
+        """list_runs returns empty list when no history (with deprecation warning)."""
+        import warnings
+        contract = tmp_path / "contract.yml"
+        contract.write_text("name: test\ndatasource: inline\nrules: []\n")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = kontra.list_runs(str(contract))
         assert result == []
+
+    def test_list_runs_deprecated(self, tmp_path):
+        """list_runs emits a deprecation warning."""
+        import warnings
+        contract = tmp_path / "contract.yml"
+        contract.write_text("name: test\ndatasource: inline\nrules: []\n")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            kontra.list_runs(str(contract))
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep_warnings) == 1
+            assert "get_history" in str(dep_warnings[0].message)
 
     def test_get_run_no_history(self):
         """get_run returns None when no history."""
@@ -823,9 +844,13 @@ class TestDiffFunction:
     """Tests for kontra.diff()."""
 
     def test_diff_no_history(self):
-        """diff returns None when no history."""
+        """diff returns empty Diff when no history (BUG-040: never returns None)."""
         result = kontra.diff("nonexistent_contract")
-        assert result is None
+        assert result is not None
+        assert isinstance(result, kontra.api.results.Diff)
+        assert result.has_changes is False
+        assert result.regressed is False
+        assert result.improved is False
 
     def test_diff_with_history(self, sample_df, tmp_path, monkeypatch):
         """diff returns Diff object when history exists."""
@@ -1347,7 +1372,9 @@ class TestSuggestionsExtended:
 
         json_str = suggestions.to_json()
         parsed = json.loads(json_str)
-        assert isinstance(parsed, list)
+        assert isinstance(parsed, dict)
+        assert "rules" in parsed
+        assert isinstance(parsed["rules"], list)
 
     def test_suggestions_filter_by_name(self, sample_df):
         """filter(name=...) works."""
@@ -1401,17 +1428,17 @@ class TestExplainExtended:
     """Extended tests for kontra.explain()."""
 
     def test_explain_structure(self, sample_df, sample_contract):
-        """explain() returns expected structure."""
+        """explain() returns ExplainResult with correct structure."""
+        from kontra.api.results import ExplainResult
         plan = kontra.explain(sample_df, str(sample_contract))
 
-        assert "required_columns" in plan
-        assert "total_rules" in plan
-        assert "predicates" in plan
-        assert "fallback_rules" in plan
-        assert "sql_rules" in plan
+        assert isinstance(plan, ExplainResult)
+        assert plan.total_rules > 0
+        assert "summary" in plan.to_dict()
+        assert "rules" in plan.to_dict()
 
     def test_explain_columns_list(self, sample_df, tmp_path):
-        """explain() returns required columns."""
+        """explain() shows rules for the correct columns."""
         contract = tmp_path / "contract.yml"
         contract.write_text("""
 name: test
@@ -1426,8 +1453,9 @@ rules:
 """)
 
         plan = kontra.explain(sample_df, str(contract))
-        assert "id" in plan["required_columns"]
-        assert "name" in plan["required_columns"]
+        rule_ids = {e.rule_id for e in plan.rules}
+        assert "COL:id:not_null" in rule_ids
+        assert "COL:name:not_null" in rule_ids
 
 
 # =============================================================================
@@ -1888,3 +1916,481 @@ class TestDryRun:
         assert result.valid is True
         assert result.rules_count == 2
         assert set(result.columns_needed) == {"id", "email"}
+
+
+class TestRegisterRuleProtection:
+    """BUG-035: register_rule must not overwrite built-in rules."""
+
+    def test_overwrite_builtin_raises(self):
+        """Attempting to register with a built-in name raises ValueError."""
+        from kontra.rule_defs.registry import register_rule
+        from kontra.engine.phases.compilation import _ensure_builtin_rules_registered
+        _ensure_builtin_rules_registered()
+
+        with pytest.raises(ValueError, match="Cannot overwrite built-in rule"):
+            @register_rule("not_null")
+            class FakeNotNull:
+                pass
+
+    def test_overwrite_any_builtin(self):
+        """All 18 built-in rule names are protected."""
+        from kontra.rule_defs.registry import _BUILTIN_RULES
+
+        # Ensure builtins are loaded
+        kontra.validate({"x": [1]}, rules=[{"name": "not_null", "params": {"column": "x"}}])
+
+        assert len(_BUILTIN_RULES) == 18
+        for name in ["not_null", "unique", "range", "allowed_values", "regex",
+                      "dtype", "min_rows", "max_rows", "freshness", "compare"]:
+            assert name in _BUILTIN_RULES
+
+    def test_custom_rule_still_works(self):
+        """Custom rules with unique names can still be registered."""
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
+
+        # Clean up if leftover from previous test run
+        RULE_REGISTRY.pop("_test_custom_bug035", None)
+
+        @register_rule("_test_custom_bug035")
+        class TestCustom:
+            pass
+
+        assert "_test_custom_bug035" in RULE_REGISTRY
+        # Clean up
+        del RULE_REGISTRY["_test_custom_bug035"]
+
+
+class TestOnlyColumnsTypeCheck:
+    """BUG-026: only='not_null' iterates chars silently."""
+
+    def test_only_string_raises_type_error(self, sample_df):
+        """Passing a string to only= must raise TypeError."""
+        with pytest.raises(TypeError, match="must be a list"):
+            kontra.validate(sample_df, rules=[rules.not_null("id")], only="not_null")
+
+    def test_columns_string_raises_type_error(self, sample_df):
+        """Passing a string to columns= must raise TypeError."""
+        with pytest.raises(TypeError, match="must be a list"):
+            kontra.validate(sample_df, rules=[rules.not_null("id")], columns="id")
+
+    def test_only_list_works(self, sample_df):
+        """Passing a list to only= works correctly."""
+        result = kontra.validate(sample_df, rules=[
+            rules.not_null("id"),
+            rules.unique("name"),
+        ], only=["not_null"])
+        # Should only run the not_null rule
+        assert len(result.rules) == 1
+        assert result.rules[0].rule_id == "COL:id:not_null"
+
+    def test_columns_list_works(self, sample_df):
+        """Passing a list to columns= works correctly."""
+        result = kontra.validate(sample_df, rules=[
+            rules.not_null("id"),
+            rules.unique("name"),
+        ], columns=["id"])
+        # Should only run rules touching "id"
+        assert len(result.rules) == 1
+        assert result.rules[0].rule_id == "COL:id:not_null"
+
+
+class TestCheckColumnsAcceptsList:
+    """BUG-034: _check_columns() should accept list, not only set."""
+
+    def test_check_columns_with_list(self, sample_df):
+        """_check_columns accepts a list of column names."""
+        from kontra.rule_defs.base import BaseRule
+
+        class DummyRule(BaseRule):
+            rule_scope = "column"
+            def validate(self, df):
+                # Pass a list (not set) to _check_columns
+                result = self._check_columns(df, ["id", "name"])
+                if result is not None:
+                    return result
+                return {"rule_id": "test", "passed": True, "failed_count": 0, "message": "OK"}
+
+        rule = DummyRule("test", {})
+        result = rule.validate(sample_df)
+        assert result["passed"] is True
+
+    def test_check_columns_with_list_missing(self, sample_df):
+        """_check_columns with list detects missing columns."""
+        from kontra.rule_defs.base import BaseRule
+
+        class DummyRule(BaseRule):
+            rule_scope = "column"
+            def validate(self, df):
+                result = self._check_columns(df, ["id", "nonexistent"])
+                if result is not None:
+                    return result
+                return {"rule_id": "test", "passed": True, "failed_count": 0, "message": "OK"}
+
+        rule = DummyRule("test", {})
+        result = rule.validate(sample_df)
+        assert result["passed"] is False
+        assert "nonexistent" in result["message"]
+
+
+class TestAllowedValuesEmptyList:
+    """BUG-056: allowed_values([]) should be rejected at construction."""
+
+    def test_empty_values_rejected(self):
+        """Empty values list raises RuleParameterError."""
+        from kontra.errors import RuleParameterError
+        with pytest.raises(RuleParameterError, match="must not be empty"):
+            kontra.validate(
+                pl.DataFrame({"status": ["a", "b"]}),
+                rules=[{"name": "allowed_values", "params": {"column": "status", "values": []}}],
+            )
+
+    def test_nonempty_values_accepted(self, sample_df):
+        """Non-empty values list works normally."""
+        result = kontra.validate(sample_df, rules=[
+            rules.allowed_values("status", ["active", "inactive", "pending"]),
+        ])
+        assert result.passed
+
+
+class TestRegexNonePattern:
+    """BUG-057: regex(col, None) should raise clean error, not leak TypeError."""
+
+    def test_none_pattern_rejected(self):
+        """None pattern raises RuleParameterError."""
+        from kontra.errors import RuleParameterError
+        with pytest.raises(RuleParameterError, match="must be a non-None string"):
+            kontra.validate(
+                pl.DataFrame({"email": ["a@b.com"]}),
+                rules=[{"name": "regex", "params": {"column": "email", "pattern": None}}],
+            )
+
+    def test_int_pattern_rejected(self):
+        """Non-string pattern raises RuleParameterError."""
+        from kontra.errors import RuleParameterError
+        with pytest.raises(RuleParameterError, match="must be a non-None string"):
+            kontra.validate(
+                pl.DataFrame({"email": ["a@b.com"]}),
+                rules=[{"name": "regex", "params": {"column": "email", "pattern": 123}}],
+            )
+
+
+class TestNoneToggleParams:
+    """BUG-038: preplan=None, pushdown=None, csv_mode=None should use defaults."""
+
+    def test_preplan_none(self, sample_df):
+        """preplan=None uses default ('on')."""
+        result = kontra.validate(sample_df, rules=[
+            rules.not_null("id"),
+        ], preplan=None)
+        assert result.passed
+
+    def test_pushdown_none(self, sample_df):
+        """pushdown=None uses default ('on')."""
+        result = kontra.validate(sample_df, rules=[
+            rules.not_null("id"),
+        ], pushdown=None)
+        assert result.passed
+
+    def test_csv_mode_none(self, sample_df):
+        """csv_mode=None uses default ('auto')."""
+        result = kontra.validate(sample_df, rules=[
+            rules.not_null("id"),
+        ], csv_mode=None)
+        assert result.passed
+
+
+class TestNotNullIncludeNanRuleId:
+    """BUG-055: not_null with include_nan=True should have different rule ID."""
+
+    def test_different_rule_ids(self, sample_df):
+        """not_null and not_null(include_nan=True) on same column get different IDs."""
+        result = kontra.validate(sample_df, rules=[
+            rules.not_null("age"),
+            rules.not_null("age", include_nan=True),
+        ])
+        ids = [r.rule_id for r in result.rules]
+        assert len(ids) == 2
+        assert ids[0] != ids[1]
+        assert "COL:age:not_null" in ids
+        assert "COL:age:not_null:include_nan" in ids
+
+    def test_include_nan_false_same_as_default(self, sample_df):
+        """include_nan=False should get the default rule ID (no suffix)."""
+        result = kontra.validate(sample_df, rules=[
+            rules.not_null("age", include_nan=False),
+        ])
+        assert result.rules[0].rule_id == "COL:age:not_null"
+
+
+class TestRegisterRuleNameValidation:
+    """BUG-036: register_rule should reject empty string and names with spaces."""
+
+    def test_empty_string_rejected(self):
+        """Empty rule name raises ValueError."""
+        from kontra.rule_defs.registry import register_rule
+        from kontra.rule_defs.base import BaseRule
+
+        with pytest.raises(ValueError, match="non-empty string"):
+            @register_rule("")
+            class BadRule(BaseRule):
+                rule_scope = "column"
+                def validate(self, df):
+                    pass
+
+    def test_spaces_rejected(self):
+        """Rule name with spaces raises ValueError."""
+        from kontra.rule_defs.registry import register_rule
+        from kontra.rule_defs.base import BaseRule
+
+        with pytest.raises(ValueError, match="Invalid rule name"):
+            @register_rule("my rule")
+            class BadRule(BaseRule):
+                rule_scope = "column"
+                def validate(self, df):
+                    pass
+
+    def test_valid_name_accepted(self):
+        """Valid rule names (alphanumeric, underscores, hyphens) are accepted."""
+        from kontra.rule_defs.registry import register_rule, RULE_REGISTRY
+        from kontra.rule_defs.base import BaseRule
+
+        @register_rule("test_valid_rule_name_036")
+        class GoodRule(BaseRule):
+            rule_scope = "column"
+            def validate(self, df):
+                pass
+
+        assert "test_valid_rule_name_036" in RULE_REGISTRY
+        # Clean up
+        del RULE_REGISTRY["test_valid_rule_name_036"]
+
+
+class TestPlainListRejected:
+    """BUG-058: Plain list [1, 2, 3] should be rejected as invalid data."""
+
+    def test_plain_list_rejected(self):
+        """Plain list of scalars raises InvalidDataError."""
+        from kontra.errors import InvalidDataError
+        with pytest.raises(InvalidDataError, match="list of dicts"):
+            kontra.validate([1, 2, 3], rules=[rules.not_null("id")])
+
+    def test_list_of_strings_rejected(self):
+        """List of strings raises InvalidDataError."""
+        from kontra.errors import InvalidDataError
+        with pytest.raises(InvalidDataError, match="list of dicts"):
+            kontra.validate(["a", "b", "c"], rules=[rules.not_null("id")])
+
+    def test_list_of_dicts_accepted(self):
+        """List of dicts is accepted and works normally."""
+        result = kontra.validate(
+            [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}],
+            rules=[rules.not_null("id")],
+        )
+        assert result.passed
+
+
+class TestSetConfigWarning:
+    """BUG-050: set_config() should warn for nonexistent path."""
+
+    def test_nonexistent_path_warns(self):
+        """Nonexistent config path produces a warning."""
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            kontra.set_config("/nonexistent/path/config.yml")
+            assert len(w) == 1
+            assert "does not exist" in str(w[0].message)
+        # Reset
+        kontra.set_config(None)
+
+    def test_none_path_no_warning(self):
+        """None path (reset) does not warn."""
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            kontra.set_config(None)
+            assert len(w) == 0
+
+
+class TestAnnotationValidation:
+    """BUG-044/045: Annotation type and summary validation."""
+
+    def test_invalid_annotation_type_rejected(self):
+        """Invalid annotation type raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid annotation_type"):
+            kontra.annotate(
+                "test_contract",
+                actor_id="test",
+                annotation_type="invalid_type",
+                summary="test summary",
+            )
+
+    def test_empty_summary_rejected(self):
+        """Empty summary raises ValueError."""
+        with pytest.raises(ValueError, match="non-empty string"):
+            kontra.annotate(
+                "test_contract",
+                actor_id="test",
+                annotation_type="note",
+                summary="",
+            )
+
+    def test_whitespace_summary_rejected(self):
+        """Whitespace-only summary raises ValueError."""
+        with pytest.raises(ValueError, match="non-empty string"):
+            kontra.annotate(
+                "test_contract",
+                actor_id="test",
+                annotation_type="note",
+                summary="   ",
+            )
+
+
+class TestOnlyColumnsWarnings:
+    """BUG-028/029: Warn when only+columns combined or only matches nothing."""
+
+    def test_only_and_columns_warns(self, sample_df):
+        """Using both only and columns produces a warning."""
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            kontra.validate(sample_df, rules=[
+                rules.not_null("id"),
+                rules.unique("name"),
+            ], only=["not_null"], columns=["name"])
+            user_warnings = [x for x in w if issubclass(x.category, UserWarning)]
+            assert any("takes precedence" in str(x.message) for x in user_warnings)
+
+    def test_only_nonexistent_warns(self, sample_df):
+        """only=['nonexistent'] produces a warning about unmatched rules."""
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = kontra.validate(sample_df, rules=[
+                rules.not_null("id"),
+            ], only=["nonexistent_rule"])
+            user_warnings = [x for x in w if issubclass(x.category, UserWarning)]
+            assert any("matched no rules" in str(x.message) for x in user_warnings)
+        assert len(result.rules) == 0
+
+
+class TestRuleResultToJson:
+    """BUG-049: RuleResult should have to_json() method."""
+
+    def test_to_json_exists(self, sample_df):
+        """RuleResult.to_json() returns valid JSON string."""
+        import json
+        result = kontra.validate(sample_df, rules=[rules.not_null("id")])
+        rule = result.rules[0]
+        json_str = rule.to_json()
+        parsed = json.loads(json_str)
+        assert parsed["rule_id"] == "COL:id:not_null"
+        assert parsed["passed"] is True
+
+    def test_to_json_with_indent(self, sample_df):
+        """to_json(indent=2) produces indented JSON."""
+        result = kontra.validate(sample_df, rules=[rules.not_null("id")])
+        json_str = result.rules[0].to_json(indent=2)
+        assert "\n" in json_str
+
+
+class TestColumnProfileToLlm:
+    """BUG-048: ColumnProfile should have to_llm() method."""
+
+    def test_to_llm_exists(self, sample_df):
+        """ColumnProfile.to_llm() returns token-optimized string."""
+        profile = kontra.profile(sample_df)
+        for col in profile.columns:
+            llm_str = col.to_llm()
+            assert isinstance(llm_str, str)
+            assert col.name in llm_str
+
+    def test_to_llm_content(self, sample_df):
+        """to_llm() includes key stats."""
+        profile = kontra.profile(sample_df)
+        # Find the id column
+        id_col = next(c for c in profile.columns if c.name == "id")
+        llm = id_col.to_llm()
+        assert "rows=" in llm
+        assert "distinct=" in llm
+
+
+class TestRegexLookahead:
+    """BUG-019: Regex with lookahead/lookbehind should fail at construction."""
+
+    def test_lookahead_rejected(self):
+        """Lookahead pattern raises RuleParameterError at construction."""
+        from kontra.errors import RuleParameterError
+        with pytest.raises(RuleParameterError, match="lookahead"):
+            kontra.validate(
+                pl.DataFrame({"email": ["test@example.com"]}),
+                rules=[{"name": "regex", "params": {"column": "email", "pattern": r"(?=.*@).*"}}],
+            )
+
+    def test_lookbehind_rejected(self):
+        """Lookbehind pattern raises RuleParameterError at construction."""
+        from kontra.errors import RuleParameterError
+        with pytest.raises(RuleParameterError, match="lookbehind"):
+            kontra.validate(
+                pl.DataFrame({"email": ["test@example.com"]}),
+                rules=[{"name": "regex", "params": {"column": "email", "pattern": r"(?<=@)\w+"}}],
+            )
+
+    def test_negative_lookahead_rejected(self):
+        """Negative lookahead pattern raises RuleParameterError."""
+        from kontra.errors import RuleParameterError
+        with pytest.raises(RuleParameterError, match="negative lookahead"):
+            kontra.validate(
+                pl.DataFrame({"email": ["test@example.com"]}),
+                rules=[{"name": "regex", "params": {"column": "email", "pattern": r"(?!bad).*"}}],
+            )
+
+
+class TestMissingLocalFileError:
+    """Bug F-010: Missing local file should NOT mention AWS credentials."""
+
+    def test_missing_local_parquet_no_aws_message(self, tmp_path):
+        """A missing local .parquet file should raise FileNotFoundError, not mention AWS."""
+        missing = tmp_path / "nonexistent.parquet"
+        contract = tmp_path / "contract.yml"
+        contract.write_text(f"""
+name: test_missing
+datasource: "{missing}"
+
+rules:
+  - name: not_null
+    params:
+      column: id
+""")
+        with pytest.raises((FileNotFoundError, RuntimeError)) as exc_info:
+            kontra.validate(contract=str(contract))
+
+        msg = str(exc_info.value).lower()
+        assert "aws" not in msg, f"Local file error should not mention AWS: {exc_info.value}"
+        assert "credentials not found" not in msg, (
+            f"Local file error should not say 'credentials not found': {exc_info.value}"
+        )
+
+    def test_format_error_for_cli_local_file_no_aws(self):
+        """format_error_for_cli should not return AWS advice for local file errors."""
+        from kontra.errors import format_error_for_cli
+
+        # Simulate the old-style error that contained "credentials" in a local file context
+        err = RuntimeError(
+            "Unable to access file: FileNotFoundError('../data.parquet'). "
+            "Check file path and credentials."
+        )
+        formatted = format_error_for_cli(err)
+        assert "AWS credentials" not in formatted, (
+            f"Local file error formatted as AWS error: {formatted}"
+        )
+
+    def test_format_error_for_cli_s3_credentials_still_works(self):
+        """format_error_for_cli should still return AWS advice for actual S3 credential errors."""
+        from kontra.errors import format_error_for_cli
+
+        err = RuntimeError("NoCredentials: Unable to locate S3 credentials")
+        formatted = format_error_for_cli(err)
+        assert "AWS credentials" in formatted or "AWS" in formatted, (
+            f"S3 credential error should mention AWS: {formatted}"
+        )

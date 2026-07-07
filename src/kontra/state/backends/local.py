@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 import string
 from datetime import datetime, timezone
@@ -67,7 +66,6 @@ class LocalStore(StateBackend):
         return f"{ts}_{suffix}"
 
     def _parse_run_id_timestamp(self, run_id: str) -> Optional[datetime]:
-        """Parse timestamp from run ID."""
         try:
             # Split on underscore to get timestamp part
             ts_part = run_id.split("_")[0]
@@ -452,7 +450,6 @@ class LocalStore(StateBackend):
         contract_fingerprint: str,
         limit: int = 10,
     ) -> List[ValidationState]:
-        """Get recent history with annotations loaded."""
         states = self.get_history(contract_fingerprint, limit=limit)
 
         runs_dir = self._runs_dir(contract_fingerprint)

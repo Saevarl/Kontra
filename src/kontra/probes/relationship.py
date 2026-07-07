@@ -9,7 +9,7 @@ It does NOT answer: which join type to use, or whether the join is correct.
 
 from __future__ import annotations
 
-from typing import Any, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import polars as pl
 
@@ -24,6 +24,7 @@ def profile_relationship(
     *,
     sample_limit: int = 5,
     save: bool = False,
+    storage_options: Optional[Dict[str, Any]] = None,
 ) -> RelationshipProfile:
     """
     Profile the structural relationship between two datasets.
@@ -66,15 +67,14 @@ def profile_relationship(
         on = [on]
 
     # Load data if paths provided
-    left_df = load_data(left)
-    right_df = load_data(right)
+    left_df = load_data(left, storage_options=storage_options)
+    right_df = load_data(right, storage_options=storage_options)
 
     # Compute the profile
     result = _compute_relationship(left_df, right_df, on, sample_limit)
 
-    # TODO: Implement save functionality
     if save:
-        pass
+        raise NotImplementedError("Probe save not yet implemented")
 
     return result
 

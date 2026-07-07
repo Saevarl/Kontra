@@ -15,31 +15,17 @@ if TYPE_CHECKING:
     import polars as pl
 
 from kontra.connectors.handle import DatasetHandle
-from kontra.connectors.postgres import PostgresConnectionParams, get_connection
+from kontra.connectors.postgres import PostgresConnectionParams
 from kontra.connectors.detection import parse_table_reference, get_default_schema, POSTGRESQL
-from contextlib import contextmanager
+from kontra.connectors.db_utils import get_connection_ctx, pg_quote_ident as _esc_ident
 
 from .base import BaseMaterializer
 from .registry import register_materializer
 
 
-@contextmanager
 def _get_connection_ctx(handle: DatasetHandle):
-    """
-    Get a connection context for either BYOC or URI-based handles.
-
-    For BYOC, yields the external connection directly (not owned by us).
-    For URI-based, yields a new connection (owned by context manager).
-    """
-    if handle.scheme == "byoc" and handle.external_conn is not None:
-        # BYOC: yield external connection directly, don't close it
-        yield handle.external_conn
-    elif handle.db_params:
-        # URI-based: use our connection manager
-        with get_connection(handle.db_params) as conn:
-            yield conn
-    else:
-        raise ValueError("Handle has neither external_conn nor db_params")
+    """Get a connection context for PostgreSQL handles."""
+    return get_connection_ctx(handle, "postgres")
 
 
 @register_materializer("postgres")
@@ -163,7 +149,3 @@ class PostgresMaterializer(BaseMaterializer):
         return self._last_io_debug
 
 
-def _esc_ident(name: str) -> str:
-    """Escape a PostgreSQL identifier (column/table name)."""
-    # Double any internal quotes and wrap in quotes
-    return '"' + name.replace('"', '""') + '"'

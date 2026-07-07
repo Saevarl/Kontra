@@ -17,9 +17,10 @@ Passes when:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
@@ -28,18 +29,28 @@ from kontra.rule_defs.condition_parser import parse_condition, ConditionParseErr
 from kontra.state.types import FailureMode
 
 
-# Map operators to Polars comparison methods
-POLARS_OP_MAP = {
-    "==": pl.Expr.__eq__,
-    "!=": pl.Expr.__ne__,
-    ">": pl.Expr.__gt__,
-    ">=": pl.Expr.__ge__,
-    "<": pl.Expr.__lt__,
-    "<=": pl.Expr.__le__,
-}
+# Map operators to Polars comparison methods. Built lazily so that importing
+# this module does not pull in polars at package load time.
+_POLARS_OP_MAP = None
 
 
-@register_rule("conditional_not_null")
+def _get_polars_op_map():
+    global _POLARS_OP_MAP
+    if _POLARS_OP_MAP is None:
+        import polars as pl
+
+        _POLARS_OP_MAP = {
+            "==": pl.Expr.__eq__,
+            "!=": pl.Expr.__ne__,
+            ">": pl.Expr.__gt__,
+            ">=": pl.Expr.__ge__,
+            "<": pl.Expr.__lt__,
+            "<=": pl.Expr.__le__,
+        }
+    return _POLARS_OP_MAP
+
+
+@register_rule("conditional_not_null", _builtin=True)
 class ConditionalNotNullRule(BaseRule):
     """
     Fails where column is NULL when a condition is met.
@@ -79,8 +90,10 @@ class ConditionalNotNullRule(BaseRule):
 
     def _build_condition_expr(self) -> pl.Expr:
         """Build the Polars expression for the when condition."""
+        import polars as pl
+
         when_col = pl.col(self._when_column)
-        compare_fn = POLARS_OP_MAP[self._when_op]
+        compare_fn = _get_polars_op_map()[self._when_op]
 
         # Handle NULL value in condition
         if self._when_value is None:
@@ -96,6 +109,8 @@ class ConditionalNotNullRule(BaseRule):
         return compare_fn(when_col, self._when_value)
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+        import polars as pl
+
         # Check columns exist before accessing
         col_check = self._check_columns(df, {self._column, self._when_column})
         if col_check is not None:
@@ -156,17 +171,19 @@ class ConditionalNotNullRule(BaseRule):
         return details
 
     def compile_predicate(self) -> Optional[Predicate]:
-        # Build condition expression
-        condition_expr = self._build_condition_expr()
-
-        # Mask: condition is TRUE AND column is NULL
-        expr = condition_expr & pl.col(self._column).is_null()
-
         message = f"{self._column} is null when {self._when_expr}"
+
+        def _expr():
+            import polars as pl
+
+            # Build condition expression
+            condition_expr = self._build_condition_expr()
+            # Mask: condition is TRUE AND column is NULL
+            return condition_expr & pl.col(self._column).is_null()
 
         return Predicate(
             rule_id=self.rule_id,
-            expr=expr,
+            expr_factory=_expr,
             message=message,
             columns={self._column, self._when_column},
         )
