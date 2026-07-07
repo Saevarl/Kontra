@@ -119,14 +119,16 @@ src/kontra/
 │   └── main.py           # validate, profile, init commands
 ├── config/
 │   ├── loader.py         # Contract loading (file, S3)
-│   └── models.py         # Pydantic models
+│   └── models.py         # Contract/RuleSpec dataclasses + validation
 ├── connectors/
 │   ├── handle.py         # DatasetHandle (unified data source)
 │   ├── postgres.py       # PostgreSQL connection
 │   └── sqlserver.py      # SQL Server connection
 ├── engine/
 │   ├── engine.py         # ValidationEngine orchestrator
-│   ├── sql_utils.py      # Shared SQL generation
+│   ├── phases/           # Run phases: compilation, preplan, pushdown, residual, merge
+│   ├── sql_utils.py      # SQL builders (public surface)
+│   ├── sql_ir.py         # SQL condition IR + one renderer per dialect
 │   ├── executors/        # SQL pushdown
 │   │   ├── duckdb_sql.py
 │   │   ├── postgres_sql.py
@@ -139,6 +141,7 @@ src/kontra/
 │       └── polars_backend.py
 ├── preplan/              # Metadata resolution
 │   ├── planner.py        # Parquet row-group analysis
+│   ├── parquet_meta.py   # Pure-Python Parquet footer reader (pyarrow-free)
 │   ├── postgres.py       # pg_stats analysis
 │   └── sqlserver.py      # sys.columns analysis
 ├── rule_defs/            # Rule definitions
@@ -265,7 +268,7 @@ class PositiveRule(BaseRule):
         }
 ```
 
-2. Add SQL support in `sql_utils.py` and executors.
+2. Add SQL support in `sql_utils.py` (builders compose the IR in `sql_ir.py`; dialect differences live in its per-dialect renderers) and wire it in the executors.
 
 3. Add helper in `api/rules.py`:
 

@@ -185,6 +185,8 @@ range(age, 0, 120) →  min=18, max=95 across all row-groups  →  PASS
 
 Preplan only reads footer statistics, so it's often fast even on very large files.
 
+The footer is parsed with a built-in reader, so a validation fully resolved by preplan loads no heavy dependencies at all — no Polars, DuckDB, or Arrow. This keeps cold start low for CLI runs, CI jobs, and agents that import Kontra per invocation.
+
 **When preplan helps:**
 - Local files (fast metadata access)
 - Rules that can be fully resolved from metadata
