@@ -8,7 +8,7 @@ engine, preplan, residual, and materializer modules.
 
 from __future__ import annotations
 
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import pyarrow.fs as pafs
@@ -26,6 +26,76 @@ def is_azure_uri(val: str | None) -> bool:
         return False
     lower = val.lower()
     return lower.startswith(("abfs://", "abfss://", "az://"))
+
+
+def validate_azure_account_key(key: str) -> None:
+    """
+    Reject account keys that are not valid base64 BEFORE they reach DuckDB.
+
+    Azure storage account keys are always base64. A malformed key otherwise
+    surfaces as an opaque auth/HTTP failure at query time — and because the
+    key is embedded into a ';'-delimited connection string for DuckDB's
+    secret manager, a key containing ';' or '=' in the wrong place could
+    silently alter the connection-string fields.
+
+    Raises:
+        AzureCredentialError: key is empty, has non-base64 characters,
+            or has broken padding.
+    """
+    import base64
+    import binascii
+
+    from kontra.errors import AzureCredentialError
+
+    if not key or not key.strip():
+        raise AzureCredentialError("account key is empty")
+    if key != key.strip():
+        raise AzureCredentialError("account key has leading/trailing whitespace")
+    if len(key) % 4 != 0:
+        raise AzureCredentialError(
+            f"account key length ({len(key)}) is not a multiple of 4 — "
+            "base64 requires '='-padded groups of 4 (key may be truncated)"
+        )
+    try:
+        base64.b64decode(key, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise AzureCredentialError(f"account key is not valid base64: {e}") from e
+
+
+def azure_transport_option(fs_opts: "Optional[Dict[str, str]]" = None) -> Optional[str]:
+    """
+    Transport adapter for DuckDB's Azure extension: 'default', 'curl', or None.
+
+    The Azure SDK's default transport commonly fails to locate the CA bundle
+    inside slim/container Linux images (opaque SSL/connection errors at query
+    time); the 'curl' transport searches the standard certificate paths. So:
+
+    Resolution order:
+      1. fs_opts['azure_transport'] (storage_options key: 'transport')
+      2. KONTRA_AZURE_TRANSPORT env var
+      3. 'curl' on Linux (containers are the motivating case)
+      4. None elsewhere — keep DuckDB's platform default
+
+    Returns None to mean "don't set the option".
+
+    Raises:
+        ValueError: explicit value is neither 'default' nor 'curl'.
+    """
+    import os
+    import sys
+
+    value = (fs_opts or {}).get("azure_transport") or os.getenv("KONTRA_AZURE_TRANSPORT")
+    if value:
+        value = value.strip().lower()
+        if value not in ("default", "curl"):
+            raise ValueError(
+                f"Invalid Azure transport {value!r}: expected 'default' or 'curl' "
+                "(storage_options 'transport' / KONTRA_AZURE_TRANSPORT)"
+            )
+        return value
+    if sys.platform.startswith("linux"):
+        return "curl"
+    return None
 
 
 def is_parquet(path: str | None) -> bool:
@@ -119,6 +189,7 @@ def create_azure_filesystem(handle: "DatasetHandle") -> "pafs.FileSystem":
     # Use only ONE auth method - account_key takes priority over sas_token
     # PyArrow can crash or behave unexpectedly when both are provided
     if opts.get("azure_account_key"):
+        validate_azure_account_key(opts["azure_account_key"])
         kwargs["account_key"] = opts["azure_account_key"]
     elif opts.get("azure_sas_token"):
         # PyArrow requires SAS token WITH the leading '?'

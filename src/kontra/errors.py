@@ -276,6 +276,22 @@ class AzureAccessError(ConnectionError):
         )
 
 
+class AzureCredentialError(ConnectionError):
+    """Azure storage credential has an invalid shape (caught before any request)."""
+
+    def __init__(self, detail: str):
+        super().__init__(
+            "Invalid Azure storage account key",
+            context=detail,
+            suggestions=[
+                "Azure account keys are base64 strings (typically 88 characters ending in '==')",
+                "Copy the key from Azure Portal → Storage account → Access keys",
+                "Check AZURE_STORAGE_ACCOUNT_KEY / AZURE_STORAGE_ACCESS_KEY for truncation or stray quotes",
+                "If you meant to use a SAS token, set AZURE_STORAGE_SAS_TOKEN instead",
+            ],
+        )
+
+
 # =============================================================================
 # Data Errors
 # =============================================================================

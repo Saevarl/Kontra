@@ -262,6 +262,15 @@ Requires environment variables:
 - `AZURE_STORAGE_ACCOUNT_NAME`
 - `AZURE_STORAGE_ACCESS_KEY` or `AZURE_STORAGE_SAS_TOKEN`
 
+Account keys are validated as base64 up front — a malformed or truncated key
+fails immediately with a clear error instead of an opaque HTTP failure at
+query time.
+
+**Containers:** on Linux, Kontra sets DuckDB's Azure transport to `curl`
+automatically, which avoids CA-bundle lookup failures common in slim Docker
+images. Override with `storage_options={"transport": "default"}` or the
+`KONTRA_AZURE_TRANSPORT` environment variable (`curl` or `default`).
+
 ---
 
 ## Environments

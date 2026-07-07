@@ -201,7 +201,8 @@ class TestDuckDBSessionAzure:
             format="parquet",
             fs_opts={
                 "azure_account_name": "testaccount",
-                "azure_account_key": "testkey",
+                # base64-shaped: keys are validated before reaching DuckDB
+                "azure_account_key": "dGVzdGtleQ==",
             },
         )
 
@@ -626,3 +627,159 @@ class TestAzureCrypticErrorWrapping:
                 mat.schema()
 
             assert "Azure file not found or inaccessible" in str(exc_info.value)
+
+
+class TestAzureAccountKeyValidation:
+    """Account keys must be base64-shaped before they reach DuckDB."""
+
+    # Azurite's well-known development key — a real, valid base64 key.
+    AZURITE_KEY = (
+        "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+    )
+
+    def test_valid_key_passes(self):
+        from kontra.connectors.uri_utils import validate_azure_account_key
+
+        validate_azure_account_key(self.AZURITE_KEY)  # must not raise
+
+    @pytest.mark.parametrize(
+        "bad_key,reason",
+        [
+            ("", "empty"),
+            ("   ", "whitespace only"),
+            (" " + AZURITE_KEY, "leading whitespace"),
+            (AZURITE_KEY[:-1], "truncated (length % 4 != 0)"),
+            ("not base64!!", "non-base64 characters"),
+            ("abcd;AccountName=evil;abcd==", "connection-string injection"),
+            ("ab=cd" + "A" * 3, "padding in the middle"),
+        ],
+    )
+    def test_malformed_keys_rejected(self, bad_key, reason):
+        from kontra.connectors.uri_utils import validate_azure_account_key
+        from kontra.errors import AzureCredentialError
+
+        with pytest.raises(AzureCredentialError):
+            validate_azure_account_key(bad_key)
+
+    def test_configure_azure_rejects_bad_key_before_duckdb(self):
+        """_configure_azure must raise before creating any DuckDB secret."""
+        from unittest.mock import MagicMock
+        from kontra.engine.backends.duckdb_session import _configure_azure
+        from kontra.errors import AzureCredentialError
+
+        con = MagicMock()
+        with pytest.raises(AzureCredentialError):
+            _configure_azure(
+                con,
+                {"azure_account_name": "acct", "azure_account_key": "not-base64!!"},
+            )
+        # Only the extension INSTALL/LOAD may have run — no CREATE SECRET.
+        executed = " ".join(str(c) for c in con.execute.call_args_list)
+        assert "CREATE SECRET" not in executed
+
+    def test_error_is_actionable(self):
+        from kontra.connectors.uri_utils import validate_azure_account_key
+        from kontra.errors import AzureCredentialError
+
+        with pytest.raises(AzureCredentialError) as exc_info:
+            validate_azure_account_key("truncated")
+        msg = str(exc_info.value)
+        assert "base64" in msg
+        assert "AZURE_STORAGE_ACCOUNT_KEY" in msg
+
+
+class TestAzureTransportOption:
+    """DuckDB Azure transport: 'curl' where the SDK default breaks (containers)."""
+
+    def test_explicit_fs_opts_wins(self, monkeypatch):
+        from kontra.connectors.uri_utils import azure_transport_option
+
+        monkeypatch.setenv("KONTRA_AZURE_TRANSPORT", "default")
+        assert azure_transport_option({"azure_transport": "curl"}) == "curl"
+
+    def test_env_var_used_when_no_fs_opt(self, monkeypatch):
+        from kontra.connectors.uri_utils import azure_transport_option
+
+        monkeypatch.setenv("KONTRA_AZURE_TRANSPORT", "Default")
+        assert azure_transport_option({}) == "default"
+
+    def test_invalid_value_raises(self, monkeypatch):
+        from kontra.connectors.uri_utils import azure_transport_option
+
+        monkeypatch.delenv("KONTRA_AZURE_TRANSPORT", raising=False)
+        with pytest.raises(ValueError, match="'default' or 'curl'"):
+            azure_transport_option({"azure_transport": "winhttp"})
+
+    def test_linux_defaults_to_curl(self, monkeypatch):
+        import kontra.connectors.uri_utils as uu
+
+        monkeypatch.delenv("KONTRA_AZURE_TRANSPORT", raising=False)
+        monkeypatch.setattr("sys.platform", "linux")
+        assert uu.azure_transport_option(None) == "curl"
+
+    def test_macos_leaves_default(self, monkeypatch):
+        import kontra.connectors.uri_utils as uu
+
+        monkeypatch.delenv("KONTRA_AZURE_TRANSPORT", raising=False)
+        monkeypatch.setattr("sys.platform", "darwin")
+        assert uu.azure_transport_option(None) is None
+
+    def test_configure_azure_sets_transport(self, monkeypatch):
+        """_configure_azure must SET azure_transport_option_type when resolved."""
+        from unittest.mock import MagicMock
+        from kontra.engine.backends.duckdb_session import _configure_azure
+
+        con = MagicMock()
+        _configure_azure(
+            con,
+            {
+                "azure_account_name": "acct",
+                "azure_account_key": TestAzureAccountKeyValidation.AZURITE_KEY,
+                "azure_transport": "curl",
+            },
+        )
+        executed = " ".join(str(c) for c in con.execute.call_args_list)
+        assert "azure_transport_option_type" in executed
+
+    def test_configure_azure_no_transport_when_unresolved(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from kontra.engine.backends.duckdb_session import _configure_azure
+
+        monkeypatch.delenv("KONTRA_AZURE_TRANSPORT", raising=False)
+        monkeypatch.setattr("sys.platform", "darwin")
+        con = MagicMock()
+        _configure_azure(
+            con,
+            {
+                "azure_account_name": "acct",
+                "azure_account_key": TestAzureAccountKeyValidation.AZURITE_KEY,
+            },
+        )
+        executed = " ".join(str(c) for c in con.execute.call_args_list)
+        assert "azure_transport_option_type" not in executed
+
+    def test_storage_options_transport_normalized(self):
+        """storage_options={'transport': ...} must map to fs_opts['azure_transport']."""
+        from kontra.connectors.handle import DatasetHandle
+
+        handle = DatasetHandle.from_uri(
+            "abfss://container@acct.dfs.core.windows.net/data.parquet",
+            storage_options={"account_name": "acct", "transport": "curl"},
+        )
+        assert handle.fs_opts.get("azure_transport") == "curl"
+
+
+class TestAzureKeyValidationEntryPoints:
+    """Every path that hands an account key to DuckDB/PyArrow validates first."""
+
+    def test_pyarrow_filesystem_rejects_bad_key(self):
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.connectors.uri_utils import create_azure_filesystem
+        from kontra.errors import AzureCredentialError
+
+        handle = DatasetHandle.from_uri(
+            "abfss://container@acct.dfs.core.windows.net/data.parquet",
+            storage_options={"account_name": "acct", "account_key": "not-base64!!"},
+        )
+        with pytest.raises(AzureCredentialError):
+            create_azure_filesystem(handle)

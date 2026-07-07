@@ -618,7 +618,18 @@ class SamplingOrchestrator:
                 if fs_opts.get("azure_account_name"):
                     con.execute(f"SET azure_storage_account_name='{fs_opts['azure_account_name']}';")
                 if fs_opts.get("azure_account_key"):
+                    from kontra.connectors.uri_utils import validate_azure_account_key
+
+                    validate_azure_account_key(fs_opts["azure_account_key"])
                     con.execute(f"SET azure_storage_account_key='{fs_opts['azure_account_key']}';")
+                from kontra.connectors.uri_utils import azure_transport_option
+
+                transport = azure_transport_option(fs_opts)
+                if transport:
+                    try:
+                        con.execute(f"SET azure_transport_option_type='{transport}';")
+                    except duckdb.Error:
+                        pass  # older azure extensions lack the option; keep default
 
             # Escape path for SQL
             escaped_path = path.replace("'", "''")

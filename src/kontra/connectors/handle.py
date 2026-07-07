@@ -350,6 +350,7 @@ def _merge_azure_storage_options(opts: Dict[str, str], storage_options: Dict[str
         "client_id": "azure_client_id",
         "client_secret": "azure_client_secret",
         "endpoint": "azure_endpoint",
+        "transport": "azure_transport",
     }
 
     for user_key, internal_key in key_map.items():
@@ -366,6 +367,7 @@ def _merge_azure_storage_options(opts: Dict[str, str], storage_options: Dict[str
         "azure_client_id",
         "azure_client_secret",
         "azure_endpoint",
+        "azure_transport",
     ]
     for key in internal_keys:
         if key in storage_options and storage_options[key] is not None:

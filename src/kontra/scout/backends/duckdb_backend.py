@@ -244,6 +244,9 @@ class DuckDBBackend:
                 # Use only ONE auth method - account_key takes priority over sas_token
                 # PyArrow can crash or behave unexpectedly when both are provided
                 if opts.get("azure_account_key"):
+                    from kontra.connectors.uri_utils import validate_azure_account_key
+
+                    validate_azure_account_key(opts["azure_account_key"])
                     kwargs["account_key"] = opts["azure_account_key"]
                 elif opts.get("azure_sas_token"):
                     # PyArrow requires SAS token WITH the leading '?'

@@ -213,7 +213,12 @@ def _configure_azure(
         # User provided full connection string
         _create_azure_secret(con, conn_string)
     elif account_name and account_key:
-        # Account key auth
+        # Account key auth. Validate base64 shape first: the key is embedded
+        # in a ';'-delimited connection string, and DuckDB's own failure for
+        # a malformed key is an opaque HTTP error at query time.
+        from kontra.connectors.uri_utils import validate_azure_account_key
+
+        validate_azure_account_key(account_key)
         cs = f"DefaultEndpointsProtocol=https;AccountName={account_name};AccountKey={account_key}"
         if endpoint:
             cs += f";BlobEndpoint={endpoint}"
@@ -248,6 +253,14 @@ def _configure_azure(
     # Custom endpoint for Azurite/sovereign clouds
     if endpoint and not conn_string and not (account_name and (account_key or sas_token)):
         _safe_set(con, "azure_endpoint", endpoint)
+
+    # Transport adapter: the SDK default can't find CA bundles in many
+    # container images; 'curl' searches the standard paths (Linux default).
+    from kontra.connectors.uri_utils import azure_transport_option
+
+    transport = azure_transport_option(fs_opts)
+    if transport:
+        _safe_set(con, "azure_transport_option_type", transport)
 
     # Performance settings (same as S3)
     _safe_set(con, "http_timeout", "600")  # 10 minutes for large files

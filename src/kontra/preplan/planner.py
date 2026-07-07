@@ -74,7 +74,19 @@ def _expand_glob_first_file(
         if fs_opts.get("azure_account_name"):
             con.execute(f"SET azure_storage_account_name='{fs_opts['azure_account_name']}'")
         if fs_opts.get("azure_account_key"):
+            from kontra.connectors.uri_utils import validate_azure_account_key
+
+            validate_azure_account_key(fs_opts["azure_account_key"])
             con.execute(f"SET azure_storage_account_key='{fs_opts['azure_account_key']}'")
+        if fs_opts.get("azure_account_name") or fs_opts.get("azure_account_key"):
+            from kontra.connectors.uri_utils import azure_transport_option
+
+            transport = azure_transport_option(fs_opts)
+            if transport:
+                try:
+                    con.execute(f"SET azure_transport_option_type='{transport}'")
+                except duckdb.Error:
+                    pass  # older azure extensions lack the option; keep default
 
     try:
         result = con.execute(f"SELECT file FROM glob('{glob_path}') LIMIT 1").fetchone()
@@ -543,6 +555,11 @@ def preplan_parquet_glob(
         first_file_path = first_file.replace("s3://", "")
     elif glob_path.startswith("abfss://") and fs_opts:
         from pyarrow import fs as pafs
+
+        if fs_opts.get("azure_account_key"):
+            from kontra.connectors.uri_utils import validate_azure_account_key
+
+            validate_azure_account_key(fs_opts["azure_account_key"])
         filesystem = pafs.AzureFileSystem(
             account_name=fs_opts.get("azure_account_name"),
             account_key=fs_opts.get("azure_account_key"),
