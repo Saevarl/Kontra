@@ -18,10 +18,12 @@ from kontra.probes.utils import load_data
 
 
 def profile_relationship(
-    left: Union[pl.DataFrame, str],
-    right: Union[pl.DataFrame, str],
+    left: Any,
+    right: Any,
     on: Union[str, List[str]],
     *,
+    left_table: Optional[str] = None,
+    right_table: Optional[str] = None,
     sample_limit: int = 5,
     save: bool = False,
     storage_options: Optional[Dict[str, Any]] = None,
@@ -36,10 +38,16 @@ def profile_relationship(
     This probe provides deterministic, structured measurements that allow
     agents (and humans) to understand JOIN viability before writing SQL.
 
+    ``left`` and ``right`` may each be any Kontra source, mixed freely: a
+    DataFrame, a file/cloud path, a database URI, a named datasource, or a
+    live database connection (pass ``left_table``/``right_table``).
+
     Args:
-        left: Left dataset (DataFrame or path/URI)
-        right: Right dataset (DataFrame or path/URI)
+        left: Left dataset (any supported source).
+        right: Right dataset (any supported source).
         on: Column(s) to join on
+        left_table: Table reference when ``left`` is a DB connection object.
+        right_table: Table reference when ``right`` is a DB connection object.
         sample_limit: Max samples per category (default 5)
         save: Persist result to state backend (not yet implemented)
 
@@ -66,9 +74,10 @@ def profile_relationship(
     if isinstance(on, str):
         on = [on]
 
-    # Load data if paths provided
-    left_df = load_data(left, storage_options=storage_options)
-    right_df = load_data(right, storage_options=storage_options)
+    # Materialize both sides from any supported source (file, db table, named
+    # datasource, DataFrame, or BYOC connection).
+    left_df = load_data(left, storage_options=storage_options, table=left_table)
+    right_df = load_data(right, storage_options=storage_options, table=right_table)
 
     # Compute the profile
     result = _compute_relationship(left_df, right_df, on, sample_limit)

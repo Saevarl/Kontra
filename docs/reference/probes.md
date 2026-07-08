@@ -25,13 +25,40 @@ result = kontra.compare(
 )
 ```
 
+### Any source vs any source
+
+`before` and `after` are resolved through the same connectors the validation
+engine uses, so each side can be any supported source and the two sides can be
+different kinds — compare a database table to a Parquet file, a file to a
+DataFrame, a named datasource to a live connection, and so on:
+
+```python
+# Database table  vs  file
+kontra.compare("postgres:///public.orders", "s3://lake/orders.parquet", key="id")
+
+# Named datasource  vs  DataFrame
+kontra.compare("prod_db.users", staging_df, key="user_id")
+
+# Bring-your-own connection  vs  file  (pass the table for the connection side)
+kontra.compare(conn, "./orders.csv", key="id", before_table="public.orders")
+```
+
+Accepted sources: Polars/pandas DataFrame, list-of-dicts, file/cloud path
+(`.parquet`, `.csv`, `s3://`, `abfss://`), database URI
+(`postgres://…/schema.table`, `mssql://…/schema.table`), named datasource
+(`prod_db.users`), or a live database connection object. Both sides are fully
+materialized before comparison; database extras (`kontra[postgres]` /
+`kontra[sqlserver]`) are required for the database sources.
+
 ### Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `before` | DataFrame or path | Dataset before transformation |
-| `after` | DataFrame or path | Dataset after transformation |
+| `before` | any source | Dataset before transformation |
+| `after` | any source | Dataset after transformation |
 | `key` | str or list[str] | Column(s) identifying rows |
+| `before_table` | str | Table ref when `before` is a DB **connection** object |
+| `after_table` | str | Table ref when `after` is a DB **connection** object |
 | `sample_limit` | int | Max samples per category (default: 5) |
 
 ### Output Schema
@@ -141,13 +168,19 @@ profile = kontra.profile_relationship(
 )
 ```
 
+`left` and `right` accept any source `compare()` does (DataFrame, file/cloud
+path, database URI, named datasource, or a live connection with
+`left_table`/`right_table`), mixed freely.
+
 ### Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `left` | DataFrame or path | Left dataset |
-| `right` | DataFrame or path | Right dataset |
+| `left` | any source | Left dataset |
+| `right` | any source | Right dataset |
 | `on` | str or list[str] | Column(s) to join on |
+| `left_table` | str | Table ref when `left` is a DB **connection** object |
+| `right_table` | str | Table ref when `right` is a DB **connection** object |
 | `sample_limit` | int | Max samples per category (default: 5) |
 
 ### Output Schema

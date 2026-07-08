@@ -18,10 +18,12 @@ from kontra.probes.utils import load_data
 
 
 def compare(
-    before: Union[pl.DataFrame, str],
-    after: Union[pl.DataFrame, str],
+    before: Any,
+    after: Any,
     key: Union[str, List[str]],
     *,
+    before_table: Optional[str] = None,
+    after_table: Optional[str] = None,
     sample_limit: int = 5,
     save: bool = False,
     storage_options: Optional[Dict[str, Any]] = None,
@@ -36,10 +38,17 @@ def compare(
     This probe provides deterministic, structured measurements that allow
     agents (and humans) to reason about transformation effects with confidence.
 
+    ``before`` and ``after`` may each be any Kontra source, mixed freely:
+    a Polars/pandas DataFrame, a file or cloud path, a database URI
+    (``postgres://.../public.users``), a named datasource (``prod_db.users``),
+    or a live database connection (pass ``before_table``/``after_table``).
+
     Args:
-        before: Dataset before transformation (DataFrame or path/URI)
-        after: Dataset after transformation (DataFrame or path/URI)
+        before: Dataset before transformation (any supported source).
+        after: Dataset after transformation (any supported source).
         key: Column(s) to use as row identifier
+        before_table: Table reference when ``before`` is a DB connection object.
+        after_table: Table reference when ``after`` is a DB connection object.
         sample_limit: Max samples per category (default 5)
         save: Persist result to state backend (not yet implemented)
 
@@ -66,9 +75,11 @@ def compare(
     if isinstance(key, str):
         key = [key]
 
-    # Load data if paths provided
-    before_df = load_data(before, storage_options=storage_options)
-    after_df = load_data(after, storage_options=storage_options)
+    # Materialize both sides from any supported source (file, db table, named
+    # datasource, DataFrame, or BYOC connection). before_table/after_table
+    # apply only when the corresponding side is a live database connection.
+    before_df = load_data(before, storage_options=storage_options, table=before_table)
+    after_df = load_data(after, storage_options=storage_options, table=after_table)
 
     # Compute the comparison
     result = _compute_compare(before_df, after_df, key, sample_limit)

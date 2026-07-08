@@ -56,60 +56,128 @@ def _is_azure_uri(uri: str) -> bool:
 
 
 def load_data(
-    data: Union[pl.DataFrame, str],
+    data: Any,
     storage_options: Optional[Dict[str, Any]] = None,
+    table: Optional[str] = None,
 ) -> pl.DataFrame:
     """
-    Load data from DataFrame or path/URI.
+    Materialize any Kontra-supported data source into a Polars DataFrame.
+
+    Supported sources (any combination can be compared against any other):
+      - Polars DataFrame — returned as-is
+      - pandas DataFrame / list-of-dicts / dict-of-columns — normalized
+      - File / cloud path or URI — .parquet/.csv, s3://, abfss://
+      - Database URI — postgres://.../schema.table, mssql://.../schema.table
+      - Named datasource — "prod_db.users" (resolved from .kontra/config.yml)
+      - BYOC connection object — pass ``table="schema.table"`` alongside it
 
     Args:
-        data: Either a Polars DataFrame or a path/URI string
-        storage_options: Cloud storage credentials (S3, Azure, GCS)
+        data: Any of the sources above.
+        storage_options: Cloud storage credentials (S3, Azure, GCS).
+        table: Table reference, required only when ``data`` is a live database
+            connection object (BYOC).
 
     Returns:
-        Polars DataFrame
+        Polars DataFrame.
 
     Raises:
-        ValueError: If data type is not supported
+        ValueError: If the source cannot be resolved.
 
     Notes:
-        For MVP, only Polars DataFrames are fully supported.
-        File paths are loaded via Polars read functions.
-
-        For Azure URIs, if storage_options is not provided, credentials
-        are auto-populated from environment variables (AZURE_STORAGE_ACCOUNT_NAME,
-        AZURE_STORAGE_ACCESS_KEY, AZURE_STORAGE_SAS_TOKEN) to match DuckDB behavior.
+        Database tables and named datasources are materialized through the same
+        connectors/materializers the validation engine uses, so probes accept
+        exactly the sources ``kontra.validate()`` accepts. For Azure URIs,
+        credentials auto-populate from environment variables when
+        storage_options is not provided.
     """
     if isinstance(data, pl.DataFrame):
         return data
 
-    if isinstance(data, str):
-        # Reject database URIs early with a clear message
-        _lower = data.lower()
-        if _lower.startswith(("postgres://", "postgresql://", "mssql://")):
-            raise ValueError(
-                "Database URIs are not supported for probes. "
-                "Load the data as a DataFrame first."
-            )
+    # In-memory: pandas DataFrame, list-of-dicts, dict-of-columns.
+    if not isinstance(data, str):
+        from kontra.connectors.detection import is_database_connection
 
-        so = storage_options or {}
+        if is_database_connection(data):
+            if not table:
+                raise ValueError(
+                    "A database connection requires table=... "
+                    "e.g. compare(conn, df, key='id', before_table='public.users')"
+                )
+            from kontra.connectors.handle import DatasetHandle
 
-        # Auto-populate Azure credentials from env vars if not provided
-        if not so and _is_azure_uri(data):
-            so = _get_azure_storage_options()
+            return _materialize_handle(DatasetHandle.from_connection(data, table))
 
-        # Simple file loading for MVP
-        if data.lower().endswith(".parquet"):
-            return pl.read_parquet(data, storage_options=so) if so else pl.read_parquet(data)
-        elif data.lower().endswith(".csv"):
-            return pl.read_csv(data, storage_options=so) if so else pl.read_csv(data)
-        elif data.startswith("s3://") or _is_azure_uri(data):
-            return pl.read_parquet(data, storage_options=so) if so else pl.read_parquet(data)
-        else:
-            # Try parquet first, then CSV
-            try:
-                return pl.read_parquet(data, storage_options=so) if so else pl.read_parquet(data)
-            except (OSError, ValueError):
-                return pl.read_csv(data, storage_options=so) if so else pl.read_csv(data)
+        # list / dict / pandas → Polars (reuses the engine's normalizer)
+        from kontra import _normalize_to_dataframe
 
-    raise ValueError(f"Unsupported data type: {type(data)}")
+        normalized = _normalize_to_dataframe(data)
+        if isinstance(normalized, pl.DataFrame):
+            return normalized
+        raise ValueError(f"Unsupported data type: {type(data)}")
+
+    # String: named datasource → URI, then dispatch by scheme.
+    uri = _resolve_named_datasource(data)
+    lower = uri.lower()
+
+    if lower.startswith(("postgres://", "postgresql://", "mssql://")):
+        from kontra.connectors.handle import DatasetHandle
+
+        return _materialize_handle(DatasetHandle.from_uri(uri))
+
+    # File / cloud path — fast Polars read.
+    so = storage_options or {}
+    if not so and _is_azure_uri(uri):
+        so = _get_azure_storage_options()
+
+    if lower.endswith(".csv"):
+        return pl.read_csv(uri, storage_options=so) if so else pl.read_csv(uri)
+    if lower.endswith(".parquet") or uri.startswith("s3://") or _is_azure_uri(uri):
+        return pl.read_parquet(uri, storage_options=so) if so else pl.read_parquet(uri)
+    # Unknown extension: try parquet then CSV.
+    try:
+        return pl.read_parquet(uri, storage_options=so) if so else pl.read_parquet(uri)
+    except (OSError, ValueError):
+        return pl.read_csv(uri, storage_options=so) if so else pl.read_csv(uri)
+
+
+def _resolve_named_datasource(data: str) -> str:
+    """Resolve a named datasource (``prod_db.users``) to a URI; pass through
+    anything that is already a path/URI or has no matching config."""
+    if "://" in data or "/" in data or "\\" in data or data.endswith((".parquet", ".csv")):
+        return data
+    try:
+        from kontra.config.settings import resolve_datasource
+
+        return resolve_datasource(data)
+    except (ValueError, KeyError):
+        # Not a named datasource — treat as a literal path/URI.
+        return data
+
+
+def _materialize_handle(handle: Any) -> pl.DataFrame:
+    """Load a full table for a DatasetHandle via the engine's materializers.
+
+    Registers the materializer needed for this handle's flavor first (the same
+    lazy path-aware registration the validation engine performs), then loads
+    every column.
+    """
+    from kontra.engine.materializers.registry import (
+        pick_materializer,
+        register_materializers_for_path,
+    )
+
+    # BYOC handles carry scheme="byoc" and identify the flavor via dialect.
+    db_type = None
+    for key in (handle.scheme, getattr(handle, "dialect", None)):
+        if key in ("postgres", "postgresql"):
+            db_type = "postgres"
+            break
+        if key in ("mssql", "sqlserver"):
+            db_type = "sqlserver"
+            break
+
+    execution_path = "database" if db_type else "file"
+    register_materializers_for_path(execution_path, db_type)
+
+    materializer = pick_materializer(handle)
+    return materializer.to_polars(None)

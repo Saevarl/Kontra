@@ -406,3 +406,18 @@ class TestRelationshipAgentWalkthrough:
 
         # Sample shows which key is duplicated
         assert 1 in result.samples_right_duplicates
+
+
+def test_profile_relationship_source_agnostic(tmp_path):
+    """profile_relationship accepts mixed sources (file vs DataFrame)."""
+    import polars as pl
+    import kontra
+
+    left = pl.DataFrame({"customer_id": [1, 2, 3], "name": ["a", "b", "c"]})
+    right = pl.DataFrame({"customer_id": [1, 1, 2, 4], "order": [10, 11, 20, 40]})
+    lp = str(tmp_path / "left.parquet")
+    left.write_parquet(lp)
+    prof = kontra.profile_relationship(lp, right, on="customer_id")
+    assert prof is not None
+    # id 3 has no match on the right; id 1 appears twice on the right
+    assert prof.right_key_multiplicity_max >= 2

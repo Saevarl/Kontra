@@ -387,3 +387,83 @@ class TestCompareImport:
         df = pl.DataFrame({"id": [1], "value": [100]})
         result = kontra.compare(df, df, key="id")
         assert isinstance(result, kontra.CompareResult)
+
+
+class TestCompareSourceAgnostic:
+    """compare() accepts any Kontra source on either side, mixed freely."""
+
+    def _before_after(self, tmp_path):
+        before = pl.DataFrame({"order_id": [1, 2, 3, 4], "amount": [10, 20, 30, 40]})
+        after = pl.DataFrame({"order_id": [1, 2, 3, 5], "amount": [10, 20, 30, 99]})
+        pq = str(tmp_path / "before.parquet")
+        csv = str(tmp_path / "after.csv")
+        before.write_parquet(pq)
+        after.write_csv(csv)
+        return before, after, pq, csv
+
+    def test_file_vs_dataframe(self, tmp_path):
+        before, after, pq, _ = self._before_after(tmp_path)
+        r = compare(pq, after, key="order_id")
+        assert (r.preserved, r.dropped, r.added) == (3, 1, 1)
+
+    def test_dataframe_vs_file(self, tmp_path):
+        before, after, _, csv = self._before_after(tmp_path)
+        r = compare(before, csv, key="order_id")
+        assert (r.preserved, r.dropped, r.added) == (3, 1, 1)
+
+    def test_file_vs_file(self, tmp_path):
+        _, _, pq, csv = self._before_after(tmp_path)
+        r = compare(pq, csv, key="order_id")
+        assert (r.preserved, r.dropped, r.added) == (3, 1, 1)
+
+    def test_pandas_input(self, tmp_path):
+        pd = pytest.importorskip("pandas")
+        _, _, pq, _ = self._before_after(tmp_path)
+        after_pd = pd.DataFrame({"order_id": [1, 2, 3, 5], "amount": [10, 20, 30, 99]})
+        r = compare(pq, after_pd, key="order_id")
+        assert (r.preserved, r.dropped, r.added) == (3, 1, 1)
+
+    def test_list_of_dicts_input(self):
+        before = pl.DataFrame({"order_id": [1, 2, 3, 4], "amount": [10, 20, 30, 40]})
+        after = [{"order_id": i, "amount": a} for i, a in [(1, 10), (2, 20), (3, 30), (5, 99)]]
+        r = compare(before, after, key="order_id")
+        assert (r.preserved, r.dropped, r.added) == (3, 1, 1)
+
+    def test_named_datasource(self, tmp_path, monkeypatch):
+        before = pl.DataFrame({"order_id": [1, 2, 3, 4], "amount": [10, 20, 30, 40]})
+        after = pl.DataFrame({"order_id": [1, 2, 3, 5], "amount": [10, 20, 30, 99]})
+        before.write_parquet(str(tmp_path / "before.parquet"))
+        kdir = tmp_path / ".kontra"
+        kdir.mkdir()
+        (kdir / "config.yml").write_text(
+            f'version: "1"\n'
+            f"datasources:\n"
+            f"  warehouse:\n"
+            f"    type: files\n"
+            f"    base_path: {tmp_path}\n"
+            f"    tables:\n"
+            f"      before: before.parquet\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        r = compare("warehouse.before", after, key="order_id")
+        assert (r.preserved, r.dropped, r.added) == (3, 1, 1)
+
+    def test_database_uri_no_longer_rejected(self):
+        """A database URI routes to the materializer (reaches a real connection
+        attempt) instead of the old 'not supported for probes' rejection."""
+        after = pl.DataFrame({"order_id": [1], "amount": [10]})
+        with pytest.raises(Exception) as exc:
+            compare("postgres://u:p@127.0.0.1:1/db/public.t", after, key="order_id")
+        msg = str(exc.value).lower()
+        assert "not supported for probes" not in msg
+        assert "not registered" not in msg
+
+    def test_connection_requires_table(self):
+        """A live DB connection object without a table= is a clear error."""
+        class FakeConn:  # looks like a DBAPI connection
+            def cursor(self):
+                raise AssertionError("should fail before use")
+
+        after = pl.DataFrame({"order_id": [1], "amount": [10]})
+        with pytest.raises(ValueError, match="table"):
+            compare(FakeConn(), after, key="order_id")
