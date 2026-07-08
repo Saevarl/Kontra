@@ -256,6 +256,30 @@ suggestions.filter(min_confidence=0.8)
 suggestions.save("contracts/generated.yml")
 ```
 
+### Compare Two Profiles (bisect)
+
+Diff two sources by column in one call — a file vs a table, two pipeline
+stages, before vs after — without holding two full profiles in context:
+
+```python
+diff = kontra.compare_profiles("stage1.parquet", "stage2.parquet")
+
+print(diff.to_llm())          # compact, column-aligned delta
+diff.has_schema_changes       # columns added/removed or dtype changed?
+diff.columns_added            # ["new_col"]
+diff.columns_removed          # ["dropped_col"]
+diff.dtype_changes            # [ColumnDiff(amount: int -> float), ...]
+diff.null_rate_increases      # columns whose null rate grew
+```
+
+Either side can be any source `kontra.profile()` accepts (DataFrame, file,
+database URI, named datasource), mixed freely — e.g. a live table vs the
+Parquet a job wrote:
+
+```python
+diff = kontra.compare_profiles("postgres:///public.orders", "s3://lake/orders.parquet")
+```
+
 ---
 
 ## Sampling
@@ -605,7 +629,8 @@ All `to_llm()` outputs are designed for token efficiency. See [Agents & Services
 | `kontra.validate(data, contract, **opts)` | Validate data |
 | `kontra.explain(data, contract, **opts)` | Preview execution plan |
 | `kontra.profile(data, preset, **opts)` | Profile data |
-| `kontra.draft(profile)` | Draft rules from profile |
+| `kontra.draft(profile)` | Suggest rules from a profile |
+| `kontra.compare_profiles(a, b)` | Diff two profiles, aligned by column |
 | `kontra.diff(contract, **opts)` | Compare validation runs |
 | `kontra.list_rules()` | List available rule types |
 | `@kontra.validate_decorator(...)` | Pipeline validation decorator |
@@ -629,6 +654,7 @@ See [Transformation Probes](reference/probes.md) for details.
 | `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |
 | `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved`, `to_llm()` |
 | `Suggestions` | `filter()`, `to_dict()`, `to_yaml()`, `save()` |
+| `ProfileDiff` | `has_changes`, `has_schema_changes`, `columns_added`, `columns_removed`, `columns_changed`, `dtype_changes`, `to_llm()`, `to_dict()` |
 | `ExplainResult` | `total_rules`, `rules`, `summary`, `to_dict()`, `to_llm()` |
 | `DryRunResult` | `valid`, `rules_count`, `columns_needed`, `errors` |
 

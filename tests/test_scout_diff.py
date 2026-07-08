@@ -429,3 +429,61 @@ class TestCreateProfileState:
         assert state.source_fingerprint == fingerprint_source("s3://bucket/data.parquet")
         assert len(state.source_fingerprint) == 16
         assert state.profile is profile
+
+
+class TestCompareProfilesVerb:
+    """kontra.compare_profiles(a, b): one-call two-source profile diff."""
+
+    def test_basic_two_dataframe_bisect(self):
+        import polars as pl
+        import kontra
+
+        a = pl.DataFrame({"id": [1, 2, 3], "amount": [10, 20, 30], "status": ["ok", "ok", "bad"]})
+        b = pl.DataFrame({"id": [1, 2, 3, 4, 5], "amount": [10.5, 20.0, None, 40.0, 50.0],
+                          "note": ["x", "y", "z", "w", "v"]})
+        diff = kontra.compare_profiles(a, b, a_label="stage1", b_label="stage2")
+
+        assert diff.row_count_before == 3
+        assert diff.row_count_after == 5
+        assert diff.row_count_delta == 2
+        assert "note" in diff.columns_added
+        assert "status" in diff.columns_removed
+        assert diff.has_schema_changes is True
+        # amount changed int -> float
+        dtype_changed = {c.column_name for c in diff.dtype_changes}
+        assert "amount" in dtype_changed
+
+    def test_identical_sources_no_changes(self):
+        import polars as pl
+        import kontra
+
+        df = pl.DataFrame({"id": [1, 2, 3], "v": ["a", "b", "c"]})
+        diff = kontra.compare_profiles(df, df)
+        assert diff.has_changes is False
+        assert diff.columns_added == [] and diff.columns_removed == []
+
+    def test_to_llm_is_compact_text(self):
+        import polars as pl
+        import kontra
+
+        a = pl.DataFrame({"id": [1, 2], "x": [1, 2]})
+        b = pl.DataFrame({"id": [1, 2, 3], "x": [1, 2, 3]})
+        out = kontra.compare_profiles(a, b).to_llm()
+        assert isinstance(out, str) and len(out) > 0
+        assert "3" in out  # the new row count appears
+
+    def test_file_vs_dataframe(self, tmp_path):
+        import polars as pl
+        import kontra
+
+        p = str(tmp_path / "before.parquet")
+        pl.DataFrame({"id": [1, 2, 3], "amount": [1, 2, 3]}).write_parquet(p)
+        after = pl.DataFrame({"id": [1, 2, 3, 4], "amount": [1.0, 2.0, 3.0, 4.0]})
+        diff = kontra.compare_profiles(p, after)
+        assert diff.row_count_delta == 1
+        assert "amount" in {c.column_name for c in diff.dtype_changes}
+
+    def test_exported_from_kontra(self):
+        import kontra
+        assert hasattr(kontra, "compare_profiles")
+        assert "compare_profiles" in kontra.__all__

@@ -1007,6 +1007,67 @@ def draft(
     return Suggestions.from_profile(data_profile, min_confidence=min_confidence)
 
 
+def compare_profiles(
+    a: Union[str, "pl.DataFrame", List[Dict[str, Any]], Dict[str, Any]],
+    b: Union[str, "pl.DataFrame", List[Dict[str, Any]], Dict[str, Any]],
+    *,
+    preset: str = "scan",
+    columns: Optional[List[str]] = None,
+    sample: Optional[int] = None,
+    storage_options: Optional[Dict[str, Any]] = None,
+    a_label: Optional[str] = None,
+    b_label: Optional[str] = None,
+) -> ProfileDiff:
+    """
+    Profile two sources and diff them, aligned by column, in one call.
+
+    The two-source "bisect" verb: point it at two pipeline stages (a file, a
+    table, a DataFrame, a database URI, a named datasource — any mix) and get a
+    structured, column-aligned delta — row-count change, columns added/removed,
+    and per-column dtype / null-rate / cardinality / value shifts — without
+    holding two full profiles in context. Read it with ``.to_llm()``.
+
+    Args:
+        a: The "before" source (any source ``kontra.profile()`` accepts).
+        b: The "after" source.
+        preset: Profiling preset (scout | scan | interrogate).
+        columns: Restrict profiling to these columns on both sides.
+        sample: Sample size for profiling (None = full).
+        storage_options: Cloud storage credentials.
+        a_label / b_label: Display names for the two sides (default: the source
+            string, truncated).
+
+    Returns:
+        ProfileDiff — ``.has_changes``, ``.has_schema_changes``,
+        ``.columns_added/.columns_removed/.columns_changed``, ``.to_llm()``,
+        ``.to_dict()``.
+
+    Example:
+        diff = kontra.compare_profiles("stage1.parquet", "stage2.parquet")
+        print(diff.to_llm())
+        if diff.has_schema_changes:
+            ...
+    """
+    prof_a = profile(a, preset=preset, columns=columns, sample=sample,
+                     save=False, storage_options=storage_options)
+    prof_b = profile(b, preset=preset, columns=columns, sample=sample,
+                     save=False, storage_options=storage_options)
+
+    def _label(src: Any, given: Optional[str]) -> str:
+        if given:
+            return given
+        text = src if isinstance(src, str) else type(src).__name__
+        return text if len(text) <= 60 else text[:57] + "..."
+
+    from kontra.connectors.db_utils import mask_credentials
+
+    return ProfileDiff.from_profiles(
+        prof_a, prof_b,
+        before_label=mask_credentials(_label(a, a_label)),
+        after_label=mask_credentials(_label(b, b_label)),
+    )
+
+
 def get_history(
     contract: str,
     *,
@@ -2208,6 +2269,7 @@ __all__ = [
     "validate",
     "profile",
     "draft",
+    "compare_profiles",
     "explain",
     "diff",
     "profile_diff",

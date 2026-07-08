@@ -744,6 +744,36 @@ class ProfileDiff:
 
         return diff
 
+    @classmethod
+    def from_profiles(
+        cls,
+        before: "DatasetProfile",
+        after: "DatasetProfile",
+        *,
+        before_label: str = "a",
+        after_label: str = "b",
+    ) -> "ProfileDiff":
+        """
+        Diff two freshly-computed profiles (not saved state).
+
+        This is the one-call "profile A vs B, aligned by column" entry point:
+        wrap each DatasetProfile in a lightweight ProfileState and reuse the
+        same alignment/delta logic as the historical diff.
+        """
+        bs = ProfileState(
+            source_fingerprint="",
+            source_uri=before_label,
+            profiled_at=getattr(before, "profiled_at", "") or "",
+            profile=before,
+        )
+        as_ = ProfileState(
+            source_fingerprint="",
+            source_uri=after_label,
+            profiled_at=getattr(after, "profiled_at", "") or "",
+            profile=after,
+        )
+        return cls.compute(bs, as_)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
