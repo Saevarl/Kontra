@@ -125,6 +125,33 @@ def _coerce_int(value: Any, field_name: str) -> int:
     raise ValueError(f"{field_name}: expected an integer, got {type(value).__name__}")
 
 
+def _coerce_optional_int(value: Any, field_name: str) -> Optional[int]:
+    """Coerce to Optional[int]; None/'' pass through as None."""
+    if value is None or value == "":
+        return None
+    return _coerce_int(value, field_name)
+
+
+_BOOL_TRUE = {"true", "t", "yes", "y", "on", "1"}
+_BOOL_FALSE = {"false", "f", "no", "n", "off", "0"}
+
+
+def _coerce_bool(value: Any, field_name: str) -> bool:
+    """Coerce to bool the way pydantic's lax bool mode does (so an
+    env-substituted 'false' string is not silently truthy)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in _BOOL_TRUE:
+            return True
+        if token in _BOOL_FALSE:
+            return False
+    raise ValueError(f"{field_name}: expected a boolean, got {value!r}")
+
+
 def _coerce_float(value: Any, field_name: str) -> float:
     """Coerce value to float the way pydantic's lax float mode does."""
     if isinstance(value, bool):
@@ -314,6 +341,15 @@ class ScoutConfig:
             ("scout", "scan", "interrogate", "lite", "standard", "deep", "llm"),
             "preset",
         )
+        # Coerce like pydantic did: env substitution (${VAR}) yields strings,
+        # so "false" must not be truthy and "10" must become int 10 (else a
+        # downstream numeric comparison raises TypeError).
+        self.save_profile = _coerce_bool(self.save_profile, "save_profile")
+        self.include_patterns = _coerce_bool(self.include_patterns, "include_patterns")
+        self.list_values_threshold = _coerce_optional_int(
+            self.list_values_threshold, "list_values_threshold"
+        )
+        self.top_n = _coerce_optional_int(self.top_n, "top_n")
 
     @classmethod
     def model_validate(cls, data: Any) -> "ScoutConfig":
@@ -883,8 +919,13 @@ def resolve_datasource(
     # Build full URI based on datasource type
     if isinstance(ds, PostgresDatasourceConfig):
         # postgres://user:pass@host:port/database/schema.table
-        user = ds.user
-        password = ds.password
+        # Percent-encode userinfo: a credential containing @ / # ? : would
+        # otherwise make the URI unparseable (or silently reparse to a
+        # different host). The parser unquotes on the way back in.
+        from urllib.parse import quote
+
+        user = quote(ds.user, safe="") if ds.user else ds.user
+        password = quote(ds.password, safe="") if ds.password else ds.password
         host = ds.host
         port = ds.port
         database = ds.database
@@ -913,8 +954,10 @@ def resolve_datasource(
 
     elif isinstance(ds, MSSQLDatasourceConfig):
         # mssql://user:pass@host:port/database/schema.table
-        user = ds.user
-        password = ds.password
+        from urllib.parse import quote
+
+        user = quote(ds.user, safe="") if ds.user else ds.user
+        password = quote(ds.password, safe="") if ds.password else ds.password
         host = ds.host
         port = ds.port
         database = ds.database

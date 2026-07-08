@@ -92,25 +92,22 @@ class NotNullRule(BaseRule):
         column = self.params["column"]
         include_nan = self.params.get("include_nan", False)
 
-        message = f"{column} contains null values"
+        # include_nan needs dtype awareness: is_nan() raises on non-float
+        # columns (str/date/…). The vectorized predicate has no schema access,
+        # so defer to validate(), which gates is_nan() on col.dtype.is_float().
+        # Plain not_null stays vectorized.
         if include_nan:
-            message = f"{column} contains null or NaN values"
+            return None
 
         def _expr():
             import polars as pl
 
-            expr = pl.col(column).is_null()
-            if include_nan:
-                # Note: is_nan() only works on float columns, but compile_predicate
-                # doesn't have access to the DataFrame schema. The expression will
-                # be evaluated at runtime where Polars handles type checking.
-                expr = expr | pl.col(column).is_nan()
-            return expr
+            return pl.col(column).is_null()
 
         return Predicate(
             rule_id=self.rule_id,
             expr_factory=_expr,
-            message=message,
+            message=f"{column} contains null values",
             columns={column},
         )
 

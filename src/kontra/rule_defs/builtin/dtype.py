@@ -28,7 +28,10 @@ def _get_type_maps():
             "uint8": {pl.UInt8}, "uint16": {pl.UInt16}, "uint32": {pl.UInt32}, "uint64": {pl.UInt64},
             # floats
             "float32": {pl.Float32}, "float64": {pl.Float64},
-            "float": {pl.Float64}, "double": {pl.Float64},  # common aliases treated as exact Float64
+            # "float" is intentionally NOT here: it is resolved as a family
+            # (Float32|Float64) via _FAMILY_MAP, which is checked first in
+            # _normalize_expected. Only "double" is an exact Float64 alias.
+            "double": {pl.Float64},
             # booleans
             "bool": {pl.Boolean}, "boolean": {pl.Boolean},
             # temporal

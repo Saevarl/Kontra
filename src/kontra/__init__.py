@@ -431,6 +431,11 @@ def _normalize_and_check_args(
     if contract is None and rules is None:
         raise ValueError("Either contract or rules must be provided")
 
+    # A data file passed as the contract would be read as YAML and raise an
+    # opaque UnicodeDecodeError deep in the loader. Fail early and clearly.
+    if isinstance(contract, str):
+        _validate_contract_path(contract, "validate")
+
     # Type-check tally — string 'no'/'false' are truthy in Python (BUG F-017)
     if tally is not None and not isinstance(tally, bool):
         raise TypeError(

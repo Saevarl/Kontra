@@ -104,7 +104,11 @@ class StringPatternRule(BaseRule):
         }
 
     def to_sql_filter(self, dialect: str = "postgres") -> str | None:
-        col = f'"{self._column}"'
+        # Escape the identifier ('"' doubled) and quote-escape the pattern
+        # literal ("'" doubled). escape_like_pattern only handles LIKE
+        # metachars (%, _, \); without doubling the quote, a substring
+        # containing ' would break out of the literal (SQL injection).
+        col = '"' + self._column.replace('"', '""') + '"'
         escaped = escape_like_pattern(self._pattern_value)
-        pattern = self._like_pattern(escaped)
+        pattern = self._like_pattern(escaped).replace("'", "''")
         return f"{col} IS NULL OR {col} NOT LIKE '{pattern}' ESCAPE '\\'"

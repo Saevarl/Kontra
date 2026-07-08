@@ -9,6 +9,7 @@ postgres.py and sqlserver.py.
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -273,19 +274,29 @@ def mask_credentials(uri: str) -> str:
     if not uri or "://" not in uri:
         return uri
 
-    # Use urlparse for robust handling of credentials
+    # Primary: mask greedily from the first ':' after '://' to the LAST '@'.
+    # urlparse cannot be trusted here — a password containing '/', '#', '?' or
+    # '@' makes it split the netloc at the wrong place (password=None, or a
+    # partial mask that leaks the rest of the secret into the "host"). Host and
+    # path carry no '@' in Kontra URIs, so the last '@' is the userinfo/host
+    # boundary. Over-masks a path containing '@' rather than risk a leak —
+    # masking must fail safe. Proper fix for such URIs is percent-encoding at
+    # build time (resolve_datasource); this stays defensive.
+    m = re.match(r"^([^:]+://[^:/@]+:).+@([^@]*)$", uri)
+    if m:
+        return f"{m.group(1)}***@{m.group(2)}"
+
+    # Fallback for shapes the regex doesn't cover (e.g. no explicit password).
     try:
         parsed = urlparse(uri)
         if parsed.password:
-            # Reconstruct with masked password
-            # netloc format: user:password@host:port
             if parsed.port:
                 new_netloc = f"{parsed.username}:***@{parsed.hostname}:{parsed.port}"
             else:
                 new_netloc = f"{parsed.username}:***@{parsed.hostname}"
             return uri.replace(parsed.netloc, new_netloc)
     except (ValueError, AttributeError):
-        pass  # URI parsing failed
+        pass
 
     return uri
 

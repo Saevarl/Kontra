@@ -13,6 +13,17 @@ class MaxRowsRule(BaseRule):
     rule_scope = "dataset"
     supports_tally = False
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Validate threshold at construction time (mirrors min_rows)
+        threshold = self.params.get("value", self.params.get("threshold", 0))
+        if threshold is not None and int(threshold) < 0:
+            from kontra.errors import RuleParameterError
+            raise RuleParameterError(
+                "max_rows", "threshold",
+                f"must be non-negative, got {threshold}"
+            )
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         # Accept both 'value' and 'threshold' for backwards compatibility
         max_count = int(self.params.get("value", self.params.get("threshold", 0)))

@@ -77,6 +77,7 @@ def register(app: typer.Typer) -> None:
         try:
             from kontra.config.settings import resolve_effective_config
             from kontra.config.loader import ContractLoader
+            from kontra.errors import ConfigError, ContractError
             from kontra.state.backends import get_default_store, get_store
             from kontra.state.fingerprint import fingerprint_contract
             from kontra.state.types import StateDiff
@@ -247,6 +248,15 @@ def register(app: typer.Typer) -> None:
 
         except FileNotFoundError as e:
             typer.secho(f"Error: {e}", fg=typer.colors.RED)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+
+        except (ContractError, ConfigError) as e:
+            # Missing/invalid contract or config is a config error (exit 2),
+            # matching `kontra validate`. ContractNotFoundError is a KontraError,
+            # not a FileNotFoundError, so it must be caught explicitly.
+            from kontra.errors import format_error_for_cli
+
+            typer.secho(f"Error: {format_error_for_cli(e)}", fg=typer.colors.RED)
             raise typer.Exit(code=EXIT_CONFIG_ERROR)
 
         except Exception as e:

@@ -54,3 +54,30 @@ def test_sql_rules_execute_first_and_affect_loaded_counts(write_contract, datase
     # Regardless of failures, required stays 9; loaded <= available
     assert counts["required_count"] == 9
     assert counts["loaded_count"] <= counts["available_count"]
+
+
+def test_custom_sql_check_not_starved_by_projection(tmp_path):
+    """custom_sql_check references arbitrary columns via SELECT *; column
+    projection driven by a co-resident rule must not prune the columns its
+    SQL needs (regression: projected frame -> Binder Error -> wrong count)."""
+    import polars as pl
+    import kontra
+
+    p = str(tmp_path / "csc.parquet")
+    pl.DataFrame({"id": ["usr_1", "usr_2", "usr_3"], "n": [500, 50, 900]}).write_parquet(p)
+    rules = [
+        kontra.rules.regex("id", "^usr_"),
+        {"name": "custom_sql_check", "params": {"query": "SELECT * FROM {table} WHERE n > 100"}},
+    ]
+    for projection in (True, False):
+        for toggles in (
+            dict(preplan="off", pushdown="off"),
+            dict(preplan="off", pushdown="on"),
+            dict(preplan="on", pushdown="on"),
+        ):
+            result = kontra.validate(
+                p, rules=rules, save=False, projection=projection, tally=True, **toggles
+            )
+            csc = [r for r in result.rules if "custom" in r.rule_id.lower()][0]
+            assert csc.failed_count == 2, (projection, toggles, csc.failed_count, csc.message)
+            assert "Binder" not in csc.message

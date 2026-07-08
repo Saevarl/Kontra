@@ -27,6 +27,9 @@ F = TypeVar("F", bound=Callable[..., Any])
 # Built-in mode shortcuts
 OnFailMode = Literal["raise", "warn", "return_result"]
 
+# Recognized string modes (callables are also accepted as handlers)
+_VALID_ON_FAIL_MODES = ("raise", "warn", "return_result")
+
 # Callback signature: (result, data) -> data (or raise)
 OnFailCallback = Callable[["ValidationResult", Any], Any]  # type: ignore
 
@@ -110,6 +113,16 @@ def validate(
     """
     if contract is None and rules is None:
         raise ValueError("Either 'contract' or 'rules' must be provided")
+
+    # Validate on_fail at decoration time so a typo (e.g. "ignore", "Raise")
+    # fails loudly instead of silently falling through every branch and
+    # returning data as if validation passed. Callables remain valid handlers.
+    if isinstance(on_fail, str) and on_fail not in _VALID_ON_FAIL_MODES:
+        raise ValueError(
+            f"Invalid on_fail mode: {on_fail!r}. "
+            f"Valid modes are: {', '.join(repr(m) for m in _VALID_ON_FAIL_MODES)}, "
+            f"or a callable(result, data) -> data."
+        )
 
     def decorator(func: F) -> F:
         @functools.wraps(func)

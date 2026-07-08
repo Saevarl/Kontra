@@ -209,6 +209,14 @@ class RangeRule(BaseRule):
             else:
                 mask = col > max_val
 
+            # NaN is out-of-range for float columns. In Polars `NaN < min` is
+            # False and fill_null does not catch NaN, so a min-only bound would
+            # silently let NaN pass. The `> max` path already catches NaN, but
+            # we add it consistently so min-only and max-only agree. Gate on
+            # float dtype since is_nan() raises on non-float columns.
+            if col_dtype.is_float():
+                mask = mask | col.is_nan()
+
             # NULLs are also failures
             mask = mask.fill_null(True)
 
@@ -287,6 +295,14 @@ class RangeRule(BaseRule):
         # Coerce string boundaries (best-effort without dtype hint)
         min_val = _coerce_temporal(min_val)
         max_val = _coerce_temporal(max_val)
+
+        # A min-only bound cannot catch NaN in a dtype-safe vectorized expr:
+        # is_nan() raises on non-float columns and compile_predicate has no
+        # schema to gate on. Route min-only to validate() (which gates is_nan
+        # on float dtype). max-only and both-bounds catch NaN via `> max`,
+        # matching validate(), so they stay vectorized.
+        if max_val is None:
+            return None
 
         def _expr():
             import polars as pl

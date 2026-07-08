@@ -66,7 +66,10 @@ def _conservative_builtin_mapping(rule: BaseRule) -> List[PredicateT]:
     # not_null(column)
     if name.endswith("not_null"):
         col = params.get("column")
-        if isinstance(col, str) and col:
+        # include_nan cannot be proven from Parquet null_count (NaN is not
+        # counted as NULL in column stats), so it must NOT be resolved by the
+        # metadata tier — defer to Polars, which checks is_nan() directly.
+        if isinstance(col, str) and col and not params.get("include_nan", False):
             out.append((rid, col, "not_null", True))
 
     # equals / allowed_values (single value)

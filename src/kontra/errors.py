@@ -583,7 +583,12 @@ def format_error_for_cli(error: Exception) -> str:
     error_str = str(error).lower()
 
     if isinstance(error, FileNotFoundError):
-        return f"File not found: {error}\n\nCheck the file path is correct."
+        # Some FileNotFoundErrors already carry a "File not found:" message;
+        # don't double the prefix.
+        err_str = str(error)
+        if err_str.startswith("File not found:"):
+            return f"{err_str}\n\nCheck the file path is correct."
+        return f"File not found: {err_str}\n\nCheck the file path is correct."
 
     if "connection refused" in error_str:
         return (

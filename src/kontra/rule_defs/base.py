@@ -59,6 +59,15 @@ class BaseRule(ABC):
         """
         return set()
 
+    def needs_all_columns(self) -> bool:
+        """
+        True if this rule needs every column of the frame and cannot enumerate
+        them (e.g. custom_sql_check runs arbitrary ``SELECT * ... WHERE`` SQL).
+        When any residual rule returns True, column projection is disabled so
+        the rule's SQL doesn't hit a missing-column error on a pruned frame.
+        """
+        return False
+
     def _get_required_param(self, key: str, param_type: type = str) -> Any:
         """
         Get a required parameter, raising a clear error if missing or wrong type.

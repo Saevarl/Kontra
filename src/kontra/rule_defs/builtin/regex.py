@@ -59,6 +59,22 @@ class RegexRule(BaseRule):
                 "pattern",
                 f"Invalid regex pattern{pos_info}: {e.msg}\n  Pattern: {pattern}"
             )
+        # Validate against the actual execution engine (Polars/Rust regex).
+        # Some patterns valid in Python's `re` (e.g. backreferences like (a)\1)
+        # are rejected by the Rust regex engine. Catching this at construction
+        # avoids a tier divergence at runtime where validate() returns
+        # failed_count=height while compile_predicate() raises unguarded
+        # (pitfall #4: bad patterns should fail at construction). polars is
+        # imported locally to respect the lazy-loading invariant.
+        import polars as pl
+        try:
+            pl.Series([""]).str.contains(pattern)
+        except pl.exceptions.ComputeError as e:
+            raise RuleParameterError(
+                "regex",
+                "pattern",
+                f"Pattern is not supported by the execution engine: {e}\n  Pattern: {pattern}"
+            ) from e
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         import polars as pl

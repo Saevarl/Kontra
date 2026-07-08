@@ -220,7 +220,12 @@ class Like(Node):
 
     def sql(self, r: "Renderer") -> str:
         keyword = "NOT LIKE" if self.negate else "LIKE"
-        return f"{self.expr.sql(r)} {keyword} '{self.pattern}' ESCAPE '\\'"
+        # lit_str quote-escapes the pattern: LIKE metachars (%, _, \) were
+        # already escaped by escape_like_pattern, but a single quote in the
+        # user substring would otherwise break out of the literal (SQL
+        # injection → silent false PASS). lit_str only doubles ', leaving the
+        # wildcards and \-escapes intact.
+        return f"{self.expr.sql(r)} {keyword} {lit_str(self.pattern, r.dialect)} ESCAPE '\\'"
 
 
 @dataclass(frozen=True)
@@ -359,7 +364,13 @@ class SqlServerRenderer(Renderer):
         return f"CAST({inner_sql} AS NVARCHAR(MAX))"
 
     def len_of(self, inner_sql: str) -> str:
-        return f"LEN({inner_sql})"
+        # Plain LEN() ignores trailing spaces, so "abc   " reports length 3 —
+        # diverging from Polars str.len_chars() and DuckDB/Postgres LENGTH(),
+        # which count them. LEN(x + N'.') - 1 counts trailing spaces while
+        # staying a character count (not DATALENGTH's byte count). NULL
+        # propagates (NULL + ... = NULL), and the length rule's IS NULL guard
+        # handles nulls separately.
+        return f"(LEN({inner_sql} + N'.') - 1)"
 
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         # SQL Server has no regex; PATINDEX with LIKE-style patterns (limited).
@@ -407,14 +418,17 @@ def renderer_for(dialect: Dialect) -> Renderer:
 def bounds(expr: Node, min_val: Optional[Any], max_val: Optional[Any]) -> List[Node]:
     """Out-of-bounds comparison nodes for an expression (either bound optional).
 
-    Bounds are rendered verbatim via ``str()`` (matching the original
-    behaviour: numeric bounds are inlined, not parameterised).
+    Rendered via ``lit_value``: numeric bounds inline bare (``... < 5``) exactly
+    as before, while string/temporal bounds (e.g. a date "2020-01-01") are
+    quoted (``... < '2020-01-01'``) so the database casts them instead of
+    parsing the literal as integer arithmetic and erroring out — which would
+    poison the entire pushdown batch.
     """
     conds: List[Node] = []
     if min_val is not None:
-        conds.append(Cmp(expr, "<", RawExpr(str(min_val))))
+        conds.append(Cmp(expr, "<", Lit(min_val)))
     if max_val is not None:
-        conds.append(Cmp(expr, ">", RawExpr(str(max_val))))
+        conds.append(Cmp(expr, ">", Lit(max_val)))
     return conds
 
 

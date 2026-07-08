@@ -300,6 +300,12 @@ def _decide_pass(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, A
         elif op == "==":
             if mn is None or mx is None or not (mn == val and mx == val):
                 ok_all = False; break
+            # NULLs are a violation for ==-derived rules (allowed_values treats
+            # NULL as failing even when the value matches). min/max exclude
+            # NULLs, so an all-matching group can still hide nulls — can't
+            # prove PASS unless null_count is provably zero.
+            if nulls != 0:
+                ok_all = False; break
         elif op == "not_null":
             # Can only prove PASS if null_count is exactly 0 for all row groups
             # null_count > 0 means violations exist; None means unknown (can't prove)
@@ -338,11 +344,26 @@ def _decide_fail(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, A
             # If an RG has range entirely not equal to val ⇒ all rows in that RG violate
             if mn is not None and mx is not None and (mx < val or mn > val or (mn == mx and mn != val)):
                 return True
+            # A NULL is a violation for ==-derived rules (allowed_values).
+            if isinstance(nulls, int) and nulls > 0:
+                return True
         elif op == "not_null":
             # Any rg with null_count > 0 proves at least one violation
             if isinstance(nulls, int) and nulls > 0:
                 return True
-        # For >, <, !=, ^= we typically cannot prove dataset-level FAIL with min/max alone.
+        elif op == "^=":
+            # String prefix (regex ^prefix). If an RG's entire [min,max] range
+            # is disjoint from the prefix window [val, val+￿], every
+            # non-null row in it fails the prefix — at least one violation.
+            # This mirrors the >=/<= symmetry so a disjoint RG is proven FAIL
+            # instead of being silently pruned by _verdict_overlaps (which
+            # would drop 100%-violating groups from the residual scan).
+            if isinstance(mn, str) and isinstance(mx, str):
+                sval = str(val)
+                upper = sval + "\uffff"
+                if upper < mn or sval > mx:
+                    return True
+        # For >, <, != we typically cannot prove dataset-level FAIL with min/max alone.
     return False
 
 

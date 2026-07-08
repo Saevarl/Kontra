@@ -234,12 +234,15 @@ def _configure_azure(
     elif tenant_id and client_id and client_secret:
         # Service principal auth - use credential chain
         _safe_set(con, "azure_account_name", account_name or "")
-        # Set up credential chain for service principal
+        # Set up credential chain for service principal.
+        # Escape single quotes so an account_name containing a quote cannot
+        # break out of the SQL string literal (same escaping as _create_azure_secret).
+        escaped_account = (account_name or "").replace("'", "''")
         con.execute(f"""
             CREATE SECRET azure_sp (
                 TYPE AZURE,
                 PROVIDER CREDENTIAL_CHAIN,
-                ACCOUNT_NAME '{account_name or ""}'
+                ACCOUNT_NAME '{escaped_account}'
             )
         """)
         # Set the environment variables for the credential chain to pick up

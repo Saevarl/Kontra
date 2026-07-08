@@ -6,6 +6,7 @@ Data types for Kontra Scout profiling results.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Hashable
 from typing import Any, Dict, List, Optional
 
 
@@ -172,11 +173,12 @@ class ColumnProfile:
             parts.append(f"values=[{', '.join(vals)}]")
         if self.numeric:
             parts.append(f"range=[{self.numeric.min}, {self.numeric.max}]")
-            parts.append(f"mean={self.numeric.mean:.2f}")
+            if self.numeric.mean is not None:
+                parts.append(f"mean={self.numeric.mean:.2f}")
         if self.string:
             parts.append(f"len=[{self.string.min_length}, {self.string.max_length}]")
         if self.temporal:
-            parts.append(f"range=[{self.temporal.min}, {self.temporal.max}]")
+            parts.append(f"range=[{self.temporal.date_min}, {self.temporal.date_max}]")
         if self.semantic_type:
             parts.append(f"semantic={self.semantic_type}")
         return " | ".join(parts)
@@ -449,10 +451,19 @@ def enforce_profile_invariants(profile: "DatasetProfile") -> List[str]:
     for col in profile.columns:
         # --- null_count <= row_count ---
         if col.null_count > row_count:
-            if col.null_count_estimated or row_est:
+            if col.null_count_estimated:
+                # The soft value is the null_count estimate — clamp it.
                 col.null_count = row_count
-                col.null_count_estimated = True
                 col.null_rate = 1.0
+            elif row_est:
+                # null_count is EXACT but row_count is estimated: the estimate
+                # is the unreliable one (an exact count is a hard bound). Don't
+                # corrupt the firm measurement; warn. The ~ on row_count already
+                # signals which number is soft.
+                warnings.append(
+                    f"{col.name}: exact null_count ({col.null_count:,}) exceeds "
+                    f"estimated row_count (~{row_count:,}); row estimate is low"
+                )
             else:
                 warnings.append(
                     f"{col.name}: null_count ({col.null_count:,}) exceeds "
@@ -462,12 +473,16 @@ def enforce_profile_invariants(profile: "DatasetProfile") -> List[str]:
 
         # --- distinct_count <= row_count ---
         if col.distinct_count > row_count:
-            if col.distinct_count_estimated or row_est:
+            if col.distinct_count_estimated:
                 col.distinct_count = row_count
-                col.distinct_count_estimated = True
-                non_null = row_count - col.null_count
+                non_null = row_count - min(col.null_count, row_count)
                 col.uniqueness_ratio = (
                     col.distinct_count / non_null if non_null > 0 else 0.0
+                )
+            elif row_est:
+                warnings.append(
+                    f"{col.name}: exact distinct_count ({col.distinct_count:,}) exceeds "
+                    f"estimated row_count (~{row_count:,}); row estimate is low"
                 )
             else:
                 warnings.append(
@@ -708,10 +723,16 @@ class ProfileDiff:
                 changed = True
                 diff.dtype_changes.append(col_diff)
 
-            # Value distribution changes (if low cardinality)
+            # Value distribution changes (if low cardinality). Array/JSON
+            # columns carry unhashable (list/dict) sample values, which can't
+            # go through set(); compare by string form so one array column
+            # can't abort the whole diff with a TypeError.
             if bc.values and ac.values:
-                before_vals = set(bc.values) if bc.values else set()
-                after_vals = set(ac.values) if ac.values else set()
+                def _hashable(v: Any) -> Any:
+                    return v if isinstance(v, Hashable) else repr(v)
+
+                before_vals = {_hashable(v) for v in bc.values}
+                after_vals = {_hashable(v) for v in ac.values}
                 col_diff.new_values = list(after_vals - before_vals)
                 col_diff.removed_values = list(before_vals - after_vals)
                 if col_diff.new_values or col_diff.removed_values:

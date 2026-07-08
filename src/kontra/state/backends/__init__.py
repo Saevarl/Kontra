@@ -9,24 +9,44 @@ Backends provide pluggable persistence for validation state:
 - SQLServerStore: SQL Server database
 """
 
+import os
+import threading
+
 from .base import StateBackend
 from .local import LocalStore
 
-# Default store factory
+# Default store factory.
+#
+# The default LocalStore resolves its base_path to ``<cwd>/.kontra/state`` at
+# construction time. Long-lived processes (services, MCP servers) or tests may
+# change the working directory after the first call, so we key the cached
+# singleton on the cwd it was built for and rebuild it when the cwd changes.
+# Repeated calls from the same directory reuse the cached instance.
 _default_store: LocalStore | None = None
+_default_store_cwd: str | None = None
+_default_store_lock = threading.Lock()
 
 
 def get_default_store() -> LocalStore:
     """
     Get the default state store.
 
-    Uses .kontra/state/ in the current working directory.
-    Lazily initialized on first call.
+    Uses .kontra/state/ in the current working directory. The store is cached
+    per working directory: if the cwd changes between calls (e.g. in a
+    long-lived service or after ``kontra.set_config``), the store is rebuilt so
+    reads and writes always target the current directory's state tree.
     """
-    global _default_store
-    if _default_store is None:
-        _default_store = LocalStore()
-    return _default_store
+    global _default_store, _default_store_cwd
+    current_cwd = os.getcwd()
+    # Fast path: same cwd as the cached store, no locking needed.
+    if _default_store is not None and _default_store_cwd == current_cwd:
+        return _default_store
+    with _default_store_lock:
+        # Re-check under the lock in case another thread just rebuilt it.
+        if _default_store is None or _default_store_cwd != current_cwd:
+            _default_store = LocalStore()
+            _default_store_cwd = current_cwd
+        return _default_store
 
 
 def get_store(backend: str = "local") -> StateBackend:

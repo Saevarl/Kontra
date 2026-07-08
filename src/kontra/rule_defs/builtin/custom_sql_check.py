@@ -64,6 +64,12 @@ class CustomSQLCheck(BaseRule):
                 f"threshold must be >= 0, got {threshold}"
             )
 
+    def needs_all_columns(self) -> bool:
+        # The user's SQL can reference any column; the query runs SELECT * over
+        # the frame. Projecting the frame down to other rules' columns would
+        # make it error on a missing column, so it needs the full frame.
+        return True
+
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
         """Execute SQL check via DuckDB (fallback path)."""
         import duckdb

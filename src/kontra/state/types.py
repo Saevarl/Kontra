@@ -466,7 +466,7 @@ class ValidationState:
             annotations = [Annotation.from_dict(a) for a in d["annotations"]]
 
         return cls(
-            schema_version=d.get("schema_version", "1.0"),
+            schema_version=d.get("schema_version", "2.0"),
             engine_version=d.get("engine_version", "unknown"),
             contract_fingerprint=d["contract_fingerprint"],
             dataset_fingerprint=d.get("dataset_fingerprint"),

@@ -73,17 +73,21 @@ class TestConsistencyGuard:
         assert col.uniqueness_ratio == pytest.approx(1.0)
         assert warnings == []
 
-    def test_estimated_row_count_triggers_clamp_even_if_metric_flag_false(self):
-        """If row_count is estimated, a metric exceeding it is still clamped."""
+    def test_exact_metric_vs_estimated_row_count_not_clamped(self):
+        """An EXACT metric exceeding an ESTIMATED row_count must not be
+        corrupted: the estimate is the soft value (an exact count is a hard
+        bound). Leave the exact value, warn that the row estimate is low."""
         col = ColumnProfile(
             name="c", dtype="int", dtype_raw="int",
             row_count=100, distinct_count=120, distinct_count_estimated=False,
         )
         profile = _make_profile(100, True, [col])  # row_count estimated
-        enforce_profile_invariants(profile)
+        warnings = enforce_profile_invariants(profile)
 
-        assert col.distinct_count == 100
-        assert col.distinct_count_estimated is True  # now marked estimated
+        assert col.distinct_count == 120  # exact value preserved
+        assert col.distinct_count_estimated is False  # not relabeled
+        assert len(warnings) == 1
+        assert "row estimate is low" in warnings[0]
 
     def test_exact_vs_exact_not_clamped_but_warns(self):
         """Two exact values that contradict are left intact and warned."""

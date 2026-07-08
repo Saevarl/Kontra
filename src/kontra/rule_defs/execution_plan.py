@@ -197,10 +197,15 @@ class RuleExecutionPlan:
             if spec:
                 sql_rules.append(spec)
 
-        # 3) Derive required columns for projection (predicates + fallbacks)
+        # 3) Derive required columns for projection (predicates + fallbacks).
+        # A rule that needs the whole frame (custom_sql_check) forces an empty
+        # list, which the residual loader reads as "load all columns".
         cols_pred = _collect_required_columns(predicates)
         cols_fb = _extract_columns_from_rules(fallbacks)
-        required_cols = sorted(cols_pred | cols_fb)
+        if any(r.needs_all_columns() for r in fallbacks):
+            required_cols: List[str] = []
+        else:
+            required_cols = sorted(cols_pred | cols_fb)
 
         return CompiledPlan(
             predicates=predicates,
@@ -459,7 +464,10 @@ class RuleExecutionPlan:
 
         cols_pred = _collect_required_columns(resid_preds)
         cols_fb = _extract_columns_from_rules(resid_fallbacks)
-        required_cols = sorted(cols_pred | cols_fb)
+        if any(r.needs_all_columns() for r in resid_fallbacks):
+            required_cols: List[str] = []
+        else:
+            required_cols = sorted(cols_pred | cols_fb)
 
         # sql_rules are irrelevant for the residual Polars pass
         return CompiledPlan(
@@ -727,7 +735,11 @@ def _maybe_rule_sql_spec(rule: BaseRule) -> Optional[Dict[str, Any]]:
 
     if name == "not_null":
         col = params.get("column")
-        if isinstance(col, str) and col:
+        # include_nan can't be expressed by the executors' IS NULL aggregate
+        # (and DuckDB isnan() has no Postgres/SQL Server equivalent). Skip
+        # pushdown so it runs in Polars, which checks is_nan() with dtype
+        # awareness. Matches the preplan deferral in static_predicates.py.
+        if isinstance(col, str) and col and not params.get("include_nan", False):
             return {"kind": "not_null", "rule_id": rid, "column": col, "tally": rule_tally}
 
     if name == "unique":
