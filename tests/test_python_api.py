@@ -2394,3 +2394,58 @@ rules:
         assert "AWS credentials" in formatted or "AWS" in formatted, (
             f"S3 credential error should mention AWS: {formatted}"
         )
+
+
+class TestProfileErrorRewrap:
+    """profile() must not flatten cloud/engine errors into 'file not found'.
+
+    A missing LOCAL file gets the friendly InvalidDataError, but an S3/Azure
+    error (auth, listing, glob expansion) whose text happens to contain
+    'not found' must surface with its real message so the cause is diagnosable.
+    """
+
+    def test_local_missing_file_is_friendly(self):
+        import kontra
+        from kontra.errors import InvalidDataError
+
+        with pytest.raises(InvalidDataError):
+            kontra.profile("/no/such/local/file.parquet")
+
+    def test_cloud_error_propagates_unmasked(self):
+        import kontra
+        from kontra.errors import InvalidDataError
+        from kontra.scout.profiler import ScoutProfiler
+
+        class AzureListError(Exception):
+            pass
+
+        orig = ScoutProfiler.profile
+        ScoutProfiler.profile = lambda self: (_ for _ in ()).throw(
+            AzureListError("Azure Blob: no files found that match the pattern; "
+                           "check container listing permissions")
+        )
+        try:
+            with pytest.raises(AzureListError):  # NOT rewrapped to InvalidDataError
+                kontra.profile("az://c@acct.dfs.core.windows.net/dir/*.parquet")
+            # sanity: the same error text on a LOCAL path would rewrap
+            with pytest.raises(InvalidDataError):
+                kontra.profile("/local/dir/data.parquet")
+        finally:
+            ScoutProfiler.profile = orig
+
+    def test_s3_error_propagates_unmasked(self):
+        import kontra
+        from kontra.errors import InvalidDataError
+        from kontra.scout.profiler import ScoutProfiler
+
+        orig = ScoutProfiler.profile
+        ScoutProfiler.profile = lambda self: (_ for _ in ()).throw(
+            OSError("S3 access denied: bucket does not exist or credentials invalid")
+        )
+        try:
+            with pytest.raises(OSError) as exc:
+                kontra.profile("s3://bucket/dir/*.parquet")
+            assert not isinstance(exc.value, InvalidDataError)
+            assert "access denied" in str(exc.value).lower()
+        finally:
+            ScoutProfiler.profile = orig

@@ -937,19 +937,28 @@ def profile(
                 detail=f"File not found: {resolved_data}",
             ) from e
         except Exception as e:
+            # Only a bare LOCAL PATH gets the friendly "file not found". Any
+            # URI source (s3://, az://, http://, postgres://, clickhouse://, …)
+            # must surface its REAL error instead — an Azure blob-listing
+            # failure, a credential/permission error, a glob-expansion failure,
+            # or a DB "relation does not exist" often contains "not found" /
+            # "does not exist" in its text, and flattening that to "file not
+            # found" hides the actual cause (the reported bug: an az:// glob
+            # error misdiagnosed as a missing file).
+            src = resolved_data if isinstance(resolved_data, str) else ""
+            is_uri = "://" in src
             err_str = str(e).lower()
             is_not_found = (
                 "no such file" in err_str
                 or "does not exist" in err_str
-                or "not found" in err_str
                 or "no files found" in err_str
             )
-            if is_not_found:
+            if is_not_found and not is_uri:
                 raise InvalidDataError(
                     "file",
                     detail=f"File not found: {resolved_data}",
                 ) from e
-            # Re-raise non-file-related errors
+            # Propagate the real error (all URI/engine failures included).
             raise
 
 

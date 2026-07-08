@@ -273,10 +273,15 @@ class TestHistoryCLI:
         runner = CliRunner()
         result = runner.invoke(app, ["history", "--help"])
 
+        # Strip ANSI color codes: rich interleaves them through option names
+        # when color is enabled, breaking a raw substring match.
+        import re
+        output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+
         assert result.exit_code == 0
-        assert "Show validation history" in result.output
-        assert "--since" in result.output
-        assert "--failed-only" in result.output
+        assert "Show validation history" in output
+        assert "--since" in output
+        assert "--failed-only" in output
 
     def test_history_no_contract(self):
         """History command requires contract argument."""
