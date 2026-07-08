@@ -127,3 +127,62 @@ class TestClickHouseNullableWrappers:
                 assert r.rules[0].passed is True, tog
         finally:
             c.command("DROP TABLE IF EXISTS lc_nullable_test")
+
+
+class TestClickHouseEscapingAndDialect:
+    """Reviewer-found tier-equivalence bugs: backslash escaping, Unicode regex
+    classes, and FixedString/Enum dtype materialization."""
+
+    def _seed(self, ddl_cols, rows):
+        import clickhouse_connect
+        c = clickhouse_connect.get_client(
+            host="localhost", port=8123, username="kontra",
+            password="kontra_test", database="kontra_test",
+        )
+        c.command("DROP TABLE IF EXISTS esc_dialect_test")
+        c.command(f"CREATE TABLE esc_dialect_test (id UInt32, {ddl_cols}) ENGINE=MergeTree ORDER BY id")
+        c.command(f"INSERT INTO esc_dialect_test VALUES {rows}")
+        return c
+
+    def _agree(self, rule):
+        uri = "clickhouse://kontra:kontra_test@localhost:8123/kontra_test/esc_dialect_test"
+        on = kontra.validate(uri, rules=[rule], tally=True, save=False, pushdown="on")
+        off = kontra.validate(uri, rules=[rule], tally=True, save=False, pushdown="off")
+        return (on.rules[0].passed == off.rules[0].passed
+                and on.rules[0].failed_count == off.rules[0].failed_count)
+
+    def test_backslash_in_like_and_regex(self, _require_clickhouse):
+        c = self._seed("v String", r"(1,'a%'),(2,'a\\b'),(3,'plain'),(4,'x9y')")
+        try:
+            assert self._agree(kontra.rules.starts_with("v", "a\\"))   # LIKE backslash
+            assert self._agree(kontra.rules.contains("v", "\\"))
+            assert self._agree(kontra.rules.regex("v", r"a\\b"))       # literal-backslash regex
+        finally:
+            c.command("DROP TABLE IF EXISTS esc_dialect_test")
+
+    def test_unicode_regex_classes_deferred(self, _require_clickhouse):
+        # \w/\d are ASCII in ClickHouse RE2 but Unicode in Polars; must agree
+        # (executor defers these patterns to Polars).
+        c = self._seed("v String", r"(1,'абв'),(2,'x9y'),(3,'abc')")
+        try:
+            assert self._agree(kontra.rules.regex("v", r"^\w+$"))
+            assert self._agree(kontra.rules.regex("v", r"\d"))
+            assert self._agree(kontra.rules.regex("v", r"^a"))   # safe pattern still pushes
+        finally:
+            c.command("DROP TABLE IF EXISTS esc_dialect_test")
+
+    def test_fixedstring_and_enum_dtype(self, _require_clickhouse):
+        c = self._seed("fs FixedString(4), e8 Enum8('x'=1,'y'=2)",
+                       "(1,'abcd','x'),(2,'wxyz','y')")
+        try:
+            uri = "clickhouse://kontra:kontra_test@localhost:8123/kontra_test/esc_dialect_test"
+            def passed(rule, **tog):
+                return kontra.validate(uri, rules=[rule], tally=True, save=False, **tog).rules[0].passed
+            # FixedString materializes as Polars Binary -> dtype("string") fails on all tiers
+            fs = {"name": "dtype", "id": "fs", "params": {"column": "fs", "type": "string"}}
+            assert passed(fs) == passed(fs, preplan="off", pushdown="off") is False
+            # Enum8 materializes as Polars Int8 -> dtype("int8") passes on all tiers
+            e8 = {"name": "dtype", "id": "e8", "params": {"column": "e8", "type": "int8"}}
+            assert passed(e8) == passed(e8, preplan="off", pushdown="off") is True
+        finally:
+            c.command("DROP TABLE IF EXISTS esc_dialect_test")

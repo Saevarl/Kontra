@@ -76,13 +76,31 @@ _FLOATS = {"float32", "float64"}
 
 
 def _normalize_ch_type(ch_type: str) -> str:
-    """ClickHouse type string -> canonical name matching Polars dtype names."""
-    t = ch_type.lower()
-    for wrapper in ("nullable(", "lowcardinality("):
-        if t.startswith(wrapper) and t.endswith(")"):
-            t = t[len(wrapper):-1]
-    if t.startswith("fixedstring") or t == "string":
+    """
+    ClickHouse type string -> canonical name matching how clickhouse-connect
+    materializes it into Polars (so preplan dtype decisions agree with the
+    residual tier).
+    """
+    t = ch_type.lower().strip()
+    # Unwrap nested wrappers (LowCardinality(Nullable(...)) etc.)
+    while True:
+        for wrapper in ("nullable(", "lowcardinality("):
+            if t.startswith(wrapper) and t.endswith(")"):
+                t = t[len(wrapper):-1].strip()
+                break
+        else:
+            break
+    # FixedString / raw String bytes materialize as Polars Binary, not Utf8 —
+    # map to "binary" so dtype("string") does not wrongly match (it defers).
+    if t.startswith("fixedstring"):
+        return "binary"
+    if t == "string":
         return "string"
+    # Enum8/Enum16 materialize as Polars Int8/Int16.
+    if t.startswith("enum8"):
+        return "int8"
+    if t.startswith("enum16"):
+        return "int16"
     if t.startswith("datetime"):
         return "datetime"
     if t.startswith("date"):

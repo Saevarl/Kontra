@@ -144,6 +144,17 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
             return ""
         return f"SELECT {', '.join(exists_exprs)};"
 
+    def _is_pushable(self, kind: str, spec: Dict[str, Any]) -> bool:
+        """
+        Whether a specific rule spec can be pushed to this executor.
+
+        Default: any rule whose kind is in SUPPORTED_RULES. Subclasses override
+        to defer specific specs whose SQL semantics would diverge from Polars
+        (e.g. ClickHouse defers regex patterns using ASCII/Unicode-ambiguous
+        shorthand classes). A deferred spec falls through to the Polars tier.
+        """
+        return kind in self.SUPPORTED_RULES
+
     def supports(
         self, handle: DatasetHandle, sql_specs: List[Dict[str, Any]]
     ) -> bool:
@@ -153,9 +164,9 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
         if not self._supports_scheme(scheme, handle):
             return False
 
-        # Must have at least one supported rule
+        # Must have at least one pushable rule
         return any(
-            s.get("kind") in self.SUPPORTED_RULES
+            self._is_pushable(s.get("kind"), s)
             for s in (sql_specs or [])
         )
 
@@ -195,8 +206,9 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
             if not (kind and rule_id):
                 continue
 
-            # Skip unsupported rules
-            if kind not in self.SUPPORTED_RULES:
+            # Skip rules this executor can't push (unsupported kind, or a spec
+            # the subclass defers for semantic-equivalence reasons).
+            if not self._is_pushable(kind, spec):
                 continue
 
             # Get tally setting: True = exact count, False/None = early stop

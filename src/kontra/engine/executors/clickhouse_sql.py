@@ -11,6 +11,7 @@ regex via match(), so regex pushes down too.
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from typing import Any, Dict, Tuple
 
@@ -42,9 +43,23 @@ class ClickHouseSqlExecutor(DatabaseSqlExecutor):
         "custom_sql_check", "custom_agg",
     }
 
+    # \w \W \d \D \s \S \b \B mean ASCII in ClickHouse's RE2 but Unicode in
+    # Polars' regex crate, so a pattern using them can flip pass/fail between
+    # tiers. Detect them (backslash + one of those letters) and defer to Polars.
+    _AMBIGUOUS_REGEX = re.compile(r"\\[wWdDsSbB]")
+
     @property
     def name(self) -> str:
         return "clickhouse"
+
+    def _is_pushable(self, kind: str, spec: Dict[str, Any]) -> bool:
+        if kind not in self.SUPPORTED_RULES:
+            return False
+        if kind == "regex":
+            pattern = spec.get("pattern") or spec.get("value") or ""
+            if self._AMBIGUOUS_REGEX.search(pattern):
+                return False  # RE2 ASCII vs Polars Unicode — defer to Polars
+        return True
 
     def _supports_scheme(self, scheme: str, handle: DatasetHandle) -> bool:
         if scheme == "byoc" and handle.dialect == "clickhouse":

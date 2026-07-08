@@ -46,17 +46,26 @@ def esc_ident(name: str, dialect: Dialect = "duckdb") -> str:
 
     - DuckDB/PostgreSQL: "name" with " doubled
     - SQL Server: [name] with ] doubled
-    - ClickHouse: `name` with ` doubled (backtick is idiomatic)
+    - ClickHouse: `name` with ` doubled AND \\ doubled — ClickHouse honors
+      C-style backslash escapes inside backtick identifiers, so an un-doubled
+      backslash would be consumed (e.g. `a\\b` -> a + backspace).
     """
     if dialect == "sqlserver":
         return "[" + name.replace("]", "]]") + "]"
     if dialect == "clickhouse":
-        return "`" + name.replace("`", "``") + "`"
+        return "`" + name.replace("\\", "\\\\").replace("`", "``") + "`"
     return '"' + name.replace('"', '""') + '"'
 
 
 def lit_str(value: str, dialect: Dialect = "duckdb") -> str:
-    """Escape a string literal for SQL. All dialects use single quotes."""
+    """Escape a string literal for SQL (single quotes).
+
+    ClickHouse's literal parser also consumes C-style backslash escapes before
+    the value reaches LIKE/regex, so a backslash must be doubled there or the
+    pattern is silently corrupted (a wildcard could be eaten -> false pass).
+    """
+    if dialect == "clickhouse":
+        return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
     return "'" + value.replace("'", "''") + "'"
 
 
@@ -432,8 +441,14 @@ class ClickHouseRenderer(Renderer):
         return ""
 
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
-        # ClickHouse has native regex via match() (RE2), so regex pushes down.
-        escaped_pattern = pattern.replace("'", "''")
+        # ClickHouse has native regex via match() (RE2). Double backslashes so
+        # the pattern survives ClickHouse's literal parser intact (otherwise
+        # r"a\\b" would collapse and RE2 would see \b). Patterns using the
+        # ASCII/Unicode-ambiguous shorthand classes (\w \d \s \b) are NOT
+        # pushed here — the executor defers them to Polars (see
+        # ClickHouseSqlExecutor); this handles literal/anchor/escaped-meta
+        # patterns, which RE2 and Polars agree on.
+        escaped_pattern = pattern.replace("\\", "\\\\").replace("'", "''")
         return f"{col_sql} IS NULL OR NOT match(toString({col_sql}), '{escaped_pattern}')"
 
 
