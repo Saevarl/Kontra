@@ -126,6 +126,23 @@ def _ch_dtype_matches(ch_type: str, expected: str):
     return None
 
 
+def _is_nullable_type(ch_type: str) -> bool:
+    """
+    True if a ClickHouse column type can hold NULL.
+
+    Nullability can hide inside a LowCardinality wrapper:
+    ``LowCardinality(Nullable(String))`` IS nullable even though the outer type
+    is LowCardinality, not Nullable. Unwrap LowCardinality first, then check.
+    Only a definitively non-nullable type is safe to prove not_null PASS.
+    """
+    t = ch_type.strip()
+    low = t.lower()
+    if low.startswith("lowcardinality(") and t.endswith(")"):
+        t = t[len("lowcardinality("):-1].strip()
+        low = t.lower()
+    return low.startswith("nullable(")
+
+
 def preplan_clickhouse(
     handle: DatasetHandle,
     required_columns: List[str],
@@ -151,7 +168,7 @@ def preplan_clickhouse(
         if op == "not_null":
             if ch_type is None:
                 rule_decisions[rule_id] = "unknown"
-            elif not ch_type.lower().startswith("nullable("):
+            elif not _is_nullable_type(ch_type):
                 # Non-Nullable column CANNOT contain NULL — proven pass, no scan.
                 rule_decisions[rule_id] = "pass_meta"
             else:

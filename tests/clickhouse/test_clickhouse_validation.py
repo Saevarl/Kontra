@@ -92,3 +92,38 @@ class TestClickHouseCompare:
         # 4 CH users all exist among the 1002 PG users
         r = kontra.compare(clickhouse_uri, pg, key="user_id")
         assert r.dropped == 0 and r.preserved == 4
+
+
+class TestClickHouseNullableWrappers:
+    """Nullability can hide inside LowCardinality(Nullable(T)); the preplan
+    must not prove not_null PASS for such columns (tier-equivalence)."""
+
+    def _seed(self):
+        import clickhouse_connect
+        c = clickhouse_connect.get_client(
+            host="localhost", port=8123, username="kontra",
+            password="kontra_test", database="kontra_test",
+        )
+        c.command("DROP TABLE IF EXISTS lc_nullable_test")
+        c.command(
+            "CREATE TABLE lc_nullable_test ("
+            "id UInt32, tag LowCardinality(Nullable(String)), grp LowCardinality(String)"
+            ") ENGINE = MergeTree ORDER BY id"
+        )
+        c.command("INSERT INTO lc_nullable_test VALUES (1,'a','x'),(2,NULL,'y'),(3,'b','x')")
+        return c
+
+    def test_lowcardinality_nullable_not_proven(self, _require_clickhouse):
+        c = self._seed()
+        try:
+            uri = "clickhouse://kontra:kontra_test@localhost:8123/kontra_test/lc_nullable_test"
+            # tag is LowCardinality(Nullable) with a NULL -> all tiers must agree FAIL
+            for tog in (dict(), dict(preplan="off", pushdown="off"), dict(preplan="off", pushdown="on")):
+                r = kontra.validate(uri, rules=[kontra.rules.not_null("tag")], tally=True, save=False, **tog)
+                assert r.rules[0].passed is False, tog
+            # grp is LowCardinality(String), non-nullable -> proven pass, all tiers agree
+            for tog in (dict(), dict(preplan="off", pushdown="off"), dict(preplan="off", pushdown="on")):
+                r = kontra.validate(uri, rules=[kontra.rules.not_null("grp")], tally=True, save=False, **tog)
+                assert r.rules[0].passed is True, tog
+        finally:
+            c.command("DROP TABLE IF EXISTS lc_nullable_test")
