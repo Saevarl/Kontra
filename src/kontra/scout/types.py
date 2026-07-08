@@ -808,22 +808,51 @@ class ProfileDiff:
         import json
         return json.dumps(self.to_dict(), indent=indent, default=str)
 
+    def _row_count_estimated(self) -> bool:
+        return bool(
+            getattr(self.before.profile, "row_count_estimated", False)
+            or getattr(self.after.profile, "row_count_estimated", False)
+        )
+
+    def _metric_estimated(self, column: str, attr: str) -> bool:
+        """True if `attr` (e.g. 'null_count_estimated') is set on either side's
+        column — so a delta derived from an estimate is marked, not presented
+        as a hard fact."""
+        for state in (self.before, self.after):
+            for c in state.profile.columns:
+                if c.name == column and getattr(c, attr, False):
+                    return True
+        return False
+
     def to_llm(self) -> str:
         """Render diff in token-optimized format for LLM context."""
         from kontra.connectors.handle import mask_credentials
 
         lines = []
 
-        # Header
-        lines.append(f"# Profile Diff: {mask_credentials(self.after.source_uri)}")
-        lines.append(f"comparing: {self.before.profiled_at[:10]} → {self.after.profiled_at[:10]}")
+        # Header: name both sides. Only show a timestamp line for a temporal
+        # (same-source, different-time) diff; for a two-source compare the two
+        # timestamps are the same instant and say nothing.
+        before_label = mask_credentials(self.before.source_uri)
+        after_label = mask_credentials(self.after.source_uri)
+        lines.append(f"# Profile Diff: {before_label} → {after_label}")
+        b_day, a_day = self.before.profiled_at[:10], self.after.profiled_at[:10]
+        if b_day and a_day and b_day != a_day:
+            lines.append(f"comparing: {b_day} → {a_day}")
 
-        # Row count
+        # Row count (~ marks the side whose value is a stats estimate; the
+        # [estimated] tag warns that the delta itself is not authoritative)
+        b_est = "~" if getattr(self.before.profile, "row_count_estimated", False) else ""
+        a_est = "~" if getattr(self.after.profile, "row_count_estimated", False) else ""
+        tag = " [estimated]" if (b_est or a_est) else ""
         if self.row_count_delta != 0:
             sign = "+" if self.row_count_delta > 0 else ""
-            lines.append(f"rows: {self.row_count_before:,} → {self.row_count_after:,} ({sign}{self.row_count_delta:,}, {self.row_count_pct_change:+.1f}%)")
+            lines.append(
+                f"rows: {b_est}{self.row_count_before:,} → {a_est}{self.row_count_after:,} "
+                f"({sign}{self.row_count_delta:,}, {self.row_count_pct_change:+.1f}%){tag}"
+            )
         else:
-            lines.append(f"rows: {self.row_count_after:,} (unchanged)")
+            lines.append(f"rows: {a_est}{self.row_count_after:,} (unchanged)")
 
         # Schema changes
         if self.columns_added:
@@ -845,13 +874,15 @@ class ProfileDiff:
         if self.null_rate_increases:
             lines.append(f"\n## Null Rate Increases ({len(self.null_rate_increases)})")
             for cd in self.null_rate_increases[:10]:
-                lines.append(f"- {cd.column_name}: {cd.null_rate_before:.1%} → {cd.null_rate_after:.1%}")
+                est = " ~estimated" if self._metric_estimated(cd.column_name, "null_count_estimated") else ""
+                lines.append(f"- {cd.column_name}: {cd.null_rate_before:.1%} → {cd.null_rate_after:.1%}{est}")
 
         if self.cardinality_changes:
             lines.append(f"\n## Cardinality Changes ({len(self.cardinality_changes)})")
             for cd in self.cardinality_changes[:10]:
                 sign = "+" if cd.distinct_count_delta > 0 else ""
-                lines.append(f"- {cd.column_name}: {cd.distinct_count_before:,} → {cd.distinct_count_after:,} ({sign}{cd.distinct_count_delta:,})")
+                est = " ~estimated" if self._metric_estimated(cd.column_name, "distinct_count_estimated") else ""
+                lines.append(f"- {cd.column_name}: {cd.distinct_count_before:,} → {cd.distinct_count_after:,} ({sign}{cd.distinct_count_delta:,}){est}")
 
         # Other column changes
         other_changes = [c for c in self.columns_changed if c not in self.dtype_changes and c not in self.null_rate_increases and c not in self.cardinality_changes]
@@ -868,5 +899,8 @@ class ProfileDiff:
         if not self.has_changes:
             lines.append("\n✓ No significant changes detected")
 
-        lines.append(f"\nfingerprint: {self.after.source_fingerprint}")
+        # Only meaningful for saved-state (temporal) diffs; two-source diffs
+        # have no fingerprint.
+        if self.after.source_fingerprint:
+            lines.append(f"\nfingerprint: {self.after.source_fingerprint}")
         return "\n".join(lines)

@@ -247,7 +247,7 @@ profile = kontra.profile("data.parquet", preset="interrogate")
 suggestions = kontra.draft(profile)
 
 # Use directly
-result = kontra.validate("data.parquet", rules=suggestions.to_dict())
+result = kontra.validate("data.parquet", rules=suggestions.to_rules_list())
 
 # Filter by confidence
 suggestions.filter(min_confidence=0.8)

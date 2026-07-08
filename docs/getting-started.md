@@ -12,6 +12,7 @@ For databases and cloud storage:
 ```bash
 pip install "kontra[postgres]"     # PostgreSQL
 pip install "kontra[sqlserver]"    # SQL Server
+pip install "kontra[clickhouse]"   # ClickHouse
 pip install "kontra[s3]"           # S3 / MinIO
 ```
 
