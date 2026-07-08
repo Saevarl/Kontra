@@ -84,6 +84,8 @@ def _detect_path_from_uri(uri: str) -> ExecutionPath:
         return "database"
     if uri_lower.startswith(("mssql://", "sqlserver://")):
         return "database"
+    if uri_lower.startswith(("clickhouse://", "clickhouses://")):
+        return "database"
 
     # Named datasource pattern: "datasource_name.table"
     # These could be database or file - need to resolve via config
@@ -178,7 +180,7 @@ def _resolve_named_datasource_path(reference: str) -> ExecutionPath:
         return "file"
 
 
-def get_database_type(uri: str) -> Literal["postgres", "sqlserver"] | None:
+def get_database_type(uri: str) -> Literal["postgres", "sqlserver", "clickhouse"] | None:
     """
     Get the specific database type from a URI.
 
@@ -194,5 +196,7 @@ def get_database_type(uri: str) -> Literal["postgres", "sqlserver"] | None:
         return "postgres"
     if uri_lower.startswith(("mssql://", "sqlserver://")):
         return "sqlserver"
+    if uri_lower.startswith(("clickhouse://", "clickhouses://")):
+        return "clickhouse"
 
     return None

@@ -291,6 +291,7 @@ The `datasource` field accepts:
 | Azure ADLS | `abfss://container@account.dfs.core.windows.net/path` |
 | PostgreSQL | `postgres://user:pass@host:5432/db/schema.table` |
 | SQL Server | `mssql://user:pass@host:1433/db/schema.table` |
+| ClickHouse | `clickhouse://user:pass@host:8123/database/table` |
 | Named datasource | `prod_db.users` (from config) |
 
 See [Configuration](config.md) for named datasources.

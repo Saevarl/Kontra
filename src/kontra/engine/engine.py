@@ -350,6 +350,8 @@ class ValidationEngine:
                 return "postgres"
             if key in ("mssql", "sqlserver"):
                 return "sqlserver"
+            if key in ("clickhouse", "clickhouses"):
+                return "clickhouse"
         return None
 
     # --------------------------------------------------------------------- #

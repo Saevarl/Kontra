@@ -89,6 +89,7 @@ FROM data;
 | Azure ADLS (`abfss://`) | DuckDB |
 | `postgres://` | PostgreSQL |
 | `mssql://` | SQL Server |
+| `clickhouse://` | ClickHouse |
 
 DuckDB is a core dependency—it powers local file execution.
 
@@ -298,6 +299,7 @@ def positive(column: str, **kwargs) -> Dict[str, Any]:
 | Azure ADLS | (built-in) | DuckDB azure extension |
 | PostgreSQL | `kontra[postgres]` | Requires psycopg |
 | SQL Server | `kontra[sqlserver]` | Requires pymssql |
+| ClickHouse | `kontra[clickhouse]` | Requires clickhouse-connect |
 
 ---
 

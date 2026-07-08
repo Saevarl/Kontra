@@ -102,7 +102,7 @@ conn = psycopg.connect(host="localhost", dbname="myapp")
 result = kontra.validate(conn, table="public.users", rules=[...])
 ```
 
-Works with PostgreSQL and SQL Server. See [Configuration](reference/config.md) for named datasources.
+Works with PostgreSQL, SQL Server, and ClickHouse. See [Configuration](reference/config.md) for named datasources.
 
 ## CLI Workflow
 

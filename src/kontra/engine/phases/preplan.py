@@ -303,6 +303,48 @@ def _is_parquet(path: str | None) -> bool:
     return isinstance(path, str) and path.lower().endswith(".parquet")
 
 
+def _execute_clickhouse_preplan(
+    handle: "DatasetHandle",
+    ctx: "CompilationContext",
+) -> PreplanResult:
+    """Execute preplan for ClickHouse tables via system tables (no scan)."""
+    from kontra.preplan.clickhouse import preplan_clickhouse, can_preplan_clickhouse
+    from kontra.rule_defs.static_predicates import extract_static_predicates
+
+    if not can_preplan_clickhouse(handle):
+        return _empty_preplan_result(enabled=True)
+
+    t0 = now_ms()
+    static_preds = extract_static_predicates(rules=ctx.rules)
+    pre = preplan_clickhouse(
+        handle=handle,
+        required_columns=ctx.compiled_full.required_cols,
+        predicates=static_preds,
+    )
+    analyze_ms = now_ms() - t0
+
+    results_by_id, handled_ids, pass_meta, fail_meta, unknown = _process_preplan_decisions(
+        pre=pre,
+        tally_map=ctx.tally_map,
+        severity_map=ctx.severity_map,
+        execution_source_msg="ClickHouse system tables",
+    )
+
+    return PreplanResult(
+        effective=True,
+        handled_ids=handled_ids,
+        results_by_id=results_by_id,
+        analyze_ms=analyze_ms,
+        summary=_build_preplan_summary(
+            enabled=True,
+            effective=True,
+            pass_meta=pass_meta,
+            fail_meta=fail_meta,
+            unknown=unknown,
+        ),
+    )
+
+
 def execute_preplan(
     handle: "DatasetHandle",
     ctx: "CompilationContext",
@@ -381,6 +423,15 @@ def execute_preplan(
             return _execute_sqlserver_preplan(handle, ctx)
         except Exception as e:
             _logger.info("SQL Server preplan skipped: %s", e)
+            return _empty_preplan_result(enabled=True)
+
+    if handle.scheme in ("clickhouse", "clickhouses") or (
+        handle.scheme == "byoc" and handle.dialect == "clickhouse"
+    ):
+        try:
+            return _execute_clickhouse_preplan(handle, ctx)
+        except Exception as e:
+            _logger.info("ClickHouse preplan skipped: %s", e)
             return _empty_preplan_result(enabled=True)
 
     # No preplan available for this data source type

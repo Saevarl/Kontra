@@ -71,6 +71,11 @@ def register_default_executors() -> None:
     except ImportError:
         pass  # pymssql not installed, skip sqlserver executor
 
+    try:
+        from . import clickhouse_sql  # noqa: F401
+    except ImportError:
+        pass  # clickhouse-connect not installed, skip clickhouse executor
+
 
 def register_executors_for_path(
     execution_path: str,
@@ -102,6 +107,14 @@ def register_executors_for_path(
                 raise ImportError(
                     "SQL Server support requires pymssql. "
                     "Install with: pip install pymssql"
+                )
+        elif database_type == "clickhouse":
+            try:
+                from . import clickhouse_sql  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "ClickHouse support requires clickhouse-connect. "
+                    "Install with: pip install 'kontra[clickhouse]'"
                 )
         else:
             raise ValueError(f"Unknown database_type: {database_type}")

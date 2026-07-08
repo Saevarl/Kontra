@@ -21,6 +21,7 @@ from typing import Any, Tuple, Optional
 # Dialect constants
 POSTGRESQL = "postgresql"
 SQLSERVER = "sqlserver"
+CLICKHOUSE = "clickhouse"
 
 
 def detect_connection_dialect(conn: Any) -> str:

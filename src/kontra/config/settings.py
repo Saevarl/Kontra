@@ -289,12 +289,39 @@ class MSSQLDatasourceConfig:
         return cls(**_pick_known(cls, _require_mapping(data, "MSSQLDatasourceConfig")))
 
 
+@dataclass
+class ClickHouseDatasourceConfig:
+    """ClickHouse datasource configuration."""
+
+    type: str = "clickhouse"
+    host: str = "localhost"
+    port: int = 8123
+    user: str = "default"
+    password: str = ""
+    database: str = "default"
+    secure: bool = False
+    # Tables: map alias -> table (ClickHouse has no schema layer)
+    tables: Dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_literal(self.type, ("clickhouse",), "type")
+        self.port = _coerce_int(self.port, "port")
+        self.secure = _coerce_bool(self.secure, "secure")
+        if self.tables is None:
+            self.tables = {}
+
+    @classmethod
+    def model_validate(cls, data: Any) -> "ClickHouseDatasourceConfig":
+        return cls(**_pick_known(cls, _require_mapping(data, "ClickHouseDatasourceConfig")))
+
+
 # Union type for datasource configs
 DatasourceConfig = Union[
     PostgresDatasourceConfig,
     FilesDatasourceConfig,
     S3DatasourceConfig,
     MSSQLDatasourceConfig,
+    ClickHouseDatasourceConfig,
 ]
 
 
@@ -497,6 +524,8 @@ class KontraConfig:
             return PostgresDatasourceConfig.model_validate(ds_data)
         elif ds_type == "mssql":
             return MSSQLDatasourceConfig.model_validate(ds_data)
+        elif ds_type == "clickhouse":
+            return ClickHouseDatasourceConfig.model_validate(ds_data)
         elif ds_type == "s3":
             return S3DatasourceConfig.model_validate(ds_data)
         elif ds_type in ("files", "file"):
@@ -993,6 +1022,23 @@ def resolve_datasource(
             uri += "?" + urlencode(query)
 
         return uri
+
+    elif isinstance(ds, ClickHouseDatasourceConfig):
+        # clickhouse://user:pass@host:port/database/table  (no schema layer)
+        from urllib.parse import quote
+
+        scheme = "clickhouses" if ds.secure else "clickhouse"
+        user = quote(ds.user, safe="") if ds.user else ds.user
+        password = quote(ds.password, safe="") if ds.password else ds.password
+
+        if user and password:
+            userinfo = f"{user}:{password}@"
+        elif user:
+            userinfo = f"{user}@"
+        else:
+            userinfo = ""
+
+        return f"{scheme}://{userinfo}{ds.host}:{ds.port}/{ds.database}/{table_ref}"
 
     raise ValueError(f"Unknown datasource type for '{ds_name}'")
 

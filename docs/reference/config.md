@@ -362,6 +362,43 @@ automatically, which avoids CA-bundle lookup failures common in slim Docker
 images. Override with `storage_options={"transport": "default"}` or the
 `KONTRA_AZURE_TRANSPORT` environment variable (`curl` or `default`).
 
+### ClickHouse
+
+ClickHouse is a columnar OLAP store; Kontra pushes validation aggregates down to
+it (countIf, uniqExact, native `match()` regex) so almost nothing is transferred,
+and resolves `not_null`/row counts from `system.columns`/`system.parts` metadata
+without scanning data — the same "use the source's metadata" strategy Kontra
+applies to Parquet row groups.
+
+```yaml
+datasources:
+  events:
+    type: clickhouse
+    host: ${CH_HOST}
+    port: 8123          # HTTP interface (8443 for TLS with secure: true)
+    user: ${CH_USER}
+    password: ${CH_PASSWORD}
+    database: analytics
+    tables:
+      pageviews: pageviews   # ClickHouse has no schema layer: just <table>
+```
+
+```bash
+kontra validate contract.yml --data events.pageviews
+kontra profile "clickhouse://user:pass@host:8123/analytics/pageviews"
+```
+
+Requires `pip install kontra[clickhouse]` (clickhouse-connect). Direct URIs use
+`clickhouse://user:pass@host:8123/database/table` (or `clickhouses://` for TLS).
+
+**Performance notes:**
+
+- A non-`Nullable(T)` column cannot contain NULL, so `not_null` on it is proven
+  from the schema with zero rows read.
+- Row counts, `min_rows`/`max_rows` come from `system.parts` (exact, no scan).
+- Every other rule (including regex, via `match()`) executes as a native
+  ClickHouse aggregate; the Polars tier rarely runs.
+
 ---
 
 ## Environments

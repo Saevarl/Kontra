@@ -191,6 +191,13 @@ class DatasetHandle:
             db_params = resolve_sqlserver_params(uri)
             fmt = "sqlserver"
 
+        # ClickHouse: HTTP-based columnar OLAP store
+        if scheme in ("clickhouse", "clickhouses"):
+            from kontra.connectors.clickhouse import resolve_connection_params as resolve_ch_params
+
+            db_params = resolve_ch_params(uri)
+            fmt = "clickhouse"
+
         return DatasetHandle(
             uri=uri, scheme=scheme, path=path, format=fmt, fs_opts=fs_opts, db_params=db_params
         )

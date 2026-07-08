@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from .polars_connector import PolarsConnectorMaterializer  # noqa: F401
     from .postgres import PostgresMaterializer  # noqa: F401
     from .sqlserver import SqlServerMaterializer  # noqa: F401
+    from .clickhouse import ClickHouseMaterializer  # noqa: F401
 
 
 # Registry: materializer_name -> ctor(handle) function
@@ -70,9 +71,17 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
                 "SQL Server materializer not registered. "
                 "Ensure pymssql is installed: pip install pymssql"
             )
+        elif handle.dialect == "clickhouse":
+            ctor = _MATS.get("clickhouse")
+            if ctor:
+                return ctor(handle)
+            raise RuntimeError(
+                "ClickHouse materializer not registered. "
+                "Ensure clickhouse-connect is installed: pip install 'kontra[clickhouse]'"
+            )
         raise RuntimeError(
             f"Unsupported BYOC dialect: {handle.dialect}. "
-            "Supported: postgresql, sqlserver"
+            "Supported: postgresql, sqlserver, clickhouse"
         )
 
     # PostgreSQL: use dedicated materializer
@@ -93,6 +102,16 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
         raise RuntimeError(
             "SQL Server materializer not registered. "
             "Ensure pymssql is installed: pip install pymssql"
+        )
+
+    # ClickHouse: use dedicated materializer
+    if handle.scheme in ("clickhouse", "clickhouses"):
+        ctor = _MATS.get("clickhouse")
+        if ctor:
+            return ctor(handle)
+        raise RuntimeError(
+            "ClickHouse materializer not registered. "
+            "Ensure clickhouse-connect is installed: pip install 'kontra[clickhouse]'"
         )
 
     # Remote files with known formats: use DuckDB for efficient I/O
@@ -138,6 +157,11 @@ def register_default_materializers() -> None:
     except ImportError:
         pass  # pymssql not installed, skip sqlserver materializer
 
+    try:
+        from . import clickhouse  # noqa: F401
+    except ImportError:
+        pass  # clickhouse-connect not installed, skip clickhouse materializer
+
 
 def register_materializers_for_path(
     execution_path: str,
@@ -169,6 +193,14 @@ def register_materializers_for_path(
                 raise ImportError(
                     "SQL Server support requires pymssql. "
                     "Install with: pip install pymssql"
+                )
+        elif database_type == "clickhouse":
+            try:
+                from . import clickhouse  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "ClickHouse support requires clickhouse-connect. "
+                    "Install with: pip install 'kontra[clickhouse]'"
                 )
         else:
             raise ValueError(f"Unknown database_type: {database_type}")

@@ -139,6 +139,10 @@ def _select_backend(handle: DatasetHandle, sample_size: Optional[int] = None):
         from .backends.postgres_backend import PostgreSQLBackend
         return PostgreSQLBackend(handle, sample_size=sample_size)
 
+    if scheme in ("clickhouse", "clickhouses"):
+        from .backends.clickhouse_backend import ClickHouseBackend
+        return ClickHouseBackend(handle, sample_size=sample_size)
+
     if scheme in ("mssql", "sqlserver"):
         from .backends.sqlserver_backend import SqlServerBackend
         return SqlServerBackend(handle, sample_size=sample_size)

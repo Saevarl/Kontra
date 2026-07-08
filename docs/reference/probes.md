@@ -1,6 +1,6 @@
 # Transformation Probes
 
-> **Experimental.** DataFrame input only. API may change.
+> **Experimental.** API may change.
 
 Two probes for measuring transformation effects:
 
@@ -45,7 +45,7 @@ kontra.compare(conn, "./orders.csv", key="id", before_table="public.orders")
 
 Accepted sources: Polars/pandas DataFrame, list-of-dicts, file/cloud path
 (`.parquet`, `.csv`, `s3://`, `abfss://`), database URI
-(`postgres://…/schema.table`, `mssql://…/schema.table`), named datasource
+(`postgres://…/schema.table`, `mssql://…/schema.table`, `clickhouse://…/db/table`), named datasource
 (`prod_db.users`), or a live database connection object. Both sides are fully
 materialized before comparison; database extras (`kontra[postgres]` /
 `kontra[sqlserver]`) are required for the database sources.

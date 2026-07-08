@@ -2,7 +2,7 @@
 
 **Fast data quality validation for files, databases, and DataFrames.**
 
-Kontra validates data against declarative rules. It stays fast on large datasets by resolving checks from metadata when possible, then running the rest via batched SQL pushdown (DuckDB / PostgreSQL / SQL Server).
+Kontra validates data against declarative rules. It stays fast on large datasets by resolving checks from metadata when possible, then running the rest via batched SQL pushdown (DuckDB / PostgreSQL / SQL Server / ClickHouse).
 
 ```bash
 pip install kontra
@@ -79,7 +79,7 @@ rules:
 
 - **18 built-in rules** for nulls, uniqueness, ranges, regex, freshness, and more ([reference](docs/reference/rules.md))
 - **Fast execution**: metadata analysis + batched SQL pushdown
-- **Multiple sources**: Parquet, CSV, PostgreSQL, SQL Server, S3, Azure ADLS Gen2
+- **Multiple sources**: Parquet, CSV, PostgreSQL, SQL Server, ClickHouse, S3, Azure ADLS Gen2
 - **Agent-friendly**: structured, token-optimized summaries via `.to_llm()`
 - **Debuggable failures**: collect failing rows during validation, fetch more later on demand
 - **Track drift**: save runs and compare over time with `kontra diff`
@@ -127,6 +127,7 @@ result.sample_failures("COL:user_id:not_null", n=20)
 ```bash
 pip install "kontra[postgres]"     # PostgreSQL
 pip install "kontra[sqlserver]"    # SQL Server
+pip install "kontra[clickhouse]"   # ClickHouse
 pip install "kontra[s3]"           # S3 / MinIO
 ```
 

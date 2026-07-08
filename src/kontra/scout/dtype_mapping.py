@@ -45,10 +45,16 @@ DTYPE_MAP: Dict[str, str] = {
     "uint16": "int",
     "uint32": "int",
     "uint64": "int",
+    # Unsigned integers (ClickHouse, wide widths)
+    "uint128": "int",
+    "uint256": "int",
+    "int256": "int",
     # Float types (common)
     "float": "float",
     "float4": "float",
     "float8": "float",
+    "float32": "float",  # ClickHouse
+    "float64": "float",  # ClickHouse
     "real": "float",
     "double": "float",
     "double precision": "float",
@@ -73,6 +79,10 @@ DTYPE_MAP: Dict[str, str] = {
     "nvarchar": "string",
     "nchar": "string",
     "ntext": "string",
+    # String types (ClickHouse)
+    "fixedstring": "string",
+    "ipv4": "string",
+    "ipv6": "string",
     # Date types
     "date": "date",
     # Time types
@@ -89,6 +99,10 @@ DTYPE_MAP: Dict[str, str] = {
     "datetime2": "datetime",
     "smalldatetime": "datetime",
     "datetimeoffset": "datetime",
+    # Datetime types (ClickHouse)
+    "datetime64": "datetime",
+    # Date types (ClickHouse)
+    "date32": "date",
     # Interval
     "interval": "interval",
     # Binary types (common)
@@ -128,6 +142,18 @@ def normalize_dtype(raw_type: str) -> str:
     """
     # Lowercase and strip whitespace for case-insensitive matching
     lower = raw_type.lower().strip()
+
+    # Unwrap ClickHouse type wrappers, e.g. Nullable(Int32),
+    # LowCardinality(String), LowCardinality(Nullable(String)). These wrappers
+    # carry nullability/encoding, not the logical type, so peel them off before
+    # mapping. No other dialect emits these, so this is a no-op elsewhere.
+    changed = True
+    while changed:
+        changed = False
+        for wrapper in ("nullable(", "lowcardinality("):
+            if lower.startswith(wrapper) and lower.endswith(")"):
+                lower = lower[len(wrapper):-1].strip()
+                changed = True
 
     # Handle parameterized types like DECIMAL(10,2) or VARCHAR(255)
     base = lower.split("(")[0].strip()

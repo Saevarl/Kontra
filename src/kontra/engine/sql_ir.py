@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Literal, Optional
 
-Dialect = Literal["duckdb", "postgres", "sqlserver"]
+Dialect = Literal["duckdb", "postgres", "sqlserver", "clickhouse"]
 
 # SQL comparison operators (Python op -> SQL op)
 SQL_OP_MAP = {
@@ -46,9 +46,12 @@ def esc_ident(name: str, dialect: Dialect = "duckdb") -> str:
 
     - DuckDB/PostgreSQL: "name" with " doubled
     - SQL Server: [name] with ] doubled
+    - ClickHouse: `name` with ` doubled (backtick is idiomatic)
     """
     if dialect == "sqlserver":
         return "[" + name.replace("]", "]]") + "]"
+    if dialect == "clickhouse":
+        return "`" + name.replace("`", "``") + "`"
     return '"' + name.replace('"', '""') + '"'
 
 
@@ -225,7 +228,10 @@ class Like(Node):
         # user substring would otherwise break out of the literal (SQL
         # injection → silent false PASS). lit_str only doubles ', leaving the
         # wildcards and \-escapes intact.
-        return f"{self.expr.sql(r)} {keyword} {lit_str(self.pattern, r.dialect)} ESCAPE '\\'"
+        return (
+            f"{self.expr.sql(r)} {keyword} {lit_str(self.pattern, r.dialect)}"
+            f"{r.like_escape()}"
+        )
 
 
 @dataclass(frozen=True)
@@ -304,6 +310,13 @@ class Renderer:
 
     def len_of(self, inner_sql: str) -> str:
         return f"LENGTH({inner_sql})"
+
+    def like_escape(self) -> str:
+        """Trailing `` ESCAPE '\\' `` clause for LIKE. escape_like_pattern
+        emits backslash-escaped metachars; most dialects need the explicit
+        ESCAPE char declared. ClickHouse rejects the clause (backslash is its
+        implicit escape) and overrides this to return empty."""
+        return " ESCAPE '\\'"
 
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         escaped_pattern = pattern.replace("'", "''")
@@ -399,10 +412,36 @@ class SqlServerRenderer(Renderer):
         )
 
 
+class ClickHouseRenderer(Renderer):
+    dialect: Dialect = "clickhouse"
+
+    def cast_text(self, inner_sql: str) -> str:
+        # toString handles any type -> String; needed so numeric columns
+        # compare against a string value-list. NULL propagates through
+        # toString, and the value-list conditions guard NULL separately.
+        return f"toString({inner_sql})"
+
+    def len_of(self, inner_sql: str) -> str:
+        # length() counts BYTES on ClickHouse; lengthUTF8() counts characters,
+        # matching Polars str.len_chars() and the other dialects' LENGTH().
+        return f"lengthUTF8({inner_sql})"
+
+    def like_escape(self) -> str:
+        # ClickHouse LIKE has no ESCAPE clause (it errors); backslash is the
+        # implicit escape, so the \-escaped pattern already works as-is.
+        return ""
+
+    def regex_no_match(self, col_sql: str, pattern: str) -> str:
+        # ClickHouse has native regex via match() (RE2), so regex pushes down.
+        escaped_pattern = pattern.replace("'", "''")
+        return f"{col_sql} IS NULL OR NOT match(toString({col_sql}), '{escaped_pattern}')"
+
+
 _RENDERERS = {
     "duckdb": DuckDBRenderer(),
     "postgres": PostgresRenderer(),
     "sqlserver": SqlServerRenderer(),
+    "clickhouse": ClickHouseRenderer(),
 }
 
 
