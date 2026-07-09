@@ -165,6 +165,56 @@ if kontra.has_runs("my_contract"):
 
 ---
 
+## Profile History
+
+Validation history tracks contracts. Profile history tracks the *shape* of a
+source — its columns, dtypes, null rates, and distinct counts — over time.
+Profiles are only saved when you ask for it, either from the CLI or the API:
+
+```bash
+kontra profile users.parquet --save-profile
+kontra profile-diff users.parquet
+kontra profile-diff users.parquet --since 7d
+```
+
+```python
+kontra.profile("users.parquet", save=True)
+
+kontra.get_profile("users.parquet")               # latest saved profile
+kontra.list_profiles("users.parquet")             # saved runs, newest first
+diff = kontra.profile_diff("users.parquet")        # latest vs previous
+diff = kontra.profile_diff("users.parquet", since="7d")
+```
+
+Both entry points write to the same store, so a profile saved by the CLI is
+visible to the API and vice versa. A source is identified by a fingerprint of
+its resolved URI; named datasources are resolved before fingerprinting, so
+`prod_db.users` and its underlying URI refer to the same history. Inline
+DataFrames have no stable identity and are not saved. `profile_diff()` returns
+`None` when there is not enough history to compare.
+
+### Profile Store Backends
+
+By default profiles are stored locally, under `.kontra/profiles/` in the current
+directory (one subdirectory per source, one JSON file per run). This is the same
+local-vs-database split the validation-state backends use, and needs no setup.
+
+For a shared, multi-host store, profiles can live in PostgreSQL instead — a
+single `kontra_profiles` table, one row per run:
+
+```python
+from kontra.scout.store import get_profile_store
+
+store = get_profile_store("postgres", uri="postgres://user:pass@host/db")
+# or rely on PGHOST / PGUSER / ... / DATABASE_URL:
+store = get_profile_store("postgres")
+```
+
+The local store is the default; the Postgres backend is opt-in and requires the
+`kontra[postgres]` extra.
+
+---
+
 ## State Backends
 
 Configure where validation history is stored:
@@ -257,6 +307,8 @@ hints = kontra.get_annotations(
 for hint in hints:
     print(f"[{hint['annotation_type']}] {hint['summary']}")
 ```
+
+`annotation_type` is an open vocabulary: any non-empty string is accepted, so a workflow can define its own verdicts. The documented types are suggestions surfaced by tooling — `resolution`, `root_cause`, `false_positive`, `acknowledged`, `suppressed`, `note`, plus `diagnosis` (a first responder's assessment of a failure) and `expected` (an owner's verdict in an adjudication flow).
 
 **Key invariant**: Kontra never reads annotations during validation or diff. They're purely for consumer use.
 

@@ -467,3 +467,101 @@ class TestCompareSourceAgnostic:
         after = pl.DataFrame({"order_id": [1], "amount": [10]})
         with pytest.raises(ValueError, match="table"):
             compare(FakeConn(), after, key="order_id")
+
+
+class TestCompareAsymmetricKeys:
+    """W1: compare() with differently-named before/after keys."""
+
+    def test_different_named_keys(self):
+        """before_key/after_key align rows across differently-named columns."""
+        # orders.customer_id -> customers.id (FK -> PK shape)
+        orders = pl.DataFrame({
+            "customer_id": [1, 2, 3, 4],
+            "amount": [10, 20, 30, 40],
+        })
+        customers = pl.DataFrame({
+            "id": [2, 3, 4, 5],
+            "amount": [20, 30, 30, 50],  # id=4 amount changed 40->30
+        })
+
+        result = compare(orders, customers, before_key="customer_id", after_key="id")
+
+        assert isinstance(result, CompareResult)
+        # Canonical key name comes from the before side
+        assert result.key == ["customer_id"]
+        # Overlap {2,3,4}; dropped {1}; added {5}
+        assert result.preserved == 3
+        assert result.dropped == 1
+        assert result.added == 1
+        assert result.samples_dropped_keys == [1]
+        # amount changed for customer/id 4 only
+        assert result.changed_rows == 1
+        assert result.unchanged_rows == 2
+        assert "amount" in result.columns_modified
+
+    def test_symmetric_path_still_works(self):
+        """Regression: same-named key= path unchanged."""
+        before = pl.DataFrame({"id": [1, 2, 3], "v": [1, 2, 3]})
+        after = pl.DataFrame({"id": [2, 3, 4], "v": [2, 3, 4]})
+        result = compare(before, after, key="id")
+        assert result.preserved == 2
+        assert result.dropped == 1
+        assert result.added == 1
+
+    def test_composite_asymmetric_keys(self):
+        """Composite keys pair positionally: before_key[i] <-> after_key[i]."""
+        before = pl.DataFrame({
+            "cust": [1, 1, 2],
+            "day": ["a", "b", "a"],
+            "amt": [10, 11, 20],
+        })
+        after = pl.DataFrame({
+            "c": [1, 2, 3],
+            "d": ["a", "a", "z"],
+            "amt": [10, 20, 30],
+        })
+        result = compare(
+            before, after,
+            before_key=["cust", "day"], after_key=["c", "d"],
+        )
+        assert result.key == ["cust", "day"]
+        # before keys: (1,a),(1,b),(2,a); after: (1,a),(2,a),(3,z)
+        # preserved: (1,a),(2,a) -> 2; dropped: (1,b) -> 1; added: (3,z) -> 1
+        assert result.preserved == 2
+        assert result.dropped == 1
+        assert result.added == 1
+
+    def test_both_symmetric_and_asymmetric_raises(self):
+        df = pl.DataFrame({"id": [1], "x": [1]})
+        with pytest.raises(ValueError, match="not both"):
+            compare(df, df, key="id", before_key="id", after_key="id")
+
+    def test_mismatched_arity_raises(self):
+        df = pl.DataFrame({"a": [1], "b": [1]})
+        with pytest.raises(ValueError, match="same number"):
+            compare(df, df, before_key=["a", "b"], after_key=["a"])
+
+    def test_only_one_side_raises(self):
+        df = pl.DataFrame({"id": [1]})
+        with pytest.raises(ValueError, match="required"):
+            compare(df, df, before_key="id")
+
+    def test_no_key_raises(self):
+        df = pl.DataFrame({"id": [1]})
+        with pytest.raises(ValueError, match="required"):
+            compare(df, df)
+
+    def test_missing_after_key_column_raises(self):
+        before = pl.DataFrame({"customer_id": [1], "x": [1]})
+        after = pl.DataFrame({"id": [1], "x": [1]})
+        with pytest.raises(ValueError, match="not found in after"):
+            compare(before, after, before_key="customer_id", after_key="nope")
+
+    def test_asymmetric_source_agnostic(self, tmp_path):
+        """Different-named keys work with a file source too."""
+        orders = pl.DataFrame({"customer_id": [1, 2, 3], "amt": [1, 2, 3]})
+        customers = pl.DataFrame({"id": [2, 3, 4], "amt": [2, 3, 4]})
+        p = str(tmp_path / "orders.parquet")
+        orders.write_parquet(p)
+        result = compare(p, customers, before_key="customer_id", after_key="id")
+        assert (result.preserved, result.dropped, result.added) == (2, 1, 1)

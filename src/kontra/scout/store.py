@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -181,26 +183,81 @@ def create_profile_state(profile: DatasetProfile) -> ProfileState:
     )
 
 
-# Default store
+# Default store factory.
+#
+# LocalProfileStore resolves its base_path to ``<cwd>/.kontra/profiles`` at
+# construction time. Long-lived processes (services, MCP servers) or tests may
+# change the working directory after the first call, so we key the cached
+# singleton on the cwd it was built for and rebuild it when the cwd changes.
+# Repeated calls from the same directory reuse the cached instance and never
+# take the lock. Mirrors ``kontra.state.backends.get_default_store``.
 _default_profile_store: Optional[LocalProfileStore] = None
+_default_profile_store_cwd: Optional[str] = None
+_default_profile_store_lock = threading.Lock()
 
 
 def get_default_profile_store() -> LocalProfileStore:
-    global _default_profile_store
-    if _default_profile_store is None:
-        _default_profile_store = LocalProfileStore()
-    return _default_profile_store
+    """
+    Get the default local profile store.
+
+    Uses .kontra/profiles/ in the current working directory. The store is
+    cached per working directory: if the cwd changes between calls (e.g. in a
+    long-lived service or after ``kontra.set_config``), the store is rebuilt so
+    reads and writes always target the current directory's profile tree.
+    """
+    global _default_profile_store, _default_profile_store_cwd
+    current_cwd = os.getcwd()
+    # Fast path: same cwd as the cached store, no locking needed.
+    if (
+        _default_profile_store is not None
+        and _default_profile_store_cwd == current_cwd
+    ):
+        return _default_profile_store
+    with _default_profile_store_lock:
+        # Re-check under the lock in case another thread just rebuilt it.
+        if (
+            _default_profile_store is None
+            or _default_profile_store_cwd != current_cwd
+        ):
+            _default_profile_store = LocalProfileStore()
+            _default_profile_store_cwd = current_cwd
+        return _default_profile_store
 
 
-def get_profile_store(backend: str = "local") -> LocalProfileStore:
+def get_profile_store(backend: str = "local", uri: Optional[str] = None):
     """
     Get a profile store by backend identifier.
 
-    Currently only supports local storage. Future: S3, PostgreSQL.
+    Args:
+        backend: Backend identifier. Options:
+            - "local" or "": LocalProfileStore (default, cwd-aware singleton)
+            - "postgres" / "postgresql": PostgresProfileStore (connection from
+              ``uri`` or PGXXX / DATABASE_URL environment variables)
+            - "postgres://..." / "postgresql://...": PostgresProfileStore using
+              the given connection URI
+        uri: Optional connection URI for the postgres backend. If omitted,
+            connection details come from environment variables.
+
+    Environment Variables:
+        For PostgreSQL:
+            PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE, DATABASE_URL
+
+    Returns:
+        A profile store exposing the same public interface as
+        LocalProfileStore (save, get_latest, get_history, list_sources, clear).
     """
     if not backend or backend == "local":
         return get_default_profile_store()
 
-    # For now, all backends use local profile storage
-    # Future: implement S3ProfileStore, PostgresProfileStore
-    return get_default_profile_store()
+    if backend in ("postgres", "postgresql"):
+        # Lazy import keeps psycopg out of the base import path.
+        from .postgres_store import PostgresProfileStore
+
+        return PostgresProfileStore(uri or "postgres://")
+
+    if backend.startswith("postgres://") or backend.startswith("postgresql://"):
+        from .postgres_store import PostgresProfileStore
+
+        return PostgresProfileStore(uri or backend)
+
+    raise ValueError(f"Unknown profile store backend: {backend}")

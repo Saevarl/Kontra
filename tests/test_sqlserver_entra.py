@@ -13,6 +13,7 @@ Covers Azure SQL Database and Azure SQL Managed Instance (MI) host shapes.
 
 from __future__ import annotations
 
+import struct
 import sys
 import types
 
@@ -433,3 +434,179 @@ class TestParamstyleShim:
         cur = _cursor_from_module("pyodbc.something")
         execute_with_params(cur, "WHERE a = %s", ("x",))
         assert cur.executed == "WHERE a = ?"
+
+
+# --------------------------------------------------------------------------- #
+# Windows access-token path (Bug 2)
+# --------------------------------------------------------------------------- #
+#
+# On Windows, msodbcsql18 REJECTS Authentication=ActiveDirectory* for the token
+# modes. Kontra must instead acquire a token via azure-identity and pass it to
+# pyodbc via attrs_before={1256: <length-prefixed UTF-16-LE token struct>}, with
+# a connection string that contains NO Authentication= keyword. These tests mock
+# platform detection and azure-identity (live Windows validation is impossible on
+# macOS/Linux CI).
+
+
+class _FakeToken:
+    def __init__(self, token):
+        self.token = token
+
+
+def _expected_token_struct(token: str) -> bytes:
+    tb = token.encode("utf-16-le")
+    return struct.pack("<i", len(tb)) + tb
+
+
+def _make_fake_azure_identity(capture, token="FAKE.ACCESS.TOKEN"):
+    """Fake azure.identity capturing which credential/scope was used."""
+    mod = types.ModuleType("azure.identity")
+
+    class DefaultAzureCredential:
+        def __init__(self, *a, **k):
+            capture["cred"] = ("default", a, k)
+
+        def get_token(self, *scopes, **k):
+            capture["scopes"] = scopes
+            return _FakeToken(token)
+
+    class ManagedIdentityCredential:
+        def __init__(self, *a, **k):
+            capture["cred"] = ("mi", a, k)
+
+        def get_token(self, *scopes, **k):
+            capture["scopes"] = scopes
+            return _FakeToken(token)
+
+    class ClientSecretCredential:
+        def __init__(self, *a, **k):
+            capture["cred"] = ("sp", a, k)
+
+        def get_token(self, *scopes, **k):
+            capture["scopes"] = scopes
+            return _FakeToken(token)
+
+    mod.DefaultAzureCredential = DefaultAzureCredential
+    mod.ManagedIdentityCredential = ManagedIdentityCredential
+    mod.ClientSecretCredential = ClientSecretCredential
+    return mod
+
+
+@pytest.fixture
+def fake_azure_identity(monkeypatch):
+    """Inject a fake azure.identity; capture credential/scope."""
+    capture: dict = {}
+    ident = _make_fake_azure_identity(capture)
+    azure_pkg = types.ModuleType("azure")
+    azure_pkg.identity = ident
+    monkeypatch.setitem(sys.modules, "azure", azure_pkg)
+    monkeypatch.setitem(sys.modules, "azure.identity", ident)
+    return capture
+
+
+@pytest.fixture
+def on_windows(monkeypatch):
+    """Force platform detection to Windows."""
+    monkeypatch.setattr(ss, "_is_windows", lambda: True)
+
+
+class TestEntraWindowsTokenPath:
+    def test_windows_default_uses_attrs_before_and_no_authentication(
+        self, on_windows, fake_pyodbc, fake_azure_identity
+    ):
+        p = _params(auth="entra_default")
+        ss.get_connection(p)
+
+        # (b) No Authentication= keyword on Windows.
+        cs = fake_pyodbc["conn_str"]
+        assert "Authentication=" not in cs
+        # Still a valid Azure SQL string (encrypted).
+        assert cs.startswith("Driver={ODBC Driver 18 for SQL Server};")
+        assert "Server=myserver.database.windows.net,1433;" in cs
+        assert "Database=mydb;" in cs
+        assert "Encrypt=yes;" in cs
+
+        # (a) attrs_before carries the length-prefixed UTF-16-LE token at key 1256.
+        attrs = fake_pyodbc["kwargs"]["attrs_before"]
+        assert set(attrs.keys()) == {1256}
+        assert attrs[1256] == _expected_token_struct("FAKE.ACCESS.TOKEN")
+
+        # DefaultAzureCredential used, correct AAD scope.
+        assert fake_azure_identity["cred"][0] == "default"
+        assert fake_azure_identity["scopes"] == (
+            "https://database.windows.net/.default",
+        )
+
+    def test_windows_mi_user_assigned_passes_client_id(
+        self, on_windows, fake_pyodbc, fake_azure_identity
+    ):
+        p = _params(auth="entra_mi", client_id="uami-client-id")
+        ss.get_connection(p)
+        assert "Authentication=" not in fake_pyodbc["conn_str"]
+        # ManagedIdentityCredential(client_id=...) selected.
+        kind, _args, kwargs = fake_azure_identity["cred"]
+        assert kind == "mi"
+        assert kwargs.get("client_id") == "uami-client-id"
+        assert 1256 in fake_pyodbc["kwargs"]["attrs_before"]
+
+    def test_windows_service_principal_uses_client_secret_credential(
+        self, on_windows, fake_pyodbc, fake_azure_identity
+    ):
+        p = _params(
+            auth="entra_service_principal",
+            client_id="app-id",
+            client_secret="secret",
+            tenant_id="tenant-guid",
+        )
+        ss.get_connection(p)
+        assert "Authentication=" not in fake_pyodbc["conn_str"]
+        # No UID/PWD leak into the connection string; the token carries identity.
+        assert "PWD=" not in fake_pyodbc["conn_str"]
+        assert "UID=" not in fake_pyodbc["conn_str"]
+        kind, _args, kwargs = fake_azure_identity["cred"]
+        assert kind == "sp"
+        assert kwargs == {
+            "tenant_id": "tenant-guid",
+            "client_id": "app-id",
+            "client_secret": "secret",
+        }
+        assert 1256 in fake_pyodbc["kwargs"]["attrs_before"]
+
+    def test_windows_service_principal_missing_creds_is_actionable(
+        self, on_windows, fake_pyodbc, fake_azure_identity
+    ):
+        p = _params(auth="entra_service_principal")  # no tenant/client/secret
+        with pytest.raises(ValueError) as exc:
+            ss.get_connection(p)
+        assert "entra_service_principal" in str(exc.value)
+
+    def test_windows_missing_azure_identity_is_actionable(
+        self, on_windows, fake_pyodbc, monkeypatch
+    ):
+        # azure-identity not importable on Windows -> clear, platform-specific error.
+        monkeypatch.setitem(sys.modules, "azure.identity", None)
+        with pytest.raises(ImportError) as exc:
+            ss.get_connection(_params(auth="entra_default"))
+        msg = str(exc.value)
+        assert "azure-identity" in msg
+        assert "Windows" in msg
+        # Points at the extra and/or the entra_password fallback.
+        assert "kontra[sqlserver-entra]" in msg or "pip install azure-identity" in msg
+        assert "entra_password" in msg
+
+    def test_windows_interactive_still_uses_authentication_keyword(
+        self, on_windows, fake_pyodbc
+    ):
+        # entra_interactive is NOT a token mode; keeps the Authentication= path.
+        ss.get_connection(_params(auth="entra_interactive"))
+        assert "Authentication=ActiveDirectoryInteractive;" in fake_pyodbc["conn_str"]
+        assert "attrs_before" not in fake_pyodbc["kwargs"]
+
+    def test_non_windows_uses_authentication_string_no_attrs_before(
+        self, monkeypatch, fake_pyodbc
+    ):
+        # (c) Existing behavior on Linux/macOS: Authentication= keyword, no token.
+        monkeypatch.setattr(ss, "_is_windows", lambda: False)
+        ss.get_connection(_params(auth="entra_default"))
+        assert "Authentication=ActiveDirectoryDefault;" in fake_pyodbc["conn_str"]
+        assert "attrs_before" not in fake_pyodbc["kwargs"]

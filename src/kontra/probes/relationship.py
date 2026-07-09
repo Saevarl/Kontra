@@ -14,14 +14,17 @@ from typing import Any, Dict, List, Optional, Union
 import polars as pl
 
 from kontra.api.compare import RelationshipProfile
+from kontra.probes.compare import _align_side_keys, _resolve_keys
 from kontra.probes.utils import load_data
 
 
 def profile_relationship(
     left: Any,
     right: Any,
-    on: Union[str, List[str]],
+    on: Optional[Union[str, List[str]]] = None,
     *,
+    left_on: Optional[Union[str, List[str]]] = None,
+    right_on: Optional[Union[str, List[str]]] = None,
     left_table: Optional[str] = None,
     right_table: Optional[str] = None,
     sample_limit: int = 5,
@@ -42,10 +45,20 @@ def profile_relationship(
     DataFrame, a file/cloud path, a database URI, a named datasource, or a
     live database connection (pass ``left_table``/``right_table``).
 
+    Join keys may be the same name on both sides (``on=``) or differently
+    named (``left_on=`` / ``right_on=``), mirroring pandas' ``merge`` naming.
+    The latter is the common FK→PK case, e.g.
+    ``profile_relationship(tickets, orgs, left_on="organization_id", right_on="id")``.
+    Provide exactly one of ``on`` or the ``left_on``/``right_on`` pair.
+
     Args:
         left: Left dataset (any supported source).
         right: Right dataset (any supported source).
-        on: Column(s) to join on
+        on: Same-named join key column(s) present on both sides.
+        left_on: Join key column(s) on the ``left`` side (use with ``right_on``).
+        right_on: Join key column(s) on the ``right`` side (use with ``left_on``).
+            ``left_on``/``right_on`` are paired positionally for composite keys
+            and must have the same number of columns.
         left_table: Table reference when ``left`` is a DB connection object.
         right_table: Table reference when ``right`` is a DB connection object.
         sample_limit: Max samples per category (default 5)
@@ -59,6 +72,11 @@ def profile_relationship(
         # Profile before writing JOIN
         profile = profile_relationship(orders, customers, on="customer_id")
 
+        # Different-named keys (FK → PK)
+        profile = profile_relationship(
+            tickets, orgs, left_on="organization_id", right_on="id"
+        )
+
         # Check for issues
         if profile.right_key_multiplicity_max > 1:
             print("Warning: right side has duplicates, JOIN may explode rows")
@@ -70,17 +88,24 @@ def profile_relationship(
         # Get structured output for LLM
         print(profile.to_llm())
     """
-    # Normalize on to list
-    if isinstance(on, str):
-        on = [on]
+    # Resolve the key specification. The ``left`` side's key names are the
+    # canonical names used throughout the computation and in the result.
+    left_on_list, right_on_list = _resolve_keys(
+        on, "on",
+        left_on, right_on, "left_on", "right_on",
+    )
 
     # Materialize both sides from any supported source (file, db table, named
     # datasource, DataFrame, or BYOC connection).
     left_df = load_data(left, storage_options=storage_options, table=left_table)
     right_df = load_data(right, storage_options=storage_options, table=right_table)
 
+    # Align the right side's key columns onto the canonical (left) key names
+    # so the core relationship logic operates on a single set of key names.
+    right_df = _align_side_keys(right_df, right_on_list, left_on_list, "right")
+
     # Compute the profile
-    result = _compute_relationship(left_df, right_df, on, sample_limit)
+    result = _compute_relationship(left_df, right_df, left_on_list, sample_limit)
 
     if save:
         raise NotImplementedError("Probe save not yet implemented")

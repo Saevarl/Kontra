@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kontra"
-version = "0.9.2"
+version = "0.10.0"
 description = "Developer-first data quality engine"
 readme = "README.md"
 authors = [{ name = "Saevarlb" }]
@@ -48,9 +48,11 @@ s3 = ["s3fs>=2024.6.0"]
 postgres = ["psycopg[binary]>=3.0.0"]
 sqlserver = ["pymssql>=2.2.0"]
 # Entra ID (Azure AD) auth for Azure SQL / Managed Instance. Requires a
-# Microsoft ODBC driver (msodbcsql18) installed on the host; the driver
-# acquires the token, so azure-identity is NOT a dependency.
-sqlserver-entra = ["pyodbc>=5.0.0"]
+# Microsoft ODBC driver (msodbcsql18) installed on the host. On Linux/macOS the
+# driver acquires the token via the Authentication=ActiveDirectory* keywords. On
+# Windows those keywords are unsupported, so azure-identity is used to acquire an
+# access token that is passed to the driver via pyodbc attrs_before.
+sqlserver-entra = ["pyodbc>=5.0.0", "azure-identity>=1.15.0"]
 # ClickHouse: HTTP client for the columnar OLAP store.
 clickhouse = ["clickhouse-connect>=0.7.0"]
 all = [
@@ -58,6 +60,7 @@ all = [
     "psycopg[binary]>=3.0.0",
     "pymssql>=2.2.0",
     "pyodbc>=5.0.0",
+    "azure-identity>=1.15.0",
     "clickhouse-connect>=0.7.0",
 ]
 dev = [

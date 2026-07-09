@@ -283,9 +283,19 @@ The auth mode is resolved with priority: URI query string
 
 **Requirements and notes:**
 
-- Install the extra: `pip install kontra[sqlserver-entra]` (adds `pyodbc`).
+- Install the extra: `pip install kontra[sqlserver-entra]` (adds `pyodbc` and
+  `azure-identity`).
 - Install a Microsoft ODBC driver on the host — **msodbcsql18** (or 17). Kontra
   picks the newest `ODBC Driver NN for SQL Server` it finds.
+- **Platform note (token modes):** on Linux and macOS the ODBC driver acquires
+  the token itself via the `Authentication=ActiveDirectory*` keywords, so
+  `azure-identity` is not strictly needed. Windows' msodbcsql18 does not support
+  those keywords for the token modes (`entra_default`, `entra_mi`,
+  `entra_service_principal`), so on Windows Kontra acquires the token with
+  `azure-identity` and passes it to the driver via pyodbc `attrs_before`. This is
+  transparent — the same `auth:` values work everywhere. If you cannot install
+  `azure-identity` on Windows, `entra_password` works on all platforms without
+  it.
 - All Entra modes emit `Encrypt=yes` (mandatory for Managed Instance and Azure SQL).
 - The identity must be mapped to a database user with the needed permissions.
 - For `entra_service_principal`, the tenant is the directory of the SQL resource.

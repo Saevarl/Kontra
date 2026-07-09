@@ -19,6 +19,27 @@ from kontra.version import VERSION
 # -----------------------------------------------------------------------------
 
 
+# Documented annotation-type vocabulary — for discoverability and suggestions ONLY.
+#
+# Annotations are "memory without authority": Kontra stores annotation_type but
+# does NOT enforce a closed vocabulary. Any non-empty string is a valid
+# annotation_type. This set is the curated list of well-known types that tools
+# may surface as suggestions; custom types (e.g. workflow-specific verdicts) are
+# equally valid and round-trip identically.
+KNOWN_ANNOTATION_TYPES = frozenset(
+    {
+        "resolution",      # I fixed this
+        "root_cause",      # This failed because...
+        "false_positive",  # This isn't actually a problem
+        "acknowledged",    # I saw this, will address later
+        "suppressed",      # Intentionally ignoring this
+        "note",            # General comment
+        "diagnosis",       # First-responder's assessment of a failure
+        "expected",        # Owner verdict in an adjudication flow
+    }
+)
+
+
 @dataclass
 class Annotation:
     """
@@ -34,6 +55,10 @@ class Annotation:
     - Opt-in reads: annotations never appear unless explicitly requested
     - Never read during validation or diff
 
+    annotation_type is an open vocabulary: any non-empty string is accepted.
+    KNOWN_ANNOTATION_TYPES lists the documented types (surfaced as suggestions),
+    but custom types are equally valid.
+
     Common annotation_type values (suggested, not enforced):
     - "resolution": I fixed this
     - "root_cause": This failed because...
@@ -41,6 +66,8 @@ class Annotation:
     - "acknowledged": I saw this, will address later
     - "suppressed": Intentionally ignoring this
     - "note": General comment
+    - "diagnosis": First-responder's assessment of a failure
+    - "expected": Owner verdict in an adjudication flow
     """
 
     # Identity

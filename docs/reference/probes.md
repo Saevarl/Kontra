@@ -25,6 +25,25 @@ result = kontra.compare(
 )
 ```
 
+### Same-named or different-named keys
+
+Use `key=` when the identifying column has the same name on both sides. When the
+two sides name it differently — the common FK→PK case — use `before_key=` and
+`after_key=` instead:
+
+```python
+# before uses "organization_id", after uses "id"
+result = kontra.compare(
+    tickets, orgs,
+    before_key="organization_id",
+    after_key="id",
+)
+```
+
+Provide exactly one of `key` or the `before_key`/`after_key` pair; passing both
+raises `ValueError`. For composite keys, pass lists — `before_key` and
+`after_key` are paired positionally and must have the same number of columns.
+
 ### Any source vs any source
 
 `before` and `after` are resolved through the same connectors the validation
@@ -56,7 +75,9 @@ materialized before comparison; database extras (`kontra[postgres]` /
 |-----------|------|-------------|
 | `before` | any source | Dataset before transformation |
 | `after` | any source | Dataset after transformation |
-| `key` | str or list[str] | Column(s) identifying rows |
+| `key` | str or list[str] | Column(s) identifying rows (same name on both sides) |
+| `before_key` | str or list[str] | Key column(s) on `before` (use with `after_key` for different-named keys) |
+| `after_key` | str or list[str] | Key column(s) on `after` (use with `before_key`) |
 | `before_table` | str | Table ref when `before` is a DB **connection** object |
 | `after_table` | str | Table ref when `after` is a DB **connection** object |
 | `sample_limit` | int | Max samples per category (default: 5) |
@@ -168,6 +189,22 @@ profile = kontra.profile_relationship(
 )
 ```
 
+Use `on=` when the join key has the same name on both sides. When the sides name
+it differently — the common FK→PK case — use `left_on=` and `right_on=` instead
+(mirroring pandas' `merge` naming):
+
+```python
+# left uses "organization_id", right uses "id"
+profile = kontra.profile_relationship(
+    tickets, orgs,
+    left_on="organization_id",
+    right_on="id",
+)
+```
+
+Provide exactly one of `on` or the `left_on`/`right_on` pair; passing both raises
+`ValueError`. Composite keys are paired positionally and must match in arity.
+
 `left` and `right` accept any source `compare()` does (DataFrame, file/cloud
 path, database URI, named datasource, or a live connection with
 `left_table`/`right_table`), mixed freely.
@@ -178,7 +215,9 @@ path, database URI, named datasource, or a live connection with
 |-----------|------|-------------|
 | `left` | any source | Left dataset |
 | `right` | any source | Right dataset |
-| `on` | str or list[str] | Column(s) to join on |
+| `on` | str or list[str] | Column(s) to join on (same name on both sides) |
+| `left_on` | str or list[str] | Join key column(s) on `left` (use with `right_on` for different-named keys) |
+| `right_on` | str or list[str] | Join key column(s) on `right` (use with `left_on`) |
 | `left_table` | str | Table ref when `left` is a DB **connection** object |
 | `right_table` | str | Table ref when `right` is a DB **connection** object |
 | `sample_limit` | int | Max samples per category (default: 5) |

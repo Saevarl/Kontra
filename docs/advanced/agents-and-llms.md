@@ -52,6 +52,13 @@ result.dropped             # keys lost in transformation
 result.changed_rows        # rows where values differ
 ```
 
+Use `key=` when the identifying column has the same name on both sides. For a
+FK→PK comparison where the sides name it differently, use `before_key=`/`after_key=`:
+
+```python
+result = kontra.compare(tickets, orgs, before_key="organization_id", after_key="id")
+```
+
 ### Profile Relationship (JOIN Structure)
 
 ```python
@@ -61,6 +68,13 @@ profile = kontra.profile_relationship(left_df, right_df, on="customer_id")
 profile.right_duplicate_keys         # keys appearing >1x in right
 profile.right_key_multiplicity_max   # max rows per key in right
 profile.left_keys_without_match      # left keys not in right
+```
+
+For differently named join keys, use `left_on=`/`right_on=` instead of `on=`
+(same naming as pandas' `merge`):
+
+```python
+profile = kontra.profile_relationship(tickets, orgs, left_on="organization_id", right_on="id")
 ```
 
 See [Transformation Probes](../reference/probes.md) for full schemas and all fields.

@@ -804,7 +804,7 @@ def profile(
     *,
     columns: Optional[List[str]] = None,
     sample: Optional[int] = None,
-    save: bool = True,
+    save: bool = False,
     storage_options: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> DatasetProfile:
@@ -819,7 +819,12 @@ def profile(
             - "interrogate": Deep investigation (everything + percentiles)
         columns: Only profile these columns
         sample: Sample N rows (default: all)
-        save: Save profile to history
+        save: Persist the profile to history (default: False). When True, the
+            profile is written to the same local store the CLI uses
+            (``.kontra/profiles/`` under the current directory), making it
+            available to ``kontra.get_profile()``, ``kontra.list_profiles()``,
+            and ``kontra.profile_diff()``. Inline DataFrame profiles have no
+            stable source identity and are not saved.
         storage_options: Cloud storage credentials (S3, Azure, GCS).
             For S3/MinIO: aws_access_key_id, aws_secret_access_key, aws_region, endpoint_url
             For Azure: account_name, account_key, sas_token, etc.
@@ -866,6 +871,24 @@ def profile(
             DeprecationWarning,
             stacklevel=2,
         )
+
+    def _save_profile_to_history(result: DatasetProfile) -> DatasetProfile:
+        """Persist a profile to the local history store if save was requested.
+
+        Mirrors the CLI save path (``create_profile_state`` +
+        ``get_default_profile_store().save``) so profiles saved via the API and
+        the CLI are interoperable. Inline DataFrame profiles are skipped: they
+        have no stable source identity to fingerprint or look up later.
+        """
+        if not save:
+            return result
+        if result.source_format == "dataframe" or result.source_uri.startswith("<"):
+            return result
+        from kontra.scout.store import create_profile_state, get_default_profile_store
+
+        state = create_profile_state(result)
+        get_default_profile_store().save(state)
+        return result
 
     # Convert list/dict/pandas to Polars DataFrame
     data = _normalize_to_dataframe(data)
@@ -930,7 +953,7 @@ def profile(
                 storage_options=storage_options,
                 **kwargs,
             )
-            return profiler.profile()
+            result = profiler.profile()
         except FileNotFoundError as e:
             raise InvalidDataError(
                 "file",
@@ -960,6 +983,12 @@ def profile(
                 ) from e
             # Propagate the real error (all URI/engine failures included).
             raise
+
+        # Persist AFTER profiling succeeds and outside the source-resolution
+        # try/except, so a history-write failure (read-only cwd, disk full)
+        # surfaces its own error instead of being misclassified as a source
+        # "file not found".
+        return _save_profile_to_history(result)
 
 
 def draft(
@@ -1381,8 +1410,39 @@ def profile_diff(
             for col in diff.columns_added:
                 print(f"  NEW: {col}")
     """
-    # TODO: Implement profile history lookup
-    return None
+    from kontra.scout.store import get_default_profile_store
+    from kontra.scout.types import ProfileDiff
+
+    store = get_default_profile_store()
+    source_fp = _resolve_profile_source_fingerprint(source)
+    history = store.get_history(source_fp, limit=100)
+
+    if len(history) < 1:
+        return None
+
+    # Newest first: after is the latest profile.
+    after_state = history[0]
+    before_state: Optional[Any] = None
+
+    if since is not None:
+        from datetime import datetime, timedelta, timezone
+        from kontra.rule_defs.builtin.freshness import parse_duration
+
+        delta = parse_duration(since)
+        target_str = (datetime.now(timezone.utc) - delta).isoformat()
+        for state in history[1:]:
+            if state.profiled_at <= target_str:
+                before_state = state
+                break
+        if before_state is None:
+            return None
+    else:
+        # Default: compare the two most recent profiles.
+        if len(history) < 2:
+            return None
+        before_state = history[1]
+
+    return ProfileDiff.compute(before_state, after_state)
 
 
 def scout_diff(
@@ -1572,6 +1632,29 @@ def has_runs(contract: str) -> bool:
         return False
 
 
+def _resolve_profile_source_fingerprint(source: str) -> str:
+    """Resolve a data source to the fingerprint under which its profiles are
+    stored.
+
+    ``create_profile_state`` fingerprints the profiled ``source_uri`` (the
+    resolved URI for named datasources), so named datasources must be resolved
+    here for lookups to match what ``profile(save=True)`` and the CLI wrote.
+    Plain file paths and URIs are not named datasources and fingerprint as-is.
+    """
+    from kontra.scout.store import fingerprint_source
+
+    resolved = source
+    if isinstance(source, str):
+        from kontra.config.settings import resolve_datasource
+
+        try:
+            resolved = resolve_datasource(source)
+        except ValueError:
+            # Not a named datasource — a file path or URI. Fingerprint as-is.
+            resolved = source
+    return fingerprint_source(resolved)
+
+
 def list_profiles(source: str) -> List[Dict[str, Any]]:
     """
     List past profile runs for a data source.
@@ -1580,10 +1663,26 @@ def list_profiles(source: str) -> List[Dict[str, Any]]:
         source: Data source path or name
 
     Returns:
-        List of profile summaries
+        List of profile summaries (newest first), each with ``profiled_at``,
+        ``source_uri``, ``row_count``, ``column_count``, and ``engine_version``.
+        Empty if no profiles have been saved for the source.
     """
-    # TODO: Implement profile history
-    return []
+    from kontra.scout.store import get_default_profile_store
+
+    store = get_default_profile_store()
+    source_fp = _resolve_profile_source_fingerprint(source)
+    history = store.get_history(source_fp, limit=100)
+
+    return [
+        {
+            "profiled_at": state.profiled_at,
+            "source_uri": state.source_uri,
+            "row_count": state.profile.row_count,
+            "column_count": state.profile.column_count,
+            "engine_version": state.engine_version,
+        }
+        for state in history
+    ]
 
 
 def get_profile(
@@ -1591,16 +1690,29 @@ def get_profile(
     run_id: Optional[str] = None,
 ) -> Optional[DatasetProfile]:
     """
-    Get a specific profile run.
+    Get a specific saved profile run.
 
     Args:
         source: Data source path or name
-        run_id: Specific run ID (default: latest)
+        run_id: Specific run identifier (the profile's ``profiled_at`` ISO
+            timestamp, or a unique prefix of it). Defaults to the latest
+            profile.
 
     Returns:
-        DatasetProfile or None if not found
+        DatasetProfile, or None if no matching profile was found.
     """
-    # TODO: Implement profile history lookup
+    from kontra.scout.store import get_default_profile_store
+
+    store = get_default_profile_store()
+    source_fp = _resolve_profile_source_fingerprint(source)
+
+    if run_id is None:
+        latest = store.get_latest(source_fp)
+        return latest.profile if latest else None
+
+    for state in store.get_history(source_fp, limit=100):
+        if state.profiled_at == run_id or state.profiled_at.startswith(run_id):
+            return state.profile
     return None
 
 
@@ -1695,6 +1807,10 @@ def annotate(
         ValueError: If contract or run not found, or rule_id not found in run
         RuntimeError: If annotation save fails
 
+    annotation_type is an OPEN vocabulary: any non-empty string is accepted
+    (custom, workflow-specific types included). The values below are the
+    documented, well-known types surfaced as suggestions - not an enforced set.
+
     Common annotation_type values (suggested, not enforced):
     - "resolution": I fixed this
     - "root_cause": This failed because...
@@ -1702,6 +1818,8 @@ def annotate(
     - "acknowledged": I saw this, will address later
     - "suppressed": Intentionally ignoring this
     - "note": General comment
+    - "diagnosis": First-responder's assessment of a failure
+    - "expected": Owner verdict in an adjudication flow
 
     Example:
         # Annotate the latest run for a contract
@@ -1737,15 +1855,27 @@ def annotate(
             },
         )
     """
-    # Validate annotation inputs (BUG-044, BUG-045)
-    _VALID_ANNOTATION_TYPES = {
-        "resolution", "root_cause", "false_positive",
-        "acknowledged", "suppressed", "note",
-    }
-    if annotation_type not in _VALID_ANNOTATION_TYPES:
+    # Validate annotation inputs (BUG-044, BUG-045).
+    #
+    # annotation_type is an OPEN vocabulary. Annotations are "memory without
+    # authority" - Kontra stores annotation_type but does not interpret it, so
+    # there is no reason to hard-reject unknown types. We accept any non-empty
+    # string; KNOWN_ANNOTATION_TYPES only drives discoverability/suggestions.
+    # A type outside the documented set is accepted and logged at debug level.
+    from kontra.state.types import KNOWN_ANNOTATION_TYPES
+
+    if annotation_type is None or not str(annotation_type).strip():
         raise ValueError(
-            f"Invalid annotation_type '{annotation_type}'. "
-            f"Must be one of: {', '.join(sorted(_VALID_ANNOTATION_TYPES))}"
+            "annotation_type must be a non-empty string. Known types: "
+            f"{', '.join(sorted(KNOWN_ANNOTATION_TYPES))} "
+            "(custom types are also accepted)."
+        )
+    if annotation_type not in KNOWN_ANNOTATION_TYPES:
+        _logger.debug(
+            "annotation_type %r is outside the documented vocabulary (%s); "
+            "accepting as a custom type.",
+            annotation_type,
+            ", ".join(sorted(KNOWN_ANNOTATION_TYPES)),
         )
     if not summary or not summary.strip():
         raise ValueError("summary must be a non-empty string")
@@ -2065,6 +2195,12 @@ def set_config(path: Optional[str]) -> None:
             stacklevel=2,
         )
     _config_path_override = path
+    # Register the override with the config layer so find_config_file() honors
+    # it for ALL resolution (validate, resolve_datasource, state, profile) —
+    # not just health(). Without this, services that can't control their cwd
+    # silently fall back to cwd discovery and miss the config.
+    from kontra.config.settings import set_config_path_override
+    set_config_path_override(path)
 
 
 def get_config_path() -> Optional[str]:

@@ -166,6 +166,8 @@ class SqlServerBackend:
         if not exprs:
             return {}
 
+        exprs = self._widen_overflow_prone_aggregates(exprs)
+
         # Build query with optional sampling
         table = self._qualified_table()
         if self.sample_size:
@@ -254,6 +256,126 @@ class SqlServerBackend:
         return "sqlserver"
 
     # ----------------------------- Internal methods -----------------------------
+
+    # SQL Server accumulates these aggregates in the argument's native type.
+    # Over an INT column with a wide value range, the internal accumulator
+    # overflows int (2^31-1) and the whole query fails with
+    # "Arithmetic overflow error converting expression to data type int".
+    # (Verified against a live server: AVG(int) and SUM(int) overflow;
+    #  STDEV/MIN/MAX/COUNT do not, but STDEV/variance are widened too so the
+    #  accumulation is unconditionally overflow-safe.) Postgres/DuckDB widen
+    # automatically; SQL Server does not. We widen the aggregate ARGUMENT so
+    # accumulation happens in a wider type. The result value is unchanged:
+    # a widened SUM is the same number, and a widened AVG matches the float
+    # mean the other backends already return (SQL Server's AVG(int) would
+    # otherwise truncate to int).
+    _WIDEN_TO_BIGINT_FNS = frozenset({"SUM"})
+    _WIDEN_TO_FLOAT_FNS = frozenset({
+        "AVG",
+        "STDEV", "STDEVP", "STDDEV", "STDDEV_SAMP", "STDDEV_POP",
+        "VAR", "VARP", "VAR_SAMP", "VAR_POP",
+    })
+
+    def _widen_overflow_prone_aggregates(self, exprs: List[str]) -> List[str]:
+        """Widen integer aggregate arguments to prevent SUM/AVG overflow.
+
+        Rewrites e.g. ``AVG([col]) AS [alias]`` -> ``AVG(CAST([col] AS FLOAT)) AS [alias]``
+        and ``SUM([col])`` -> ``SUM(CAST([col] AS BIGINT))``. Non-target
+        expressions (MIN/MAX/COUNT, or aggregates already casting to a wide
+        numeric type) are returned unchanged.
+        """
+        return [self._widen_aggregate_arg(e) for e in exprs]
+
+    def _widen_aggregate_arg(self, expr: str) -> str:
+        """Widen the argument of a leading overflow-prone aggregate function.
+
+        Only the aggregate at the head of the expression is considered (each
+        Scout stat expression is a single top-level aggregate). If the head is
+        not an overflow-prone aggregate, or its argument is already cast to a
+        wide numeric type, the expression is returned unchanged.
+        """
+        s = expr
+        n = len(s)
+
+        # Skip leading whitespace, then read the function identifier.
+        i = 0
+        while i < n and s[i].isspace():
+            i += 1
+        j = i
+        while j < n and (s[j].isalnum() or s[j] == "_"):
+            j += 1
+        fn_upper = s[i:j].upper()
+
+        if fn_upper in self._WIDEN_TO_BIGINT_FNS:
+            cast_type = "BIGINT"
+        elif fn_upper in self._WIDEN_TO_FLOAT_FNS:
+            cast_type = "FLOAT"
+        else:
+            return expr
+
+        # Require '(' after the identifier (allowing whitespace).
+        k = j
+        while k < n and s[k].isspace():
+            k += 1
+        if k >= n or s[k] != "(":
+            return expr
+        open_idx = k
+
+        # Find the matching close paren for this aggregate's argument list.
+        # Parens inside a bracket-quoted identifier (e.g. [amount (usd)]) are
+        # literal column-name characters, not grouping — skip them so the
+        # matcher doesn't split the argument at the wrong ')'.
+        depth = 0
+        close_idx = -1
+        in_bracket = False
+        for m in range(open_idx, n):
+            ch = s[m]
+            if in_bracket:
+                if ch == "]":
+                    in_bracket = False
+                continue
+            if ch == "[":
+                in_bracket = True
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    close_idx = m
+                    break
+        if close_idx == -1:
+            return expr
+
+        arg = s[open_idx + 1:close_idx].strip()
+        if not arg or arg == "*":
+            return expr
+
+        # Preserve a DISTINCT/ALL quantifier if present.
+        quant = ""
+        arg_upper = arg.upper()
+        for q in ("DISTINCT", "ALL"):
+            if arg_upper.startswith(q) and (len(arg) == len(q) or arg[len(q)].isspace()):
+                quant = arg[:len(q)] + " "
+                arg = arg[len(q):].strip()
+                arg_upper = arg.upper()
+                break
+
+        # Skip if the argument is already cast to a wide numeric type.
+        already_wide = (
+            "AS BIGINT" in arg_upper
+            or "AS FLOAT" in arg_upper
+            or "AS REAL" in arg_upper
+            or "AS DOUBLE" in arg_upper
+            or "AS DECIMAL" in arg_upper
+            or "AS NUMERIC" in arg_upper
+            or "AS MONEY" in arg_upper
+        )
+        if already_wide:
+            return expr
+
+        new_arg = f"{quant}CAST({arg} AS {cast_type})"
+        return s[:open_idx + 1] + new_arg + s[close_idx:]
 
     def _qualified_table(self) -> str:
         """Return schema.table identifier."""
@@ -563,10 +685,12 @@ class SqlServerBackend:
         row_count = self.get_row_count()
         if row_count < 10000:
             # Skip sampling for small tables - just do full scan
+            # (execute_stats_query applies aggregate widening itself)
             return self.execute_stats_query(exprs)
 
+        widened = self._widen_overflow_prone_aggregates(exprs)
         sql = f"""
-            SELECT {', '.join(exprs)}
+            SELECT {', '.join(widened)}
             FROM {table}
             TABLESAMPLE ({sample_pct} PERCENT)
         """

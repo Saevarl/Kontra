@@ -2213,15 +2213,54 @@ class TestSetConfigWarning:
 
 
 class TestAnnotationValidation:
-    """BUG-044/045: Annotation type and summary validation."""
+    """BUG-044/045 + W5: Annotation type is an open vocabulary; summary required."""
 
-    def test_invalid_annotation_type_rejected(self):
-        """Invalid annotation type raises ValueError."""
-        with pytest.raises(ValueError, match="Invalid annotation_type"):
+    def test_custom_annotation_type_not_rejected_by_type_validation(self):
+        """W5: unknown annotation types are accepted (open vocabulary).
+
+        The type check no longer hard-rejects unknown types. Custom types
+        (and the new 'diagnosis'/'expected') pass validation and only fail
+        later on contract/run resolution - never with an annotation_type error.
+        """
+        for atype in ("diagnosis", "expected", "triage_owner"):
+            with pytest.raises((ValueError, RuntimeError)) as exc:
+                kontra.annotate(
+                    "nonexistent_contract_xyz_w5",
+                    actor_id="test",
+                    annotation_type=atype,
+                    summary="test summary",
+                )
+            # Failure is about the missing contract/store, NOT the type value.
+            assert "annotation_type must be" not in str(exc.value)
+            assert "Invalid annotation_type" not in str(exc.value)
+
+    def test_empty_annotation_type_rejected(self):
+        """Empty annotation_type raises a clear ValueError."""
+        with pytest.raises(ValueError, match="annotation_type must be a non-empty"):
             kontra.annotate(
                 "test_contract",
                 actor_id="test",
-                annotation_type="invalid_type",
+                annotation_type="",
+                summary="test summary",
+            )
+
+    def test_whitespace_annotation_type_rejected(self):
+        """Whitespace-only annotation_type raises a clear ValueError."""
+        with pytest.raises(ValueError, match="annotation_type must be a non-empty"):
+            kontra.annotate(
+                "test_contract",
+                actor_id="test",
+                annotation_type="   ",
+                summary="test summary",
+            )
+
+    def test_none_annotation_type_rejected(self):
+        """None annotation_type raises a clear ValueError."""
+        with pytest.raises(ValueError, match="annotation_type must be a non-empty"):
+            kontra.annotate(
+                "test_contract",
+                actor_id="test",
+                annotation_type=None,  # type: ignore[arg-type]
                 summary="test summary",
             )
 

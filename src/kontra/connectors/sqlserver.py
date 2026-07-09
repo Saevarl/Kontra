@@ -36,8 +36,13 @@ The ``auth`` (and optional ``client_id``) values are resolved with priority:
       > env vars (MSSQL_AUTH, AZURE_CLIENT_ID)
       > default ("sql")
 
-For Entra modes the Microsoft ODBC driver acquires the token itself, so Kontra
-does NOT depend on azure-identity. Install the optional extra:
+On Linux/macOS the Microsoft ODBC driver acquires the token itself via the
+``Authentication=ActiveDirectory*`` keywords, so azure-identity is not needed
+there. On Windows those keywords are rejected by msodbcsql18 for the token modes
+(entra_default / entra_mi / entra_service_principal); Kontra instead acquires an
+access token with azure-identity and passes it to pyodbc via
+``attrs_before={1256: token_struct}`` (1256 = SQL_COPT_SS_ACCESS_TOKEN). Install
+the optional extra (it bundles azure-identity for the Windows path):
     pip install 'kontra[sqlserver-entra]'
 and a Microsoft ODBC driver (msodbcsql18) on the host.
 """
@@ -45,7 +50,9 @@ and a Microsoft ODBC driver (msodbcsql18) on the host.
 from __future__ import annotations
 
 import os
+import platform
 import re
+import struct
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
@@ -84,6 +91,29 @@ _ENTRA_ODBC_AUTH = {
     AUTH_ENTRA_INTERACTIVE: "ActiveDirectoryInteractive",
     AUTH_ENTRA_PASSWORD: "ActiveDirectoryPassword",
 }
+
+# Entra auth modes where a token is acquired by azure-identity rather than
+# ridden through user/password fields. On Windows the msodbcsql18 driver REJECTS
+# the "Authentication=ActiveDirectory*" keywords for these modes (they are
+# Linux/macOS-only driver keywords), so on Windows we acquire the token with
+# azure-identity and hand it to pyodbc via attrs_before instead.
+# (entra_interactive and entra_password keep the Authentication= keyword path on
+# every platform.)
+_ENTRA_TOKEN_MODES = (
+    AUTH_ENTRA_DEFAULT,
+    AUTH_ENTRA_MI,
+    AUTH_ENTRA_SERVICE_PRINCIPAL,
+)
+
+# SQL_COPT_SS_ACCESS_TOKEN: pyodbc pre-connect attribute for an Azure AD access
+# token. The AAD scope for Azure SQL Database / Managed Instance.
+_SQL_COPT_SS_ACCESS_TOKEN = 1256
+_AZURE_SQL_SCOPE = "https://database.windows.net/.default"
+
+
+def _is_windows() -> bool:
+    """Return True when running on Windows (patch point for tests)."""
+    return platform.system() == "Windows"
 
 
 def validate_auth_mode(auth: str) -> str:
@@ -355,6 +385,131 @@ def build_entra_connection_string(
     return ";".join(parts) + ";"
 
 
+def build_token_connection_string(
+    driver: str,
+    params: SqlServerConnectionParams,
+) -> str:
+    """
+    Build an ODBC connection string for the Windows access-token path.
+
+    This is used only when Kontra acquires an Entra ID token itself (Windows +
+    a token auth mode) and passes it via pyodbc ``attrs_before``. It deliberately
+    contains NO ``Authentication=`` keyword (msodbcsql18 rejects the
+    ActiveDirectory* keywords on Windows) and no UID/PWD - the token carries the
+    identity. Encrypt=yes is mandatory for Azure SQL / Managed Instance.
+    """
+    parts = [
+        f"Driver={{{driver}}}",
+        f"Server={_odbc_escape(params.host)},{int(params.port)}",
+        f"Database={_odbc_escape(params.database)}",
+        "Encrypt=yes",
+        "TrustServerCertificate=no",
+    ]
+    return ";".join(parts) + ";"
+
+
+def _encode_access_token(token: str) -> bytes:
+    """
+    Encode an Entra ID access token into the pyodbc SQL_COPT_SS_ACCESS_TOKEN
+    struct: a little-endian int32 length prefix followed by the UTF-16-LE token.
+    """
+    token_bytes = token.encode("utf-16-le")
+    return struct.pack("<i", len(token_bytes)) + token_bytes
+
+
+def _acquire_entra_token(params: SqlServerConnectionParams, auth: str) -> str:
+    """
+    Acquire an Azure AD access token for Azure SQL using azure-identity.
+
+    Credential selection mirrors the ODBC Authentication modes:
+      entra_default            -> DefaultAzureCredential
+      entra_mi                 -> ManagedIdentityCredential (client_id if given)
+      entra_service_principal  -> ClientSecretCredential(tenant, client, secret)
+
+    Raises ImportError (Windows-specific, actionable) if azure-identity is not
+    installed, and ValueError if a service principal is missing credentials.
+    """
+    try:
+        from azure.identity import (
+            ClientSecretCredential,
+            DefaultAzureCredential,
+            ManagedIdentityCredential,
+        )
+    except ImportError as e:
+        raise ImportError(
+            "On Windows, Entra token authentication "
+            "(auth='entra_default' / 'entra_mi' / 'entra_service_principal') "
+            "requires the 'azure-identity' package. The Microsoft ODBC driver's "
+            "'Authentication=ActiveDirectory*' keywords are Linux/macOS-only, so "
+            "on Windows Kontra must acquire the access token itself and pass it "
+            "to the driver.\n"
+            "Install it with: pip install 'kontra[sqlserver-entra]'\n"
+            "  (or: pip install azure-identity)\n"
+            "Alternatively, use auth='entra_password' (works on Windows without "
+            "azure-identity)."
+        ) from e
+
+    if auth == AUTH_ENTRA_DEFAULT:
+        credential = DefaultAzureCredential()
+    elif auth == AUTH_ENTRA_MI:
+        credential = (
+            ManagedIdentityCredential(client_id=params.client_id)
+            if params.client_id
+            else ManagedIdentityCredential()
+        )
+    elif auth == AUTH_ENTRA_SERVICE_PRINCIPAL:
+        if not (params.tenant_id and params.client_id and params.client_secret):
+            raise ValueError(
+                "auth='entra_service_principal' on Windows requires tenant_id, "
+                "client_id and client_secret (set them in the URI query, the "
+                "datasource config, or AZURE_TENANT_ID / AZURE_CLIENT_ID / "
+                "AZURE_CLIENT_SECRET)."
+            )
+        credential = ClientSecretCredential(
+            tenant_id=params.tenant_id,
+            client_id=params.client_id,
+            client_secret=params.client_secret,
+        )
+    else:  # pragma: no cover - guarded by _ENTRA_TOKEN_MODES at call site
+        raise ValueError(f"Auth mode {auth!r} does not use token acquisition.")
+
+    return credential.get_token(_AZURE_SQL_SCOPE).token
+
+
+def _connect_entra_windows_token(pyodbc, driver: str, params: SqlServerConnectionParams, auth: str):
+    """
+    Windows token path: acquire an Entra ID token via azure-identity and pass it
+    to pyodbc through attrs_before (SQL_COPT_SS_ACCESS_TOKEN), with a connection
+    string that omits the Authentication= keyword.
+    """
+    token = _acquire_entra_token(params, auth)
+    token_struct = _encode_access_token(token)
+    conn_str = build_token_connection_string(driver, params)
+
+    try:
+        return pyodbc.connect(
+            conn_str,
+            attrs_before={_SQL_COPT_SS_ACCESS_TOKEN: token_struct},
+        )
+    except pyodbc.Error as e:
+        detail = (
+            f"SQL Server Entra ID connection failed (Windows token path): {e}\n\n"
+            f"Connection details:\n"
+            f"  Host: {params.host}:{params.port}\n"
+            f"  Database: {params.database}\n"
+            f"  Auth: {auth}\n"
+            f"  Driver: {driver}\n"
+        )
+        if params.client_id:
+            detail += f"  Client ID: {params.client_id}\n"
+        detail += (
+            "\nEnsure this host has an Entra identity with access to the "
+            "database, that the identity is mapped to a database user, and that "
+            "the ODBC driver (msodbcsql18) is installed."
+        )
+        raise ConnectionError(detail) from e
+
+
 def _connect_entra_pyodbc(params: SqlServerConnectionParams, auth: str):
     """Create a pyodbc connection using an Entra ID auth mode."""
     try:
@@ -379,6 +534,12 @@ def _connect_entra_pyodbc(params: SqlServerConnectionParams, auth: str):
             "  https://learn.microsoft.com/sql/connect/odbc/"
             "download-odbc-driver-for-sql-server"
         )
+
+    # Windows: the ActiveDirectory* Authentication keywords are not supported by
+    # msodbcsql18. Acquire the token via azure-identity and pass it through
+    # attrs_before instead. Non-Windows keeps the Authentication= string path.
+    if _is_windows() and auth in _ENTRA_TOKEN_MODES:
+        return _connect_entra_windows_token(pyodbc, driver, params, auth)
 
     conn_str = build_entra_connection_string(driver, params, auth)
 

@@ -926,6 +926,41 @@ class TestDiffTallyWarning:
 class TestAnnotation:
     """Tests for Annotation dataclass."""
 
+    def test_known_vocabulary_includes_new_types(self):
+        """W5: 'diagnosis' and 'expected' are documented known types."""
+        from kontra.state.types import KNOWN_ANNOTATION_TYPES
+
+        assert "diagnosis" in KNOWN_ANNOTATION_TYPES
+        assert "expected" in KNOWN_ANNOTATION_TYPES
+        # Backward compat: all original types still present.
+        for legacy in (
+            "resolution",
+            "root_cause",
+            "false_positive",
+            "acknowledged",
+            "suppressed",
+            "note",
+        ):
+            assert legacy in KNOWN_ANNOTATION_TYPES
+
+    def test_open_vocabulary_round_trip(self):
+        """W5: new + arbitrary custom annotation types round-trip via to/from_dict."""
+        for atype in ("diagnosis", "expected", "triage_owner", "gagnagaedi_verdict"):
+            original = Annotation(
+                run_id=7,
+                rule_id="COL:email:not_null",
+                actor_type="human",
+                actor_id="owner@example.com",
+                annotation_type=atype,
+                summary=f"{atype} summary",
+                payload={"k": "v"},
+            )
+            restored = Annotation.from_dict(original.to_dict())
+            assert restored.annotation_type == atype
+            assert restored.summary == f"{atype} summary"
+            assert restored.rule_id == "COL:email:not_null"
+            assert restored.payload == {"k": "v"}
+
     def test_to_dict_minimal(self):
         """Test serialization with minimal fields."""
         annotation = Annotation(
@@ -1315,6 +1350,64 @@ rules:
         assert annotations[0]["annotation_type"] == "root_cause"
         assert annotations[0]["rule_id"] == "COL:email:not_null"
         assert annotations[0]["summary"] == "Missing emails from legacy import"
+
+    def test_open_vocabulary_end_to_end(self, tmp_path):
+        """W5: annotate + read back with 'diagnosis', 'expected', and a custom type."""
+        import kontra
+        import polars as pl
+        import os
+
+        os.makedirs(tmp_path / ".kontra", exist_ok=True)
+        os.chdir(tmp_path)
+
+        df = pl.DataFrame({"email": [None]})
+        df.write_parquet("users.parquet")
+
+        with open("users_contract.yml", "w") as f:
+            f.write(
+                """
+name: users_contract
+datasource: users.parquet
+rules:
+  - name: not_null
+    params:
+      column: email
+"""
+            )
+
+        kontra.validate("users.parquet", "users_contract.yml")
+
+        # diagnosis (first-responder), expected (owner verdict), and a custom type.
+        kontra.annotate(
+            "users_contract.yml",
+            rule_id="COL:email:not_null",
+            actor_id="responder",
+            annotation_type="diagnosis",
+            summary="Nulls came from legacy import batch",
+        )
+        kontra.annotate(
+            "users_contract.yml",
+            rule_id="COL:email:not_null",
+            actor_id="owner@example.com",
+            annotation_type="expected",
+            summary="Expected for service accounts",
+        )
+        kontra.annotate(
+            "users_contract.yml",
+            rule_id="COL:email:not_null",
+            actor_id="triage-bot",
+            annotation_type="triage_owner",
+            summary="Assigned to data platform",
+        )
+
+        anns = kontra.get_annotations("users_contract.yml")
+        types = {a["annotation_type"] for a in anns}
+        assert {"diagnosis", "expected", "triage_owner"} <= types
+
+        # Filtering by a custom type works too.
+        custom = kontra.get_annotations("users_contract.yml", annotation_type="triage_owner")
+        assert len(custom) == 1
+        assert custom[0]["summary"] == "Assigned to data platform"
 
     def test_get_annotations_filter_by_rule(self, tmp_path):
         """Test filtering annotations by rule_id."""

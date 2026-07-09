@@ -280,6 +280,36 @@ Parquet a job wrote:
 diff = kontra.compare_profiles("postgres:///public.orders", "s3://lake/orders.parquet")
 ```
 
+### Profile History
+
+Save a profile to track a source's shape over time. Saved profiles land in the
+same local store the CLI uses (`.kontra/profiles/`), so profiles saved from
+Python and from `kontra profile --save-profile` are interchangeable:
+
+```python
+# Persist this profile (default is save=False)
+kontra.profile("users.parquet", save=True)
+
+# Latest saved profile, or a specific run by its profiled_at timestamp
+profile = kontra.get_profile("users.parquet")
+profile = kontra.get_profile("users.parquet", run_id="2024-01-15T10:30:00")
+
+# List saved runs, newest first
+for entry in kontra.list_profiles("users.parquet"):
+    print(entry["profiled_at"], entry["row_count"], entry["column_count"])
+
+# Compare the latest profile to the previous one (or to a point in time)
+diff = kontra.profile_diff("users.parquet")
+diff = kontra.profile_diff("users.parquet", since="7d")
+if diff and diff.has_schema_changes:
+    print("Schema changed:", diff.columns_added, diff.columns_removed)
+```
+
+`profile_diff()` returns `None` when there isn't enough history to compare.
+Inline DataFrame profiles have no stable source identity, so `save=True` skips
+them. See [Project Setup & History](advanced/state-and-diff.md#profile-history)
+for where profiles are stored and the Postgres backend.
+
 ---
 
 ## Sampling
@@ -507,7 +537,7 @@ for ann in result.annotations or []:
     print(f"[{ann['annotation_type']}] {ann['summary']}")
 ```
 
-Common types: `resolution`, `root_cause`, `false_positive`, `acknowledged`, `suppressed`, `note`
+`annotation_type` is an open vocabulary — any non-empty string is accepted, so workflows can define their own verdicts. The documented types are suggestions: `resolution`, `root_cause`, `false_positive`, `acknowledged`, `suppressed`, `note`, `diagnosis` (a first responder's assessment), and `expected` (an owner's adjudication verdict).
 
 ---
 
@@ -628,7 +658,10 @@ All `to_llm()` outputs are designed for token efficiency. See [Agents & Services
 |----------|-------------|
 | `kontra.validate(data, contract, **opts)` | Validate data |
 | `kontra.explain(data, contract, **opts)` | Preview execution plan |
-| `kontra.profile(data, preset, **opts)` | Profile data |
+| `kontra.profile(data, preset, save=False, **opts)` | Profile data |
+| `kontra.get_profile(source, run_id=None)` | Load a saved profile (latest or by run) |
+| `kontra.list_profiles(source)` | List saved profile runs, newest first |
+| `kontra.profile_diff(source, since=None)` | Compare a source's latest profile to a prior one |
 | `kontra.draft(profile)` | Suggest rules from a profile |
 | `kontra.compare_profiles(a, b)` | Diff two profiles, aligned by column |
 | `kontra.diff(contract, **opts)` | Compare validation runs |
@@ -639,8 +672,8 @@ All `to_llm()` outputs are designed for token efficiency. See [Agents & Services
 
 | Function | Description |
 |----------|-------------|
-| `kontra.compare(before, after, key)` | Measure transformation effects |
-| `kontra.profile_relationship(left, right, on)` | Measure JOIN structure |
+| `kontra.compare(before, after, key)` | Measure transformation effects (or `before_key`/`after_key` for different-named keys) |
+| `kontra.profile_relationship(left, right, on)` | Measure JOIN structure (or `left_on`/`right_on` for different-named keys) |
 
 See [Transformation Probes](reference/probes.md) for details.
 

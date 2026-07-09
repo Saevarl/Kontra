@@ -132,7 +132,34 @@ class SqlServerMaterializer(BaseMaterializer):
 
         # Convert to Polars DataFrame
         if rows:
-            df = pl.DataFrame(rows, schema=col_names, orient="row")
+            # BUG 4 fix: pyodbc (Entra ID / BYOC pyodbc path) returns pyodbc.Row
+            # objects from fetchall(). Polars does not unpack pyodbc.Row when
+            # building a row-oriented DataFrame, which raises ShapeError ("data
+            # does not match the number of columns"). pymssql returns plain
+            # tuples, so this only bites the pyodbc driver. Coerce every row to a
+            # plain tuple so both drivers construct identically.
+            rows = [tuple(r) for r in rows]
+
+            # BUG 5 fix: Polars' default infer_schema_length=100 only inspects
+            # the first 100 rows to pick each column's dtype. A column that is
+            # NULL for its first 100 rows infers Null/Utf8, then dies at the
+            # first real value (e.g. ComputeError appending a datetime to an
+            # inferred Null column). infer_schema_length=None scans all rows so
+            # the dtype is always inferred from real data.
+            #
+            # We infer rather than build an explicit schema from
+            # cursor.description because the driver type codes are not reliable
+            # cross-driver: pymssql reports a coarse NUMBER type that conflates
+            # INT and FLOAT, so it cannot distinguish Int64 from Float64. Full
+            # inference is correct for both pyodbc and pymssql.
+            #
+            # Perf caveat: scanning all rows for inference adds a pass over the
+            # fetched rows. For very large tables (e.g. 1M+ rows) this is a
+            # measurable but bounded cost; correctness (loading the table at all)
+            # takes precedence over the truncated-inference fast path.
+            df = pl.DataFrame(
+                rows, schema=col_names, orient="row", infer_schema_length=None
+            )
         else:
             # Empty DataFrame with correct schema
             df = pl.DataFrame(schema={name: pl.Utf8 for name in col_names})

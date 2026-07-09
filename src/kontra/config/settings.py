@@ -602,16 +602,48 @@ class EffectiveConfig:
 # Config Loading
 # =============================================================================
 
+# Explicit config override for services/agents that can't rely on cwd
+# discovery (Windmill workers, long-running daemons). Set via
+# kontra.set_config(); honored by find_config_file() below, which every
+# config/datasource/state resolution routes through.
+_config_path_override: Optional[str] = None
+
+
+def set_config_path_override(path: Optional[str]) -> None:
+    """Set (or clear with None) the explicit config path used by discovery."""
+    global _config_path_override
+    _config_path_override = path
+
+
+def get_config_path_override() -> Optional[str]:
+    return _config_path_override
+
+
 def find_config_file(start_path: Optional[Path] = None) -> Optional[Path]:
     """
-    Find .kontra/config.yml in current directory.
+    Find the config file.
+
+    Resolution:
+      1. An explicit override set via kontra.set_config() (a config.yml path,
+         or a directory containing .kontra/config.yml) — used when the caller
+         does not pass an explicit start_path. This lets services that can't
+         control their cwd point Kontra at a fixed config.
+      2. Otherwise .kontra/config.yml under start_path (default: cwd).
 
     Args:
-        start_path: Directory to search (default: cwd)
+        start_path: Directory to search (default: cwd / override)
 
     Returns:
         Path to config file if found, None otherwise
     """
+    if start_path is None and _config_path_override is not None:
+        override = Path(_config_path_override)
+        # Accept either a direct config.yml path or a directory containing one.
+        if override.is_dir():
+            candidate = override / ".kontra" / "config.yml"
+            return candidate if candidate.exists() else None
+        return override if override.exists() else None
+
     base = start_path or Path.cwd()
     config_path = base / ".kontra" / "config.yml"
 
@@ -991,23 +1023,26 @@ def resolve_datasource(
         port = ds.port
         database = ds.database
 
-        # For Entra ID auth, no password is used and the user is not part of
-        # the credential (the ODBC driver acquires a token). Only include a
-        # user:pass prefix for classic SQL auth.
-        is_entra = ds.auth and ds.auth != "sql"
-        if not is_entra and user and password:
+        # entra_password authenticates with an Entra UPN + password, so it needs
+        # the user:pass in the URI just like classic SQL auth. The token modes
+        # (entra_default/entra_mi/entra_service_principal) do NOT — the ODBC
+        # driver acquires the token and the userinfo is dropped.
+        is_token_entra = bool(ds.auth) and ds.auth not in ("sql", "entra_password")
+        if not is_token_entra and user and password:
             userinfo = f"{user}:{password}@"
-        elif not is_entra and user:
+        elif not is_token_entra and user:
             userinfo = f"{user}@"
         else:
             userinfo = ""
 
         uri = f"mssql://{userinfo}{host}:{port}/{database}/{table_ref}"
 
-        # Bake Entra auth settings into the URI query string so they flow
-        # through resolve_connection_params() -> get_connection().
+        # Bake the auth mode into the URI query so it flows through
+        # resolve_connection_params() -> get_connection(). All non-sql modes
+        # (token modes AND entra_password) carry auth=; entra_password also
+        # keeps its userinfo above so the connector gets UID/PWD.
         query: Dict[str, str] = {}
-        if is_entra:
+        if ds.auth and ds.auth != "sql":
             query["auth"] = ds.auth
         if ds.client_id:
             query["client_id"] = ds.client_id

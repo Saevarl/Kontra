@@ -265,6 +265,15 @@ When a preset already scans the table for exact aggregates, Kontra computes an
 exact `COUNT(*)` in the *same* query so the row count is same-moment with the
 aggregates — it never pairs an exact null count with a stale row estimate.
 
+In the `scan` preset, distinct counts for identifier-like columns (`id`,
+`*_id`, `*_key`, `uuid`, …) on tables up to ~1M rows are refined with an exact
+`COUNT(DISTINCT)` instead of being left as a catalog estimate. These are the
+columns where an underestimate is most misleading — it implies phantom
+duplicates, a `uniqueness_ratio` below 1.0 on a genuinely unique key. The
+refined column carries `distinct_estimated: false`; larger tables keep the
+flagged estimate. (`scout` stays scan-free and always keeps the flagged
+estimate.)
+
 A consistency guard enforces `null_count <= row_count` and
 `distinct_count <= row_count`. If an estimate violates a bound it is clamped to
 the bound and kept flagged. Two exact values that contradict are left as-is and

@@ -20,8 +20,10 @@ from kontra.probes.utils import load_data
 def compare(
     before: Any,
     after: Any,
-    key: Union[str, List[str]],
+    key: Optional[Union[str, List[str]]] = None,
     *,
+    before_key: Optional[Union[str, List[str]]] = None,
+    after_key: Optional[Union[str, List[str]]] = None,
     before_table: Optional[str] = None,
     after_table: Optional[str] = None,
     sample_limit: int = 5,
@@ -43,10 +45,19 @@ def compare(
     (``postgres://.../public.users``), a named datasource (``prod_db.users``),
     or a live database connection (pass ``before_table``/``after_table``).
 
+    Keys may be the same name on both sides (``key=``) or differently named
+    (``before_key=`` / ``after_key=``). The latter is the common FK→PK case,
+    e.g. ``compare(tickets, orgs, before_key="organization_id", after_key="id")``.
+    Provide exactly one of ``key`` or the ``before_key``/``after_key`` pair.
+
     Args:
         before: Dataset before transformation (any supported source).
         after: Dataset after transformation (any supported source).
-        key: Column(s) to use as row identifier
+        key: Same-named key column(s) present on both sides.
+        before_key: Key column(s) on the ``before`` side (use with ``after_key``).
+        after_key: Key column(s) on the ``after`` side (use with ``before_key``).
+            ``before_key``/``after_key`` are paired positionally for composite
+            keys and must have the same number of columns.
         before_table: Table reference when ``before`` is a DB connection object.
         after_table: Table reference when ``after`` is a DB connection object.
         sample_limit: Max samples per category (default 5)
@@ -63,6 +74,9 @@ def compare(
         # With composite key
         result = compare(before, after, key=["customer_id", "date"])
 
+        # Different-named keys (FK → PK)
+        result = compare(tickets, orgs, before_key="organization_id", after_key="id")
+
         # Check for issues
         if result.duplicated_after > 0:
             print(f"Warning: {result.duplicated_after} keys are duplicated")
@@ -71,9 +85,12 @@ def compare(
         # Get structured output for LLM
         print(result.to_llm())
     """
-    # Normalize key to list
-    if isinstance(key, str):
-        key = [key]
+    # Resolve the key specification. The ``before`` side's key names are the
+    # canonical names used throughout the computation and in the result.
+    before_key_list, after_key_list = _resolve_keys(
+        key, "key",
+        before_key, after_key, "before_key", "after_key",
+    )
 
     # Materialize both sides from any supported source (file, db table, named
     # datasource, DataFrame, or BYOC connection). before_table/after_table
@@ -81,13 +98,104 @@ def compare(
     before_df = load_data(before, storage_options=storage_options, table=before_table)
     after_df = load_data(after, storage_options=storage_options, table=after_table)
 
+    # Align the after side's key columns onto the canonical (before) key names
+    # so the core comparison logic operates on a single set of key names.
+    after_df = _align_side_keys(after_df, after_key_list, before_key_list, "after")
+
     # Compute the comparison
-    result = _compute_compare(before_df, after_df, key, sample_limit)
+    result = _compute_compare(before_df, after_df, before_key_list, sample_limit)
 
     if save:
         raise NotImplementedError("Probe save not yet implemented")
 
     return result
+
+
+def _resolve_keys(
+    symmetric: Optional[Union[str, List[str]]],
+    symmetric_name: str,
+    left_value: Optional[Union[str, List[str]]],
+    right_value: Optional[Union[str, List[str]]],
+    left_name: str,
+    right_name: str,
+) -> tuple[List[str], List[str]]:
+    """
+    Resolve a symmetric-or-asymmetric key specification into two aligned lists.
+
+    Returns ``(left_list, right_list)`` where the two lists are paired
+    positionally. For the same-named shortcut, both lists are identical.
+
+    Raises ValueError if both the symmetric and asymmetric forms are provided,
+    if only one side of the asymmetric pair is given, if the asymmetric sides
+    have mismatched arity, or if no key is provided at all.
+    """
+    asymmetric = left_value is not None or right_value is not None
+
+    if symmetric is not None and asymmetric:
+        raise ValueError(
+            f"Provide either {symmetric_name}= (same-named keys) or "
+            f"{left_name}=/{right_name}= (different-named keys), not both."
+        )
+
+    if asymmetric:
+        if left_value is None or right_value is None:
+            raise ValueError(
+                f"Both {left_name}= and {right_name}= are required for "
+                f"different-named keys (only one was given)."
+            )
+        left_list = [left_value] if isinstance(left_value, str) else list(left_value)
+        right_list = [right_value] if isinstance(right_value, str) else list(right_value)
+        if len(left_list) != len(right_list):
+            raise ValueError(
+                f"{left_name}= and {right_name}= must reference the same number "
+                f"of columns (got {len(left_list)} and {len(right_list)})."
+            )
+        return left_list, right_list
+
+    if symmetric is None:
+        raise ValueError(
+            f"A key is required: pass {symmetric_name}= for same-named keys, "
+            f"or {left_name}=/{right_name}= for different-named keys."
+        )
+
+    sym_list = [symmetric] if isinstance(symmetric, str) else list(symmetric)
+    return sym_list, sym_list
+
+
+def _align_side_keys(
+    df: pl.DataFrame,
+    side_key: List[str],
+    canonical_key: List[str],
+    side_label: str,
+) -> pl.DataFrame:
+    """
+    Rename a side's key columns onto the canonical key names.
+
+    This lets the core join/compare logic operate on a single set of key names
+    even when the two sides use differently-named keys. Non-key columns are
+    never renamed, so user-visible output column names are unchanged.
+
+    Raises ValueError if a declared key column is missing, or if renaming would
+    collide with an existing (non-key) column on that side.
+    """
+    for col in side_key:
+        if col not in df.columns:
+            raise ValueError(f"Key column '{col}' not found in {side_label} dataset")
+
+    rename_map: Dict[str, str] = {}
+    for src, dst in zip(side_key, canonical_key):
+        if src == dst:
+            continue
+        if dst in df.columns and dst not in side_key:
+            raise ValueError(
+                f"Cannot align key '{src}' to '{dst}' in {side_label} dataset: "
+                f"a column named '{dst}' already exists."
+            )
+        rename_map[src] = dst
+
+    if rename_map:
+        df = df.rename(rename_map)
+    return df
 
 
 def _compute_compare(

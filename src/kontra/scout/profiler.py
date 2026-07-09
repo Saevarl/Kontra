@@ -164,6 +164,32 @@ def _is_temporal(dtype: str) -> bool:
     return dtype in ("date", "datetime", "time")
 
 
+def _is_identifier_name(name: str) -> bool:
+    """Heuristic: does this column name look like an identifier / key?
+
+    Used to decide when an *estimated* distinct count is worth replacing with
+    an exact COUNT(DISTINCT) (see ScoutProfiler._refine_identifier_distinct_counts).
+    Estimated distinct counts on identifier columns are the ones that most
+    mislead consumers about uniqueness, so we target them specifically.
+    """
+    raw = name.strip()
+    n = raw.lower()
+    if not n:
+        return False
+    if n in ("id", "uuid", "guid", "pk", "rowid"):
+        return True
+    if n.endswith(("_id", "_uuid", "_guid", "_pk", "_key")):
+        # e.g. user_id, order_uuid, tenant_key
+        return True
+    if "uuid" in n or "guid" in n:
+        return True
+    # camelCase / caps identifiers: "customerId", "orderID". Case is the signal
+    # here, which avoids matching English words ending in "id" (valid, paid...).
+    if len(raw) > 2 and raw.endswith(("Id", "ID")):
+        return True
+    return False
+
+
 class ScoutProfiler:
     """
     Contract-free data profiler with pluggable backends.
@@ -192,6 +218,11 @@ class ScoutProfiler:
         profile = profiler.profile()
         print(profile.to_dict())
     """
+
+    # Tables at or below this row count are cheap enough to run an exact
+    # COUNT(DISTINCT) on an identifier column when the stats-based estimate is
+    # untrustworthy (see _refine_identifier_distinct_counts).
+    _EXACT_DISTINCT_ROW_THRESHOLD = 1_000_000
 
     def __init__(
         self,
@@ -304,9 +335,22 @@ class ScoutProfiler:
             # 5. Profile each column (single-pass aggregation)
             column_profiles = self._profile_columns(schema, row_count)
 
+            # 5a. Identifier columns with ESTIMATED distinct counts mislead
+            # consumers about uniqueness (fake duplicates). On small tables,
+            # replace the estimate with an exact COUNT(DISTINCT) so the
+            # uniqueness ratio is trustworthy. May adopt a same-moment exact
+            # COUNT(*) as the row count too.
+            self._refine_identifier_distinct_counts(
+                column_profiles, self._effective_row_count
+            )
+
             # A profiling path may have upgraded the estimate to an exact,
             # same-moment count. Use the effective values from here on.
             row_count = self._effective_row_count
+
+            # 5b. Constant columns (distinct_count == 1) must surface their
+            # single value; several value-fetching paths can skip them.
+            self._ensure_constant_values_surfaced(column_profiles, row_count)
 
             # 6. Optionally detect patterns (sampling-based, efficient)
             if self.include_patterns:
@@ -691,6 +735,160 @@ class ScoutProfiler:
                 self._row_count_estimated = False
                 return int(exact)
         return row_count
+
+    def _refine_identifier_distinct_counts(
+        self, profiles: List[ColumnProfile], row_count: int
+    ) -> None:
+        """Replace ESTIMATED distinct counts on identifier-like columns with an
+        exact COUNT(DISTINCT), for small tables.
+
+        Stats-based distinct estimates (pg_stats n_distinct, SQL Server
+        histograms) are frequently wrong on identifier columns: even a truly
+        unique column can report a distinct count below the row count, yielding
+        a uniqueness_ratio < 1.0 and implying phantom duplicates. For any table
+        at/under the threshold, an exact COUNT(DISTINCT) is cheap and makes the
+        ratio trustworthy. Exact paths (parquet scan, full-scan aggregates) are
+        untouched because they never set distinct_count_estimated.
+
+        Backend-agnostic: uses only execute_stats_query/esc_ident, which every
+        backend implements.
+        """
+        # Metadata-only presets (scout) are contractually scan-free: a COUNT
+        # (DISTINCT) is a full scan, so leave the estimate in place (flagged).
+        # The estimated marker is faithfully surfaced by to_llm()/reporters.
+        if self.metadata_only:
+            return
+        # Never override sample-based estimates: a sample can't yield an exact
+        # full-table distinct count, and execute_stats_query would sample.
+        if self.sample_size is not None:
+            return
+        if row_count <= 0 or row_count > self._EXACT_DISTINCT_ROW_THRESHOLD:
+            return
+
+        targets = [
+            p
+            for p in profiles
+            if p.distinct_count_estimated and _is_identifier_name(p.name)
+        ]
+        if not targets:
+            return
+
+        esc = self.backend.esc_ident
+        exprs: List[str] = []
+        for p in targets:
+            c = esc(p.name)
+            exprs.append(f"COUNT(DISTINCT {c}) AS {esc(f'__exd__{p.name}')}")
+            exprs.append(f"COUNT(*) - COUNT({c}) AS {esc(f'__exn__{p.name}')}")
+        exprs.append(f"COUNT(*) AS {esc('__exrows__')}")
+
+        try:
+            res = self.backend.execute_stats_query(exprs)
+        except (ValueError, TypeError, OSError) as e:
+            _logger.debug(f"Exact distinct fallback failed: {e}")
+            return
+
+        exact_rows = res.get("__exrows__")
+        if exact_rows is None:
+            return
+        exact_rows = int(exact_rows)
+        if exact_rows <= 0:
+            return
+
+        # A same-moment exact COUNT(*) is strictly better than a stale estimate.
+        if self._row_count_estimated:
+            self._effective_row_count = exact_rows
+            self._row_count_estimated = False
+
+        for p in targets:
+            exd = res.get(f"__exd__{p.name}")
+            if exd is None:
+                continue
+            exd = int(exd)
+            exn_raw = res.get(f"__exn__{p.name}")
+            exn = int(exn_raw) if exn_raw is not None else p.null_count
+            non_null = exact_rows - exn
+
+            p.row_count = exact_rows
+            p.distinct_count = exd
+            p.distinct_count_estimated = False
+            p.null_count = exn
+            p.null_count_estimated = False
+            p.null_rate = exn / exact_rows if exact_rows > 0 else 0.0
+            p.uniqueness_ratio = exd / non_null if non_null > 0 else 0.0
+            p.is_low_cardinality = exd <= self.list_values_threshold
+
+    def _ensure_constant_values_surfaced(
+        self, profiles: List[ColumnProfile], row_count: int
+    ) -> None:
+        """Backfill the single value for constant columns (distinct_count == 1).
+
+        A distinct=1 column is trivially low-cardinality, but it can slip
+        through the value-fetching paths and end up with empty top_values/values:
+        pg_stats may omit most_common_vals for an all-same column, the
+        metadata-only (scout) path fills `values` but never `top_values`, and
+        cardinality classification can route it to a strategy that skips the
+        GROUP BY. This backfills the single value on every backend.
+
+        Cost discipline: when the value is already known (top_values or values
+        populated) it is surfaced for FREE — a constant column's count is just
+        its non-null row count. A table scan (fetch_top_values) is only issued
+        for value-scanning presets (scan/interrogate), so the scan-free scout
+        preset stays scan-free.
+        """
+        for profile in profiles:
+            if profile.distinct_count != 1:
+                continue
+
+            # distinct == 1 is unambiguously low cardinality.
+            profile.is_low_cardinality = True
+
+            # (1) Already have top_values: just mirror into `values` if missing.
+            if profile.top_values:
+                if not profile.values:
+                    profile.values = [tv.value for tv in profile.top_values[:1]]
+                continue
+
+            # A constant column's single value appears in every non-null row.
+            non_null = row_count - min(profile.null_count, row_count)
+
+            # (2) Value already known (e.g. pg_stats MCV populated `values`):
+            # synthesize top_values for free, no query.
+            if profile.values:
+                v = profile.values[0]
+                profile.top_values = [
+                    TopValue(
+                        value=v,
+                        count=non_null,
+                        pct=(non_null / row_count * 100) if row_count > 0 else 0.0,
+                    )
+                ]
+                continue
+
+            # (3) Value genuinely unknown (e.g. SQL Server has no MCV metadata).
+            # A single targeted GROUP BY surfaces it. The column is constant, so
+            # this is one output group; it runs in every preset because a
+            # constant's value is small, high-signal metadata worth the bounded
+            # cost. Reached only for the rare constant column whose value the
+            # metadata path did not already provide.
+            try:
+                rows = self.backend.fetch_top_values(profile.name, 1)
+            except (ValueError, TypeError, OSError) as e:
+                _logger.debug(
+                    f"Could not fetch constant value for {profile.name}: {e}"
+                )
+                continue
+            if not rows:
+                continue
+            val, cnt = rows[0]
+            cnt = int(cnt)
+            profile.top_values = [
+                TopValue(
+                    value=val,
+                    count=cnt,
+                    pct=(cnt / row_count * 100) if row_count > 0 else 0.0,
+                )
+            ]
+            profile.values = [val]
 
     def _build_column_agg_exprs(self, col: str, dtype: str) -> List[str]:
         """Generate SQL expressions for a single column's statistics."""

@@ -421,3 +421,110 @@ def test_profile_relationship_source_agnostic(tmp_path):
     assert prof is not None
     # id 3 has no match on the right; id 1 appears twice on the right
     assert prof.right_key_multiplicity_max >= 2
+
+
+class TestRelationshipAsymmetricKeys:
+    """W1: profile_relationship() with differently-named left/right keys."""
+
+    def test_different_named_keys_coverage_and_multiplicity(self):
+        """left_on/right_on mirror pandas merge naming (FK -> PK)."""
+        # orders.customer_id -> customers.id
+        orders = pl.DataFrame({
+            "customer_id": [1, 2, 1, 1, 3],  # cust 1 x3, cust 2 x1, cust 3 x1
+            "order_id": [101, 102, 103, 104, 105],
+        })
+        customers = pl.DataFrame({
+            "id": [1, 2, 4],  # cust 3 has no matching customer row
+            "name": ["Alice", "Bob", "Diana"],
+        })
+
+        result = profile_relationship(
+            orders, customers, left_on="customer_id", right_on="id"
+        )
+
+        assert isinstance(result, RelationshipProfile)
+        # Canonical key name comes from the left side
+        assert result.on == ["customer_id"]
+        assert result.left_rows == 5
+        assert result.right_rows == 3
+        # left distinct keys: {1,2,3}
+        assert result.left_unique_keys == 3
+        assert result.left_key_multiplicity_max == 3
+        # right is a PK: unique, multiplicity 1
+        assert result.right_unique_keys == 3
+        assert result.right_key_multiplicity_max == 1
+        # coverage: left keys {1,2,3} match right {1,2,4} -> {1,2} match, {3} not
+        assert result.left_keys_with_match == 2
+        assert result.left_keys_without_match == 1
+        assert result.samples_left_unmatched == [3]
+        # right keys {1,2,4}: {1,2} in left, {4} not
+        assert result.right_keys_with_match == 2
+        assert result.right_keys_without_match == 1
+
+    def test_symmetric_path_still_works(self):
+        """Regression: same-named on= path unchanged."""
+        left = pl.DataFrame({"id": [1, 2, 3], "n": ["a", "b", "c"]})
+        right = pl.DataFrame({"id": [1, 2, 3], "e": ["x", "y", "z"]})
+        result = profile_relationship(left, right, on="id")
+        assert result.on == ["id"]
+        assert result.left_keys_with_match == 3
+        assert result.left_keys_without_match == 0
+
+    def test_composite_asymmetric_keys(self):
+        """Composite left_on/right_on pair positionally."""
+        left = pl.DataFrame({
+            "cust": [1, 1, 2],
+            "day": ["a", "b", "a"],
+        })
+        right = pl.DataFrame({
+            "c": [1, 2],
+            "d": ["a", "a"],
+        })
+        result = profile_relationship(
+            left, right, left_on=["cust", "day"], right_on=["c", "d"]
+        )
+        assert result.on == ["cust", "day"]
+        # left keys: (1,a),(1,b),(2,a); right keys: (1,a),(2,a)
+        # matched left keys: (1,a),(2,a) -> 2; unmatched: (1,b) -> 1
+        assert result.left_unique_keys == 3
+        assert result.left_keys_with_match == 2
+        assert result.left_keys_without_match == 1
+        assert result.right_keys_with_match == 2
+
+    def test_both_symmetric_and_asymmetric_raises(self):
+        df = pl.DataFrame({"id": [1], "x": [1]})
+        with pytest.raises(ValueError, match="not both"):
+            profile_relationship(df, df, on="id", left_on="id", right_on="id")
+
+    def test_mismatched_arity_raises(self):
+        df = pl.DataFrame({"a": [1], "b": [1]})
+        with pytest.raises(ValueError, match="same number"):
+            profile_relationship(df, df, left_on=["a", "b"], right_on=["a"])
+
+    def test_only_one_side_raises(self):
+        df = pl.DataFrame({"id": [1]})
+        with pytest.raises(ValueError, match="required"):
+            profile_relationship(df, df, left_on="id")
+
+    def test_no_key_raises(self):
+        df = pl.DataFrame({"id": [1]})
+        with pytest.raises(ValueError, match="required"):
+            profile_relationship(df, df)
+
+    def test_missing_right_key_column_raises(self):
+        left = pl.DataFrame({"customer_id": [1], "x": [1]})
+        right = pl.DataFrame({"id": [1], "x": [1]})
+        with pytest.raises(ValueError, match="not found in right"):
+            profile_relationship(left, right, left_on="customer_id", right_on="nope")
+
+    def test_asymmetric_source_agnostic(self, tmp_path):
+        """Different-named keys work with a file source too."""
+        orders = pl.DataFrame({"customer_id": [1, 2, 3], "amt": [1, 2, 3]})
+        customers = pl.DataFrame({"id": [2, 3, 4], "name": ["b", "c", "d"]})
+        p = str(tmp_path / "orders.parquet")
+        orders.write_parquet(p)
+        result = profile_relationship(
+            p, customers, left_on="customer_id", right_on="id"
+        )
+        assert result.left_keys_with_match == 2
+        assert result.left_keys_without_match == 1
