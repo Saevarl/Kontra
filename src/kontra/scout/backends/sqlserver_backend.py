@@ -361,15 +361,29 @@ class SqlServerBackend:
                 arg_upper = arg.upper()
                 break
 
-        # Skip if the argument is already cast to a wide numeric type.
+        # Skip if the argument is already cast to a wide numeric type. Text
+        # inside a bracket-quoted identifier must NOT count — a column literally
+        # named [amount AS BIGINT] is not a cast, and mistaking it for one would
+        # skip widening and let the INT accumulator overflow. Scan with the
+        # bracketed segments removed.
+        scan_chars = []
+        _depth = 0
+        for _ch in arg_upper:
+            if _ch == "[":
+                _depth += 1
+            elif _ch == "]":
+                _depth = max(0, _depth - 1)
+            elif _depth == 0:
+                scan_chars.append(_ch)
+        scan_upper = "".join(scan_chars)
         already_wide = (
-            "AS BIGINT" in arg_upper
-            or "AS FLOAT" in arg_upper
-            or "AS REAL" in arg_upper
-            or "AS DOUBLE" in arg_upper
-            or "AS DECIMAL" in arg_upper
-            or "AS NUMERIC" in arg_upper
-            or "AS MONEY" in arg_upper
+            "AS BIGINT" in scan_upper
+            or "AS FLOAT" in scan_upper
+            or "AS REAL" in scan_upper
+            or "AS DOUBLE" in scan_upper
+            or "AS DECIMAL" in scan_upper
+            or "AS NUMERIC" in scan_upper
+            or "AS MONEY" in scan_upper
         )
         if already_wide:
             return expr

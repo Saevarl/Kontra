@@ -199,3 +199,83 @@ class TestIdentifierExactDistinct:
         p._refine_identifier_distinct_counts([col], row_count=500)
         assert backend.stats_calls == []
         assert col.distinct_count_estimated is True  # still flagged
+
+
+# --------------------------------------------------------------------------
+# 0.10.1 fixes (from adversarial review of the 0.10.0 changeset)
+# --------------------------------------------------------------------------
+
+class TestRowCountConsistencyAfterRefine:
+    """#4: adopting an exact COUNT(*) must make EVERY column consistent, not
+    just the refined identifier targets."""
+
+    def test_non_target_columns_get_exact_row_count(self):
+        backend = FakeBackend(stats_result={
+            "__exd__user_id": 120, "__exn__user_id": 0, "__exrows__": 120,
+        })
+        p = _profiler("scan", backend)
+        p._row_count_estimated = True
+        p._effective_row_count = 100
+        target = _col("user_id", dtype="int", row_count=100, distinct_count=80,
+                      null_count=0, uniqueness_ratio=0.8,
+                      distinct_count_estimated=True)
+        nontar = _col("status", row_count=100, distinct_count=3, null_count=10,
+                      null_rate=0.10)
+        p._refine_identifier_distinct_counts([target, nontar], row_count=100)
+
+        assert p._effective_row_count == 120
+        assert target.row_count == 120
+        assert nontar.row_count == 120                     # the fix
+        assert abs(nontar.null_rate - 10 / 120) < 1e-9     # rate recomputed
+
+
+class TestRefineExceptionSafety:
+    """#5: a DB driver error in the best-effort exact-distinct fallback must not
+    crash the whole profile."""
+
+    def test_driver_error_retains_estimate(self):
+        class BoomBackend(FakeBackend):
+            def execute_stats_query(self, exprs):
+                raise RuntimeError("driver: operator does not exist: json = json")
+
+        p = _profiler("scan", BoomBackend())
+        p._row_count_estimated = True
+        col = _col("payload_id", dtype="unknown", distinct_count=5,
+                   null_count=0, distinct_count_estimated=True)
+        p._refine_identifier_distinct_counts([col], row_count=100)  # must not raise
+        assert col.distinct_count == 5                     # estimate retained
+        assert col.distinct_count_estimated is True
+
+
+class TestEstimatedConstantGuard:
+    """#6: an ESTIMATED distinct_count == 1 must not be fabricated into a false
+    constant via a top-1 fetch; the exact case and the pg_stats MCV case stay."""
+
+    def test_estimated_distinct1_not_fetched_as_constant(self):
+        backend = FakeBackend(top_values_map={"status": [("A", 100)]})
+        p = _profiler("scan", backend)
+        col = _col("status", distinct_count=1, null_count=0, values=None,
+                   distinct_count_estimated=True)
+        p._ensure_constant_values_surfaced([col], row_count=100)
+        assert col.top_values == []                        # not fabricated
+        assert col.values is None
+        assert backend.top_values_calls == []              # fetch NOT issued
+
+    def test_exact_distinct1_still_fetched(self):
+        backend = FakeBackend(top_values_map={"status": [("A", 100)]})
+        p = _profiler("scan", backend)
+        col = _col("status", distinct_count=1, null_count=0, values=None,
+                   distinct_count_estimated=False)
+        p._ensure_constant_values_surfaced([col], row_count=100)
+        assert col.values == ["A"]                         # exact -> surfaced
+        assert backend.top_values_calls == [("status", 1)]
+
+    def test_estimated_distinct1_with_known_mcv_still_surfaced(self):
+        # pg_stats MCV path (bug-8 scout behavior) preserved even when estimated.
+        backend = FakeBackend()
+        p = _profiler("scout", backend)
+        col = _col("status", distinct_count=1, null_count=0, values=["ACTIVE"],
+                   distinct_count_estimated=True)
+        p._ensure_constant_values_surfaced([col], row_count=100)
+        assert [(t.value, t.count) for t in col.top_values] == [("ACTIVE", 100)]
+        assert backend.top_values_calls == []              # no fetch, MCV path

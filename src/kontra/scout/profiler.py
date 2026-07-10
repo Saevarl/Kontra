@@ -783,7 +783,7 @@ class ScoutProfiler:
 
         try:
             res = self.backend.execute_stats_query(exprs)
-        except (ValueError, TypeError, OSError) as e:
+        except Exception as e:
             _logger.debug(f"Exact distinct fallback failed: {e}")
             return
 
@@ -796,8 +796,20 @@ class ScoutProfiler:
 
         # A same-moment exact COUNT(*) is strictly better than a stale estimate.
         if self._row_count_estimated:
+            previous_rows = self._effective_row_count
             self._effective_row_count = exact_rows
             self._row_count_estimated = False
+            if exact_rows != previous_rows:
+                target_names = {p.name for p in targets}
+                for p in profiles:
+                    p.row_count = exact_rows
+                    if p.name in target_names:
+                        continue
+                    p.null_rate = p.null_count / exact_rows if exact_rows > 0 else 0.0
+                    non_null = exact_rows - p.null_count
+                    p.uniqueness_ratio = (
+                        p.distinct_count / non_null if non_null > 0 else 0.0
+                    )
 
         for p in targets:
             exd = res.get(f"__exd__{p.name}")
@@ -865,14 +877,24 @@ class ScoutProfiler:
                 continue
 
             # (3) Value genuinely unknown (e.g. SQL Server has no MCV metadata).
-            # A single targeted GROUP BY surfaces it. The column is constant, so
-            # this is one output group; it runs in every preset because a
-            # constant's value is small, high-signal metadata worth the bounded
-            # cost. Reached only for the rare constant column whose value the
-            # metadata path did not already provide.
+            # Only trust distinct == 1 as proof of constancy when the count is
+            # EXACT. If it is an ESTIMATE (stale SQL Server histogram / pg_stats),
+            # a top-1 fetch can only ever see one value and would fabricate a
+            # false constant when the estimate is wrong (the column really has
+            # 2+ values). Leave estimated columns alone rather than misrepresent
+            # them as constant.
+            if profile.distinct_count_estimated:
+                continue
+
+            # A single targeted GROUP BY surfaces the value. The column is
+            # constant (exact), so this is one output group -- small, high-signal
+            # metadata worth the bounded cost. Reached only for the rare exact
+            # constant column whose value the metadata path did not provide.
             try:
                 rows = self.backend.fetch_top_values(profile.name, 1)
-            except (ValueError, TypeError, OSError) as e:
+            except Exception as e:
+                # Best-effort enrichment: a backend/driver error here (any type,
+                # incl. psycopg/pymssql errors) must not fail the whole profile.
                 _logger.debug(
                     f"Could not fetch constant value for {profile.name}: {e}"
                 )

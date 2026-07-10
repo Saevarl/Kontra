@@ -428,7 +428,11 @@ class TestCreateProfileState:
         assert state.source_uri == "s3://bucket/data.parquet"
         assert state.source_fingerprint == fingerprint_source("s3://bucket/data.parquet")
         assert len(state.source_fingerprint) == 16
-        assert state.profile is profile
+        # create_profile_state stores a credential-masked COPY (dataclasses.replace)
+        # so it never mutates or persists the caller's object; for a source with no
+        # credentials the stored copy is value-equal to the input.
+        assert state.profile == profile
+        assert state.profile is not profile
 
 
 class TestCompareProfilesVerb:

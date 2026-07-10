@@ -161,3 +161,45 @@ class TestLocalProfileStoreInterface:
         deleted = store.clear(state.source_fingerprint)
         assert deleted >= 1
         assert store.get_latest(state.source_fingerprint) is None
+
+
+import hashlib
+
+
+class TestCredentialSafety:
+    """0.10.1 #1/#2: DB credentials must never be persisted, and profile history
+    must survive credential rotation."""
+
+    def test_file_path_fingerprint_unchanged(self):
+        # Non-URI sources must keep the exact legacy hash (no accidental churn).
+        expected = hashlib.sha256("data.parquet".encode()).hexdigest()[:16]
+        assert fingerprint_source("data.parquet") == expected
+
+    def test_fingerprint_credential_independent(self):
+        base = "postgres://{cred}@h:5432/db/public.users"
+        fps = {
+            fingerprint_source(base.format(cred=c))
+            for c in ("alice:secret", "alice:rotated", "bob:other")
+        }
+        assert len(fps) == 1  # rotation / different user -> same history
+
+    def test_fingerprint_strips_sensitive_query_params(self):
+        a = "mssql://h/db/dbo.t?auth=entra_service_principal&client_secret=AAA"
+        b = "mssql://h/db/dbo.t?auth=entra_service_principal&client_secret=BBB"
+        assert fingerprint_source(a) == fingerprint_source(b)
+
+    def test_fingerprint_still_distinguishes_tables(self):
+        assert fingerprint_source("postgres://h/db/public.a") != \
+               fingerprint_source("postgres://h/db/public.b")
+
+    def test_create_profile_state_masks_credentials(self):
+        prof = _make_profile("postgres://alice:secret@h:5432/db/public.users")
+        state = create_profile_state(prof)
+        assert "secret" not in state.source_uri
+        assert "secret" not in state.profile.source_uri
+        assert "***" in state.source_uri
+        # caller's object is not mutated (dataclasses.replace)
+        assert prof.source_uri == "postgres://alice:secret@h:5432/db/public.users"
+        # fingerprint is credential-independent
+        assert state.source_fingerprint == \
+               fingerprint_source("postgres://alice:whatever@h:5432/db/public.users")

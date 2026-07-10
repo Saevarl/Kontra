@@ -13,11 +13,17 @@ import hashlib
 import json
 import os
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from kontra.connectors.handle import mask_credentials
 from kontra.version import VERSION
 from .types import DatasetProfile, ProfileState
+
+
+_SENSITIVE_QUERY_PARAMS = {"password", "client_secret", "sslpassword"}
 
 
 def fingerprint_source(source_uri: str) -> str:
@@ -30,8 +36,24 @@ def fingerprint_source(source_uri: str) -> str:
     Returns:
         16-character hex fingerprint
     """
-    # Normalize the URI
+    # Preserve existing fingerprints for non-URI sources such as file paths.
     normalized = source_uri.strip()
+
+    if "://" in normalized:
+        parsed = urlsplit(normalized)
+        # Discard userinfo entirely so credential rotation does not create a
+        # new history identity. Split on the last @ to handle @ in passwords.
+        netloc = parsed.netloc.rsplit("@", 1)[-1]
+        query = urlencode(
+            [
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if key.lower() not in _SENSITIVE_QUERY_PARAMS
+            ]
+        )
+        normalized = urlunsplit(
+            (parsed.scheme, netloc, parsed.path, query, parsed.fragment)
+        )
 
     # Hash it
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
@@ -174,11 +196,13 @@ def create_profile_state(profile: DatasetProfile) -> ProfileState:
     Returns:
         ProfileState ready for storage
     """
+    masked_source_uri = mask_credentials(profile.source_uri)
+    stored_profile = replace(profile, source_uri=masked_source_uri)
     return ProfileState(
         source_fingerprint=fingerprint_source(profile.source_uri),
-        source_uri=profile.source_uri,
+        source_uri=masked_source_uri,
         profiled_at=profile.profiled_at,
-        profile=profile,
+        profile=stored_profile,
         engine_version=VERSION,
     )
 
