@@ -81,6 +81,7 @@ rules:
 - **Fast execution**: metadata analysis + batched SQL pushdown
 - **Multiple sources**: Parquet, CSV, PostgreSQL, SQL Server, ClickHouse, S3, Azure ADLS Gen2
 - **Agent-friendly**: structured, token-optimized summaries via `.to_llm()`
+- **Official MCP server**: expose validation, profiling, and history to Claude, Codex, Cursor, or any MCP client — `pip install "kontra[mcp-postgres]"` ([docs](docs/advanced/agents-and-llms.md#official-mcp-server))
 - **Debuggable failures**: collect failing rows during validation, fetch more later on demand
 - **Track drift**: save runs and compare over time with `kontra diff`
 

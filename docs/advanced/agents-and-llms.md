@@ -21,15 +21,95 @@ export KONTRA_MCP_POSTGRES_URI='postgresql://kontra@db/kontra'
 kontra-mcp
 ```
 
+### Connect it to your coding agent
+
+Most clients launch the server over `stdio` and manage its lifecycle for you.
+Point them at `kontra-mcp` through [`uvx`](https://docs.astral.sh/uv/) so no
+manual install step is needed.
+
+**Claude Code, Claude Desktop, Cursor** — add to the client's MCP config
+(`.mcp.json`, `claude_desktop_config.json`, or Cursor's `mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "kontra": {
+      "command": "uvx",
+      "args": ["--from", "kontra[mcp-postgres]", "kontra-mcp"],
+      "env": {
+        "KONTRA_MCP_POSTGRES_URI": "postgresql://kontra@db/kontra",
+        "KONTRA_CONFIG": "/etc/kontra/config.yml",
+        "KONTRA_MCP_CONTRACTS_DIR": "/etc/kontra/contracts"
+      }
+    }
+  }
+}
+```
+
+Claude Code can add the same entry from the CLI:
+
+```bash
+claude mcp add kontra \
+  --env KONTRA_MCP_POSTGRES_URI=postgresql://kontra@db/kontra \
+  --env KONTRA_CONFIG=/etc/kontra/config.yml \
+  -- uvx --from "kontra[mcp-postgres]" kontra-mcp
+```
+
+**Codex CLI** — add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.kontra]
+command = "uvx"
+args = ["--from", "kontra[mcp-postgres]", "kontra-mcp"]
+
+[mcp_servers.kontra.env]
+KONTRA_MCP_POSTGRES_URI = "postgresql://kontra@db/kontra"
+KONTRA_CONFIG = "/etc/kontra/config.yml"
+```
+
+…or register it with the Codex CLI:
+
+```bash
+codex mcp add kontra \
+  --env KONTRA_MCP_POSTGRES_URI=postgresql://kontra@db/kontra \
+  --env KONTRA_CONFIG=/etc/kontra/config.yml \
+  -- uvx --from "kontra[mcp-postgres]" kontra-mcp
+```
+
+### Tools and resources
+
+The server exposes five tools and three read-only resources. Every argument is a
+configured datasource name or a trusted contract name — never a path, URL, or SQL.
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `validate` | `datasource`, `contract`, `env?`, `tally?`, `sample?` | Validation result; the run is persisted |
+| `profile` | `datasource`, `preset?`, `columns?`, `sample?`, `save?` | Dataset profile; persisted when `save` is set |
+| `validation_history` | `contract`, `limit?`, `since?`, `failed_only?` | Bounded run summaries, newest first |
+| `validation_diff` | `contract` | Diff of the two most recent runs |
+| `profile_history` | `datasource`, `limit?` | Bounded profile history, newest first |
+
+| Resource | Returns |
+|----------|---------|
+| `kontra://health` | Server and backend readiness (backend type only, no credentials) |
+| `kontra://rules` | Built-in measurement rules and their parameters |
+| `kontra://datasources` | Configured datasource names and tables (no connection details) |
+
+### Remote deployments
+
 `stdio` is the default transport. For a remote deployment, use Streamable HTTP:
 
 ```bash
 kontra-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 ```
 
-The server exposes validation, profiling, bounded history, and latest-run diff
-tools. PostgreSQL stores validation and profile measurements. It does not make
-policy decisions, edit contracts, recommend fixes, or expose arbitrary SQL.
+Kontra does not implement HTTP authentication itself. Non-loopback binds
+therefore **fail closed**: a host other than `127.0.0.1`/`localhost` is refused
+unless you pass `--allow-remote-unauthenticated`. Use that override only when an
+authenticating proxy or an isolated network supplies the access boundary.
+
+PostgreSQL stores every validation and profile measurement. The server does not
+make policy decisions, edit contracts, recommend fixes, or expose arbitrary SQL.
 
 Credentials can also come from `DATABASE_URL` or the standard PostgreSQL `PG*`
 environment variables. Server responses report only the backend type, never the
