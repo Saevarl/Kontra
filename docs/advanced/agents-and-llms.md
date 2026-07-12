@@ -78,8 +78,10 @@ codex mcp add kontra \
 
 ### Tools and resources
 
-The server exposes ten tools and three read-only resources. Every argument is a
-configured datasource name or a trusted contract name — never a path, URL, or SQL.
+The server exposes ten tools and three read-only resources. Every source-bearing
+argument must be a configured datasource name; contracts are relative names
+confined to the trusted contracts directory. Tool calls never accept a raw data
+path, connection URL, inline rule, or SQL statement.
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
@@ -96,19 +98,22 @@ configured datasource name or a trusted contract name — never a path, URL, or 
 
 | Resource | Returns |
 |----------|---------|
-| `kontra://health` | Server and backend readiness (backend type only, no credentials) |
+| `kontra://health` | Server configuration/status metadata (backend type only, no credentials) |
 | `kontra://rules` | Built-in measurement rules and their parameters |
 | `kontra://datasources` | Configured datasource names and tables (no connection details) |
 
 **Transformation probes.** `compare_datasets` and `profile_relationship` measure how two
 datasources relate — row and key deltas, join cardinality — for reasoning about JOINs and
-deduplication. They never emit raw rows, composite keys are capped at eight columns, and each
-input is capped at 100,000 materialized rows. Override the ceiling with `KONTRA_MCP_MAX_PROBE_ROWS`.
+deduplication. They never emit raw rows and composite keys are capped at eight columns. Before
+materializing, the server compares source metadata against a 100,000-row ceiling. Database row
+counts may be catalog estimates, so this is a cost guardrail rather than a hard security boundary.
+Override it with `KONTRA_MCP_MAX_PROBE_ROWS`.
 
 **Failure samples.** `measure_failure_samples` runs a fresh measurement and returns example
-failing rows for one rule — *including their column values*. Treat that output as live data
+failing rows for one rule, restricted to rule-relevant columns. Treat that output as live data
 leaving your boundary. Persisted history keeps counts, not samples, so this tool always measures
-against current data (`"measurement": "current"`).
+against current data (`"measurement": "current"`). Setting `sample > 0` on `validate` also
+returns live failure samples in that immediate result.
 
 ### Remote deployments
 
@@ -123,8 +128,10 @@ therefore **fail closed**: a host other than `127.0.0.1`/`localhost` is refused
 unless you pass `--allow-remote-unauthenticated`. Use that override only when an
 authenticating proxy or an isolated network supplies the access boundary.
 
-PostgreSQL stores every validation and profile measurement. The server does not
-make policy decisions, edit contracts, recommend fixes, or expose arbitrary SQL.
+PostgreSQL stores validation runs and profiles requested with persistence enabled.
+Current failure samples and transformation probes are transient. The server does
+not make policy decisions, edit contracts, write annotations, recommend fixes,
+or expose arbitrary SQL.
 
 Credentials can also come from `DATABASE_URL` or the standard PostgreSQL `PG*`
 environment variables. Server responses report only the backend type, never the
@@ -471,4 +478,4 @@ rules:
     severity: warning
 ```
 
-See [Rule Context](../python-api.md#rule-context-in-contracts) for details.
+See [Rule Context](../reference/contracts.md#context) for details.

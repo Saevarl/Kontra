@@ -211,7 +211,9 @@ store = get_profile_store("postgres")
 ```
 
 The local store is the default; the Postgres backend is opt-in and requires the
-`kontra[postgres]` extra.
+`kontra[postgres]` extra. Creating a Postgres profile store does not replace the
+public API's default local store: save and query it explicitly. The official MCP
+server owns and injects its PostgreSQL profile store for this reason.
 
 ---
 
@@ -242,7 +244,9 @@ state_backend: "local"
 
 ### PostgreSQL
 
-State stored in database tables (`kontra_runs`, `kontra_annotations`).
+State stored in normalized database tables (`kontra_runs`,
+`kontra_rule_results`, `kontra_annotations`). Profiles use the separate
+`kontra_profiles` table.
 
 ```yaml
 state_backend: postgres://${PGHOST}/${PGDATABASE}

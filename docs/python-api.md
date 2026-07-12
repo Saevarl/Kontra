@@ -228,12 +228,12 @@ profile.to_llm()  # token-efficient summary
 
 | Preset | What it does | When to use |
 |--------|--------------|-------------|
-| `scout` | Metadata only, zero data access | Quick recon, schema exploration |
+| `scout` | No row-data scan; metadata values vary by source | Quick recon, schema exploration |
 | `scan` | Metadata + strategic queries | Default. Rich stats without full scan |
 | `interrogate` | Full table scan | Deep analysis, percentiles, exact distributions |
 
 ```python
-kontra.profile("data.parquet", preset="scout")       # metadata only
+kontra.profile("data.parquet", preset="scout")       # metadata, no row-data scan
 kontra.profile("data.parquet", preset="scan")        # default
 kontra.profile("data.parquet", preset="interrogate") # full scan
 ```
@@ -494,7 +494,7 @@ diff.to_llm()  # token-efficient summary
 ### History Functions
 
 ```python
-kontra.get_history(contract, since=None, limit=None, failed_only=False)
+kontra.get_history(contract, since=None, limit=20, failed_only=False)
 kontra.list_runs(contract)
 kontra.get_run(contract, run_id=None)  # default: latest
 kontra.has_runs(contract)
@@ -684,7 +684,7 @@ See [Transformation Probes](reference/probes.md) for details.
 | `ValidationResult` | `passed`, `total_rows`, `quality_score`, `rules`, `blocking_failures`, `warnings`, `sample_failures()`, `to_dict()`, `to_llm()` |
 | `RuleResult` | `rule_id`, `passed`, `failed_count`, `violation_rate`, `severity`, `severity_weight`, `source`, `message`, `context`, `samples` |
 | `DatasetProfile` | `row_count`, `column_count`, `columns`, `to_llm()` |
-| `ColumnProfile` | `name`, `dtype`, `null_rate`, `unique_count` |
+| `ColumnProfile` | `name`, `dtype`, `null_rate`, `distinct_count` |
 | `Diff` | `has_changes`, `regressed`, `new_failures`, `resolved`, `to_llm()` |
 | `Suggestions` | `filter()`, `to_dict()`, `to_yaml()`, `save()` |
 | `ProfileDiff` | `has_changes`, `has_schema_changes`, `columns_added`, `columns_removed`, `columns_changed`, `dtype_changes`, `to_llm()`, `to_dict()` |
@@ -705,4 +705,7 @@ from kontra.errors import (
 from kontra import ValidationError  # from @validate_decorator
 ```
 
-Note: Missing files raise `RuntimeError` with a descriptive message. Use a try/except block to handle file access errors.
+Local files missing during `profile()` raise `InvalidDataError`; contract loading
+uses `ContractNotFoundError`, and connection failures use backend-specific Kontra
+errors. Catch the narrow error for the entry point you call rather than relying
+on a blanket `RuntimeError`.

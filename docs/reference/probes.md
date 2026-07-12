@@ -318,6 +318,19 @@ profile.to_llm()    # Compact text for LLM context
 
 ## Notes
 
+!!! warning "Database probes materialize data"
+    The Python `compare()` and `profile_relationship()` implementations do not
+    currently push probe computation into the database. They materialize both
+    inputs into Polars; `compare()` loads every column, and duplicate keys can
+    expand intermediate joins substantially. Samples may contain raw key or row
+    values. Use `sample_limit=0` for sensitive data and treat these probes as
+    bounded investigations, not unrestricted scans of very large tables.
+
+    The official MCP narrows this surface: sources must be configured names,
+    samples are forced off, keys are capped at eight columns, and a metadata
+    row-count preflight guards materialization. Catalog estimates can be stale,
+    so that ceiling is a cost guardrail rather than a security boundary.
+
 - Probes measure structure. They do not interpret correctness.
 - `duplicated_after` counts keys (not rows) appearing more than once.
 - `modified_fraction` is computed only for preserved keys.

@@ -188,7 +188,9 @@ rules:
 **Precedence:** CLI `--tally`/`--no-tally` > per-rule `tally` > API `tally=` > default (`false`)
 
 **Notes:**
-- `tally` only applies to column and cross-column rules. Dataset rules (`min_rows`, `max_rows`, `freshness`, `custom_sql_check`) always return exact counts.
+- `tally` applies to row-level column and cross-column rules. `min_rows` and
+  `max_rows` return an exact deficit/excess; `custom_sql_check` counts returned
+  violation rows; `freshness` is binary and reports `1` when stale.
 - `tally: true` disables preplan for that rule (exact counts require scanning).
 
 ---

@@ -15,7 +15,7 @@ Common terms used in Kontra documentation and output.
 | Term | Description |
 |------|-------------|
 | **preplan** | Metadata-only resolution. Uses Parquet row-group stats or database statistics. Returns `failed_count: 1` as lower bound. |
-| **pushdown** | SQL execution in the database engine (DuckDB, PostgreSQL, SQL Server). Avoids loading data into memory. |
+| **pushdown** | SQL execution in the data engine (DuckDB, PostgreSQL, SQL Server, ClickHouse). Avoids loading data into Python memory. |
 | **tally** | `tally=True` counts all violations exactly. `tally=False` stops at first violation (faster, returns ≥1). |
 | **projection** | Load only columns needed for validation. Reduces memory and speeds up execution. |
 | **source** | Which path resolved a rule: `"metadata"` (preplan), `"sql"` (pushdown), or `"polars"` (fallback). |
@@ -24,7 +24,7 @@ Common terms used in Kontra documentation and output.
 
 | Preset | Speed | What's Computed |
 |--------|-------|-----------------|
-| **scout** | Fastest | Metadata only: null counts, min/max, semantic types. No distinct counts or sampled stats. |
+| **scout** | Fastest | No row-data scan. Reports schema and whatever counts or estimates the source metadata can provide. |
 | **scan** | Medium | Metadata + targeted queries: distinct counts, numeric stats (min/max/mean/median/std), top values. No percentiles. |
 | **interrogate** | Slowest | Full scan: everything in scan + percentiles (p25, p75, p99). |
 
@@ -199,7 +199,7 @@ For unique rule violations:
 
 | Code | Meaning |
 |------|---------|
-| **0** | Validation passed (all rules passed) |
+| **0** | Validation passed (all blocking rules passed; warning/info rules may still have violations) |
 | **1** | Validation failed (one or more blocking rules failed) |
 | **2** | Configuration error (contract/data not found, invalid YAML) |
 | **3** | Runtime error (unexpected failure, connection issues) |
@@ -226,6 +226,6 @@ result = kontra.validate(df, rules=[
 
 | Term | Description |
 |------|-------------|
-| **state** | Stored validation results for tracking history. Backends: local file, S3, PostgreSQL. |
-| **fingerprint** | Hash of contract content (name + rules). Used to track changes across renames. |
+| **state** | Stored validation results for tracking history. Backends: local file, S3, PostgreSQL, SQL Server. |
+| **fingerprint** | Hash of contract identity and rules. It links repeated runs; renaming a contract creates a new identity. |
 | **diff** | Comparison between two validation runs. Shows new failures, resolved issues, regressions. |

@@ -39,6 +39,7 @@ pytest-results.xml
 .coverage
 .coverage.*
 htmlcov/
+site/
 nosetests.xml
 coverage.xml
 

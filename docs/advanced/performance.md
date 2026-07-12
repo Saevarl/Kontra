@@ -26,7 +26,7 @@ Unlike validators that run one query per rule or require loading data into Pytho
 | Term | Meaning |
 |------|---------|
 | **Preplan** | Resolve a rule from metadata (no data scan) |
-| **Pushdown** | Run a rule as SQL in the engine (DuckDB/Postgres/SQL Server) |
+| **Pushdown** | Run a rule as SQL in the engine (DuckDB/Postgres/SQL Server/ClickHouse) |
 | **Tally** | Controls counting behavior. `tally=False` uses fail-fast checks (EXISTS). `tally=True` forces exact counts (aggregates) and disables preplan for that rule. |
 
 In the tables below:
@@ -59,7 +59,7 @@ contract_exact = [
     rules.unique("email", tally=True),
     rules.allowed_values("status", [...], tally=True),
     rules.regex("email", r".*@.*", tally=True),
-    rules.min_rows(1),  # dataset rules are always exact
+    rules.min_rows(1),  # exact row deficit when it fails
 ]
 
 # Contract C (mixed): exact only where counts matter

@@ -145,4 +145,4 @@ pip install "kontra[s3]"           # S3 / MinIO
 
 ## License
 
-MIT
+Apache License 2.0

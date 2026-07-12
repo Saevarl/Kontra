@@ -11,15 +11,17 @@ Internal design for contributors. For usage, see [Getting Started](../getting-st
 
 ## Core Concept
 
-**Kontra is a measurement engine, not a decision engine.**
+**Kontra is a measurement engine, not a workflow or policy engine.**
 
-A **rule** measures a property of a dataset and returns a violation count. Kontra does not decide what constitutes "failure"—that belongs to consumers (CLI, CI pipelines, agents, dashboards).
+A **rule** measures a property and returns a violation count. Contracts attach
+severity metadata, and the public result derives `passed` from blocking severity.
+Consumers still decide what to do with those facts: block, alert, annotate, or ignore.
 
 | Concept | Engine responsibility | Consumer responsibility |
 |---------|----------------------|------------------------|
 | Violation count | Measure it | Decide if acceptable |
-| Severity | Attach as metadata | Interpret (block, warn, ignore) |
-| Exit codes | Not applicable | CLI maps blocking → exit 1 |
+| Severity | Attach metadata and derive `ValidationResult.passed` | Choose severity and downstream action |
+| Exit codes | CLI maps blocking failures → exit 1 | Decide how a pipeline handles the code |
 
 ## Execution Model
 
@@ -39,7 +41,7 @@ Contract YAML → Parse (Pydantic) → Build Rules (Factory) → Compile Plan
     ↓
 Preplan: Attempt metadata resolution (Parquet stats, pg_stats)
     ↓
-Pushdown: Batch remaining rules into SQL (DuckDB/Postgres/SQL Server)
+Pushdown: Batch remaining rules into SQL (DuckDB/Postgres/SQL Server/ClickHouse)
     ↓
 Fallback: Execute residual rules in Polars
     ↓
@@ -124,7 +126,8 @@ src/kontra/
 ├── connectors/
 │   ├── handle.py         # DatasetHandle (unified data source)
 │   ├── postgres.py       # PostgreSQL connection
-│   └── sqlserver.py      # SQL Server connection
+│   ├── sqlserver.py      # SQL Server connection
+│   └── clickhouse.py     # ClickHouse connection
 ├── engine/
 │   ├── engine.py         # ValidationEngine orchestrator
 │   ├── phases/           # Run phases: compilation, preplan, pushdown, residual, merge
@@ -133,18 +136,21 @@ src/kontra/
 │   ├── executors/        # SQL pushdown
 │   │   ├── duckdb_sql.py
 │   │   ├── postgres_sql.py
-│   │   └── sqlserver_sql.py
+│   │   ├── sqlserver_sql.py
+│   │   └── clickhouse_sql.py
 │   ├── materializers/    # Data loading with projection
 │   │   ├── duckdb.py
 │   │   ├── postgres.py
-│   │   └── sqlserver.py
+│   │   ├── sqlserver.py
+│   │   └── clickhouse.py
 │   └── backends/
 │       └── polars_backend.py
 ├── preplan/              # Metadata resolution
 │   ├── planner.py        # Parquet row-group analysis
 │   ├── parquet_meta.py   # Pure-Python Parquet footer reader (pyarrow-free)
 │   ├── postgres.py       # pg_stats analysis
-│   └── sqlserver.py      # sys.columns analysis
+│   ├── sqlserver.py      # sys.columns analysis
+│   └── clickhouse.py     # ClickHouse metadata analysis
 ├── rule_defs/            # Rule definitions
 │   ├── base.py           # BaseRule abstract class
 │   ├── factory.py        # Rule instantiation
@@ -154,9 +160,9 @@ src/kontra/
 ├── scout/                # Dataset profiling
 │   ├── profiler.py       # ScoutProfiler
 │   ├── suggest.py        # Rule suggestion
-│   └── backends/         # DuckDB, PostgreSQL, SQL Server
+│   └── backends/         # DuckDB, PostgreSQL, SQL Server, ClickHouse
 ├── state/                # Validation history
-│   └── backends/         # local, s3, postgres
+│   └── backends/         # local, S3, PostgreSQL, SQL Server
 ├── reporters/
 │   ├── rich_reporter.py
 │   └── json_reporter.py
@@ -223,7 +229,7 @@ agg_not_null("user_id", "rule_1", dialect="mssql")
 ### What Kontra Guarantees
 
 - **Path agreement**: If preplan says "pass", pushdown and Polars will agree
-- **Deterministic results**: Same input → same output (except `freshness` rule)
+- **Stable measurement ordering**: Identical accessible state and metadata snapshot produce the same ordered measurements. Samples without explicit ordering and time-dependent `freshness` are exceptions.
 - **Stable rule IDs**: Derived consistently from name + column
 
 ### What Kontra Does Not Guarantee
@@ -236,40 +242,56 @@ agg_not_null("user_id", "rule_1", dialect="mssql")
 
 ## Adding a New Rule
 
-1. Create rule class in `src/kontra/rule_defs/builtin/`:
+1. Create the rule in `src/kontra/rule_defs/builtin/`. Keep Polars lazy: use
+`TYPE_CHECKING` for annotations and import it inside expression factories.
 
 ```python
-from kontra.rule_defs.base import BaseRule
-from kontra.rule_defs.registry import register_rule
-from kontra.rule_defs.predicates import Predicate
-import polars as pl
+from __future__ import annotations
 
-@register_rule("positive")
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import polars as pl
+
+from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.predicates import Predicate
+from kontra.rule_defs.registry import register_rule
+
+@register_rule("positive", _builtin=True)
 class PositiveRule(BaseRule):
-    def validate(self, df):
+    def __init__(self, name: str, params: dict[str, Any]):
+        super().__init__(name, params)
+        self._get_required_param("column", str)
+
+    def validate(self, df: "pl.DataFrame") -> dict[str, Any]:
         column = self.params["column"]
         mask = df[column].is_null() | (df[column] <= 0)
-        return self._failures(df, mask, f"{column} must be positive")
+        result = self._failures(df, mask, f"{column} must be positive")
+        result["rule_id"] = self.rule_id
+        return result
 
-    def compile_predicate(self):
+    def compile_predicate(self) -> Predicate:
         column = self.params["column"]
+
+        def _expr():
+            import polars as pl
+
+            return pl.col(column).is_null() | (pl.col(column) <= 0)
+
         return Predicate(
             rule_id=self.rule_id,
-            expr=pl.col(column).is_null() | (pl.col(column) <= 0),
+            expr_factory=_expr,
             message=f"{column} must be positive",
             columns={column},
         )
 
-    def to_sql_spec(self):
-        return {
-            "kind": "positive",
-            "rule_id": self.rule_id,
-            "column": self.params["column"],
-            "tally": self.params.get("tally", False),
-        }
+    def required_columns(self) -> set[str]:
+        return {self.params["column"]}
 ```
 
-2. Add SQL support in `sql_utils.py` (builders compose the IR in `sql_ir.py`; dialect differences live in its per-dialect renderers) and wire it in the executors.
+2. If the rule supports pushdown, add its dialect-neutral representation and
+renderer behavior using the patterns in existing built-ins and
+`engine/executors/database_base.py`. Verify SQL/Polars equivalence.
 
 3. Add helper in `api/rules.py`:
 

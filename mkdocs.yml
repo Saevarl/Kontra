@@ -1,0 +1,106 @@
+site_name: Kontra Docs
+site_description: Fast, composable data quality measurement for files, databases, DataFrames, and agents.
+site_url: https://kontrakit.dev/
+repo_url: https://github.com/Saevarl/Kontra
+repo_name: Saevarl/Kontra
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Sævar Logi Björnsson · Apache-2.0
+exclude_docs: |
+  ROADMAP.md
+  ideas-backlog.md
+  plans/
+  working/
+
+theme:
+  name: material
+  language: en
+  favicon: assets/favicon.svg
+  logo: assets/favicon.svg
+  font: false
+  features:
+    - announce.dismiss
+    - content.action.edit
+    - content.code.annotate
+    - content.code.copy
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: kontra-light
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Use dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: kontra-dark
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Use light mode
+
+nav:
+  - Start:
+      - Overview: index.md
+      - Getting started: getting-started.md
+  - Build:
+      - Contracts: reference/contracts.md
+      - Rules: reference/rules.md
+      - Python API: python-api.md
+      - Transformation probes: reference/probes.md
+      - CLI reference: reference/cli.md
+  - Operate:
+      - Configuration: reference/config.md
+      - History and diff: advanced/state-and-diff.md
+      - Performance: advanced/performance.md
+  - Integrate:
+      - Agents and MCP: advanced/agents-and-llms.md
+      - Custom rules: advanced/custom-rules.md
+  - Understand:
+      - Architecture: reference/architecture.md
+      - Glossary and schemas: reference/glossary.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  homepage: https://kontrakit.io
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Saevarl/Kontra
+      name: Kontra on GitHub
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/kontra/
+      name: Kontra on PyPI
