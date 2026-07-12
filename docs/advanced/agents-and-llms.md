@@ -78,7 +78,7 @@ codex mcp add kontra \
 
 ### Tools and resources
 
-The server exposes five tools and three read-only resources. Every argument is a
+The server exposes ten tools and three read-only resources. Every argument is a
 configured datasource name or a trusted contract name — never a path, URL, or SQL.
 
 | Tool | Arguments | Returns |
@@ -87,13 +87,28 @@ configured datasource name or a trusted contract name — never a path, URL, or 
 | `profile` | `datasource`, `preset?`, `columns?`, `sample?`, `save?` | Dataset profile; persisted when `save` is set |
 | `validation_history` | `contract`, `limit?`, `since?`, `failed_only?` | Bounded run summaries, newest first |
 | `validation_diff` | `contract` | Diff of the two most recent runs |
+| `get_validation_run` | `contract`, `run_id?` | One persisted run (latest if no ID); dataset URIs and fingerprints removed |
+| `measure_failure_samples` | `datasource`, `contract`, `rule_id`, `n?`, `env?` | Example failing rows for one rule, measured now (not persisted) |
 | `profile_history` | `datasource`, `limit?` | Bounded profile history, newest first |
+| `profile_diff` | `datasource` | Diff of the two most recent persisted profiles |
+| `compare_datasets` | `before`, `after`, `key?`/`before_key?`/`after_key?` | Row and key deltas between two datasources |
+| `profile_relationship` | `left`, `right`, `on?`/`left_on?`/`right_on?` | Join cardinality and relational shape of two datasources |
 
 | Resource | Returns |
 |----------|---------|
 | `kontra://health` | Server and backend readiness (backend type only, no credentials) |
 | `kontra://rules` | Built-in measurement rules and their parameters |
 | `kontra://datasources` | Configured datasource names and tables (no connection details) |
+
+**Transformation probes.** `compare_datasets` and `profile_relationship` measure how two
+datasources relate — row and key deltas, join cardinality — for reasoning about JOINs and
+deduplication. They never emit raw rows, composite keys are capped at eight columns, and each
+input is capped at 100,000 materialized rows. Override the ceiling with `KONTRA_MCP_MAX_PROBE_ROWS`.
+
+**Failure samples.** `measure_failure_samples` runs a fresh measurement and returns example
+failing rows for one rule — *including their column values*. Treat that output as live data
+leaving your boundary. Persisted history keeps counts, not samples, so this tool always measures
+against current data (`"measurement": "current"`).
 
 ### Remote deployments
 

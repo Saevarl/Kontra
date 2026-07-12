@@ -121,3 +121,82 @@ def test_history_calls_serialize_shared_postgres_connection(tmp_path):
         thread.join()
 
     assert store.max_active == 1
+
+
+def test_probe_preflight_rejects_large_materialization(tmp_path, monkeypatch):
+    import kontra
+
+    service = _service(tmp_path)
+    service.settings = MCPSettings("postgres://", tmp_path, max_probe_rows=10)
+    profile = type("Profile", (), {"row_count": 11, "row_count_estimated": False})()
+    monkeypatch.setattr(kontra, "profile", lambda *args, **kwargs: profile)
+
+    with pytest.raises(ValueError, match="materialization limit"):
+        service._enforce_probe_row_limit("warehouse.users")
+
+
+def test_probe_key_bounds_and_configured_sources(tmp_path):
+    service = _service(tmp_path)
+
+    service._validate_probe_inputs(
+        "warehouse.users", "warehouse.orders", ["id"], None, None
+    )
+    with pytest.raises(ValueError, match="between 1 and 8"):
+        service._validate_probe_inputs(
+            "warehouse.users", "warehouse.orders", [], None, None
+        )
+    with pytest.raises(ValueError, match="Unknown configured"):
+        service._validate_probe_inputs(
+            "warehouse.users", "missing.users", "id", None, None
+        )
+
+
+@pytest.mark.parametrize("run_id", ["0", "-1", "latest", "1.2", "1" * 20])
+def test_validation_run_rejects_unscoped_or_ambiguous_ids(tmp_path, run_id):
+    contract = tmp_path / "users.yml"
+    contract.write_text("name: users\nrules: []\n", encoding="utf-8")
+    service = _service(tmp_path)
+    service._store_lock = threading.RLock()
+    service._state_store = type("Store", (), {"get_history": lambda *args, **kwargs: []})()
+
+    with pytest.raises(ValueError, match="positive numeric"):
+        service.get_validation_run("users", run_id=run_id)
+
+
+def test_failure_samples_request_only_rule_relevant_columns(tmp_path, monkeypatch):
+    import kontra
+
+    contract = tmp_path / "users.yml"
+    contract.write_text("name: users\nrules: []\n", encoding="utf-8")
+    service = _service(tmp_path)
+    service._store_lock = threading.RLock()
+    service._enforce_probe_row_limit = lambda *args: None
+    captured = {}
+
+    rule = type(
+        "Rule",
+        (),
+        {"rule_id": "COL:id:not_null", "passed": False, "failed_count": 1, "tally": True},
+    )()
+    samples = type("Samples", (), {"to_dict": lambda self: [{"id": None}]})()
+    result = type(
+        "Result",
+        (),
+        {
+            "rules": [rule],
+            "sample_failures": lambda self, *args, **kwargs: samples,
+        },
+    )()
+
+    def fake_validate(*args, **kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(kontra, "validate", fake_validate)
+    payload = service.measure_failure_samples(
+        "warehouse.users", "users", "COL:id:not_null"
+    )
+
+    assert captured["sample_columns"] == "relevant"
+    assert payload["sample_columns"] == "relevant"
+    assert payload["samples"] == [{"id": None}]

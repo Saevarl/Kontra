@@ -7,7 +7,7 @@ import pytest
 
 mcp = pytest.importorskip("mcp")
 
-from kontra.mcp.server import create_server
+from kontra.mcp.server import _SafeServiceProxy, _sanitize_error_message, create_server
 from kontra.mcp.service import MCPSettings
 
 
@@ -20,11 +20,18 @@ def test_server_exposes_bounded_tool_schemas_without_context_parameter():
         "profile",
         "validation_history",
         "validation_diff",
+        "get_validation_run",
+        "measure_failure_samples",
         "profile_history",
+        "profile_diff",
+        "compare_datasets",
+        "profile_relationship",
     }
     assert "ctx" not in tools["validate"].inputSchema["properties"]
     assert tools["validate"].inputSchema["required"] == ["datasource", "contract"]
     assert tools["profile"].inputSchema["required"] == ["datasource"]
+    assert "sample_limit" not in tools["compare_datasets"].inputSchema["properties"]
+    assert "sample_limit" not in tools["profile_relationship"].inputSchema["properties"]
 
 
 class _FakeService:
@@ -82,3 +89,28 @@ def test_server_factory_refuses_remote_unauthenticated_bind():
             MCPSettings("postgres://", Path("contracts").resolve()),
             host="0.0.0.0",
         )
+
+
+def test_error_sanitizer_masks_uri_and_query_credentials():
+    message = (
+        "failed postgres://agent:p@ssword@db/internal "
+        "and https://blob/path?sig=secret-signature&token=secret-token"
+    )
+    sanitized = _sanitize_error_message(message)
+
+    assert "p@ssword" not in sanitized
+    assert "secret-signature" not in sanitized
+    assert "secret-token" not in sanitized
+    assert "postgres://agent:***@db/internal" in sanitized
+
+
+def test_safe_service_proxy_never_returns_unsanitized_exception():
+    class FailingService:
+        def health(self):
+            raise IOError("postgres://user:password@db/private?token=abc")
+
+    with pytest.raises(ValueError) as error:
+        _SafeServiceProxy(FailingService()).health()
+
+    assert "password" not in str(error.value)
+    assert "token=abc" not in str(error.value)

@@ -31,6 +31,9 @@ rules:
   - name: min_rows
     params:
       threshold: 1
+  - name: not_null
+    params:
+      column: user_id
 """,
         encoding="utf-8",
     )
@@ -45,13 +48,43 @@ rules:
         first = service.validate("mcp_test.users", "mcp_users")
         second = service.validate("mcp_test.users", "mcp_users")
         profile = service.profile("mcp_test.users", preset="scout")
+        service.profile("mcp_test.users", preset="scout")
+        run = service.get_validation_run("mcp_users")
+        samples = service.measure_failure_samples(
+            "mcp_test.users", "mcp_users", "COL:user_id:not_null", n=2
+        )
+        comparison = service.compare_datasets(
+            "mcp_test.users", "mcp_test.users", key="user_id"
+        )
+        relationship = service.profile_relationship(
+            "mcp_test.users", "mcp_test.users", on="user_id"
+        )
 
         assert first["passed"] is True
         assert second["passed"] is True
         assert profile["dataset"]["row_count"] > 0
         assert len(service.validation_history("mcp_users")) >= 2
         assert service.validation_diff("mcp_users")["has_changes"] is False
-        assert len(service.profile_history("mcp_test.users")) >= 1
+        assert run is not None
+        assert "dataset_uri" not in run
+        assert "contract_fingerprint" not in run
+        assert "dataset_fingerprint" not in run
+        assert samples["measurement"] == "current"
+        assert samples["historical_run_id"] is None
+        assert len(service.profile_history("mcp_test.users")) >= 2
+        assert service.profile_diff("mcp_test.users") is not None
+        assert comparison["row_stats"]["delta"] == 0
+        assert comparison["samples"] == {
+            "duplicated_keys": [],
+            "dropped_keys": [],
+            "changed_rows": [],
+        }
+        assert relationship["coverage"]["left_keys_without_match"] == 0
+        assert relationship["samples"] == {
+            "left_keys_without_match": [],
+            "right_keys_without_match": [],
+            "right_keys_with_multiple_rows": [],
+        }
     finally:
         service.close()
         kontra.set_config(None)
