@@ -2,6 +2,39 @@
 
 Kontra is designed for programmatic use by LLM agents and services.
 
+## Official MCP Server
+
+Install the server with its PostgreSQL backend dependencies:
+
+```bash
+pip install "kontra[mcp-postgres]"
+```
+
+The server accepts configured datasource names and trusted contracts from a
+single directory. It does not accept arbitrary database URLs, filesystem paths,
+inline rules, or SQL from tool calls.
+
+```bash
+export KONTRA_CONFIG=/etc/kontra/config.yml
+export KONTRA_MCP_CONTRACTS_DIR=/etc/kontra/contracts
+export KONTRA_MCP_POSTGRES_URI='postgresql://kontra@db/kontra'
+kontra-mcp
+```
+
+`stdio` is the default transport. For a remote deployment, use Streamable HTTP:
+
+```bash
+kontra-mcp --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+The server exposes validation, profiling, bounded history, and latest-run diff
+tools. PostgreSQL stores validation and profile measurements. It does not make
+policy decisions, edit contracts, recommend fixes, or expose arbitrary SQL.
+
+Credentials can also come from `DATABASE_URL` or the standard PostgreSQL `PG*`
+environment variables. Server responses report only the backend type, never the
+connection URI.
+
 ---
 
 ## Core Functions

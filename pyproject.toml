@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kontra"
-version = "0.10.1"
+version = "0.11.0"
 description = "Developer-first data quality engine"
 readme = "README.md"
 authors = [{ name = "Saevarlb" }]
@@ -42,10 +42,13 @@ Issues = "https://github.com/Saevarl/Kontra/issues"
 
 [project.scripts]
 kontra = "kontra.cli.main:main"
+kontra-mcp = "kontra.mcp.cli:main"
 
 [project.optional-dependencies]
 s3 = ["s3fs>=2024.6.0"]
 postgres = ["psycopg[binary]>=3.0.0"]
+mcp = ["mcp>=1.27,<2"]
+mcp-postgres = ["mcp>=1.27,<2", "psycopg[binary]>=3.0.0"]
 sqlserver = ["pymssql>=2.2.0"]
 # Entra ID (Azure AD) auth for Azure SQL / Managed Instance. Requires a
 # Microsoft ODBC driver (msodbcsql18) installed on the host. On Linux/macOS the
