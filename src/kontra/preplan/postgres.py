@@ -10,7 +10,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
-from kontra.connectors.postgres import PostgresConnectionParams, get_connection
+from kontra.connectors.postgres import PostgresConnectionParams
+from kontra.connectors.db_utils import get_connection_ctx
 
 from .types import PrePlan, Decision
 from .dtype_utils import pg_dtype_matches as _pg_dtype_matches
@@ -21,7 +22,7 @@ Predicate = Tuple[str, str, str, Any]
 
 
 def fetch_pg_stats_for_preplan(
-    params: PostgresConnectionParams,
+    handle: DatasetHandle,
     *,
     check_unique_constraints: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
@@ -29,7 +30,7 @@ def fetch_pg_stats_for_preplan(
     Fetch PostgreSQL statistics for preplan decisions.
 
     Args:
-        params: PostgreSQL connection parameters
+        handle: PostgreSQL dataset handle
         check_unique_constraints: If True, also check for UNIQUE indexes/constraints.
             Only set this if you have unique rules to check - avoids extra query.
 
@@ -45,7 +46,8 @@ def fetch_pg_stats_for_preplan(
             ...
         }
     """
-    with get_connection(params) as conn:
+    params: PostgresConnectionParams = handle.db_params
+    with get_connection_ctx(handle, "postgres") as conn:
         with conn.cursor() as cur:
             # Table-level stats from pg_class
             cur.execute(
@@ -146,7 +148,7 @@ def preplan_postgres(
     # Only fetch unique constraints if there are unique rules to check
     has_unique_rules = any(op == "unique" for _, _, op, _ in predicates)
     pg_stats = fetch_pg_stats_for_preplan(
-        params,
+        handle,
         check_unique_constraints=has_unique_rules,
     )
 

@@ -23,9 +23,9 @@ BYOC (Bring Your Own Connection) support:
   - `table_ref`:     Table reference ("schema.table" or "db.schema.table")
   - `owned`:         If True, Kontra closes the connection. If False (BYOC), user closes it.
 
-This object is intentionally tiny and immutable. If a connector later wants to
-enrich it (e.g., SAS tokens for ADLS), we can extend `fs_opts` without touching
-the engine or materializers.
+This object is intentionally tiny.  `owned_conn` is transient engine state used
+only while a URI-based PostgreSQL validation run is active; it is distinct from
+the caller-owned `external_conn` used for BYOC.
 """
 
 from dataclasses import dataclass, field
@@ -53,6 +53,9 @@ class DatasetHandle:
     dialect: Optional[str] = field(default=None)        # "postgresql" | "sqlserver"
     table_ref: Optional[str] = field(default=None)      # "schema.table" or "db.schema.table"
     owned: bool = field(default=True)                   # True = we close, False = user closes
+    # URI-based connection owned by one ValidationEngine run.  It must never
+    # be used for BYOC, whose external_conn remains caller-owned.
+    owned_conn: Optional[Any] = field(default=None, repr=False, compare=False)
 
     # ------------------------------ Constructors ------------------------------
 

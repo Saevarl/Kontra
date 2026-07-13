@@ -13,6 +13,54 @@ import pytest
 class TestPostgresValidation:
     """Test validation rules against PostgreSQL tables."""
 
+    def test_uri_validation_reuses_one_connection_across_phases(
+        self, postgres_container, monkeypatch
+    ):
+        """URI validation shares one run-owned connection across PostgreSQL phases."""
+        import psycopg
+        import kontra
+        from kontra import rules
+
+        uri = (
+            "postgres://kontra:kontra_test@localhost:5433/"
+            "kontra_test/public.tiny"
+        )
+        with psycopg.connect(
+            host=postgres_container["host"],
+            port=postgres_container["port"],
+            user=postgres_container["user"],
+            password=postgres_container["password"],
+            dbname=postgres_container["database"],
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS tiny AS "
+                    "SELECT g AS id, (g % 90)::int AS age "
+                    "FROM generate_series(0, 999) g"
+                )
+
+        original_connect = psycopg.connect
+        connect_calls = []
+
+        def counting_connect(*args, **kwargs):
+            connect_calls.append((args, kwargs))
+            return original_connect(*args, **kwargs)
+
+        monkeypatch.setattr(psycopg, "connect", counting_connect)
+
+        result = kontra.validate(
+            uri,
+            rules=[
+                rules.not_null("age"),
+                rules.range("age", min=0, max=89),
+                rules.unique("id"),
+            ],
+            save=False,
+        )
+
+        assert result.passed
+        assert len(connect_calls) == 1
+
     def test_materializer_loads_data(self, postgres_uri):
         """Test that PostgresMaterializer can load data."""
         from kontra.connectors.handle import DatasetHandle

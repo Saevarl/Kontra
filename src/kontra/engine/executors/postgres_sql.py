@@ -24,8 +24,9 @@ from contextlib import contextmanager
 from typing import Any, Dict, Tuple
 
 from kontra.connectors.handle import DatasetHandle
-from kontra.connectors.postgres import PostgresConnectionParams, get_connection
+from kontra.connectors.postgres import PostgresConnectionParams
 from kontra.connectors.detection import parse_table_reference, get_default_schema, POSTGRESQL
+from kontra.connectors.db_utils import get_connection_ctx
 
 from .database_base import DatabaseSqlExecutor
 from .registry import register_executor
@@ -68,16 +69,10 @@ class PostgresSqlExecutor(DatabaseSqlExecutor):
         """
         Get a PostgreSQL connection context.
 
-        For BYOC, yields the external connection directly (not owned by us).
-        For URI-based, yields a new connection (owned by context manager).
+        Delegates ownership and run-scoped reuse to the shared connector helper.
         """
-        if handle.scheme == "byoc" and handle.external_conn is not None:
-            yield handle.external_conn
-        elif handle.db_params:
-            with get_connection(handle.db_params) as conn:
-                yield conn
-        else:
-            raise ValueError("Handle has neither external_conn nor db_params")
+        with get_connection_ctx(handle, "postgres") as conn:
+            yield conn
 
     def _get_table_reference(self, handle: DatasetHandle) -> str:
         """

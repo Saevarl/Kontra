@@ -37,6 +37,10 @@ if TYPE_CHECKING:
     from kontra.state.types import ValidationState
 
 from kontra.connectors.handle import DatasetHandle
+from kontra.connectors.db_utils import (
+    close_shared_postgres_connection,
+    open_shared_postgres_connection,
+)
 from kontra.engine.executors.registry import (
     pick_executor,
     register_default_executors,
@@ -516,6 +520,7 @@ class ValidationEngine:
 
             return result
         finally:
+            close_shared_postgres_connection(self._handle)
             # Cleanup staged temp directory (CSV -> Parquet staging)
             if self._staging_tmpdir is not None:
                 try:
@@ -907,6 +912,10 @@ class ValidationEngine:
         else:
             handle = self._build_handle(self.data_path or self.contract.datasource)
             self._handle = handle  # Store for sample_failures() to access db_params
+
+        # One URI-owned PostgreSQL connection is reused by preplan, SQL
+        # pushdown, and materialization, then closed by run()'s finally block.
+        open_shared_postgres_connection(handle)
 
         # ------------------------------------------------------------------ #
         # Phase 5: Preplan (metadata-only optimization)

@@ -311,7 +311,8 @@ def get_connection_ctx(handle: "DatasetHandle", dialect: str):
     Get a connection context for either BYOC or URI-based handles.
 
     For BYOC, yields the external connection directly (not owned by us).
-    For URI-based, yields a new connection (owned by context manager).
+    For a run-scoped URI connection, yields the engine-owned connection and
+    rolls back at the phase boundary. Otherwise, yields a fresh connection.
 
     Args:
         handle: DatasetHandle with connection info
@@ -320,6 +321,13 @@ def get_connection_ctx(handle: "DatasetHandle", dialect: str):
     if handle.scheme == "byoc" and handle.external_conn is not None:
         # BYOC: yield external connection directly, don't close it
         yield handle.external_conn
+    elif handle.owned_conn is not None:
+        try:
+            yield handle.owned_conn
+        finally:
+            # Kontra's validation queries are read-only. Reset the transaction
+            # between phases so a prior query cannot affect the next one.
+            handle.owned_conn.rollback()
     elif handle.db_params:
         # URI-based: use our connection manager
         if dialect == "postgres":
@@ -334,6 +342,37 @@ def get_connection_ctx(handle: "DatasetHandle", dialect: str):
             yield conn
     else:
         raise ValueError("Handle has neither external_conn nor db_params")
+
+
+def open_shared_postgres_connection(handle: "DatasetHandle") -> None:
+    """Open and stash the PostgreSQL connection owned by one validation run."""
+    if handle.scheme not in ("postgres", "postgresql") or not handle.db_params:
+        return
+    if handle.owned_conn is not None:
+        return
+
+    from kontra.connectors.postgres import get_connection
+
+    object.__setattr__(handle, "owned_conn", get_connection(handle.db_params))
+
+
+def close_shared_postgres_connection(handle: "DatasetHandle | None") -> None:
+    """Close the URI-owned PostgreSQL connection exactly once, if present."""
+    if (
+        handle is None
+        or handle.scheme not in ("postgres", "postgresql")
+        or handle.owned_conn is None
+    ):
+        return
+
+    conn = handle.owned_conn
+    try:
+        conn.rollback()
+    finally:
+        try:
+            conn.close()
+        finally:
+            object.__setattr__(handle, "owned_conn", None)
 
 
 # --------------------------------------------------------------------------- #
