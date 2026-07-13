@@ -24,6 +24,8 @@ from kontra.logging import get_logger
 
 _logger = get_logger(__name__)
 
+_POSTGRES_PREPLAN_ELIGIBLE_OPS = frozenset({"not_null", "dtype", "unique"})
+
 
 def _build_preplan_summary(
     enabled: bool,
@@ -210,6 +212,18 @@ def _execute_postgres_preplan(
 
     t0 = now_ms()
     static_preds = extract_static_predicates(rules=ctx.rules)
+    # PostgreSQL's current metadata resolver only has decision logic for these
+    # predicates. Avoid all catalog traffic when the rule set cannot possibly
+    # be resolved by it. Exact-count rules are also ineligible for preplan.
+    static_preds = [
+        predicate
+        for predicate in static_preds
+        if predicate[2] in _POSTGRES_PREPLAN_ELIGIBLE_OPS
+        and not ctx.tally_map.get(predicate[0], False)
+    ]
+    if not static_preds:
+        return _empty_preplan_result(enabled=True)
+
     pre = preplan_postgres(
         handle=handle,
         required_columns=ctx.compiled_full.required_cols,
@@ -229,6 +243,7 @@ def _execute_postgres_preplan(
         effective=True,
         handled_ids=handled_ids,
         results_by_id=results_by_id,
+        total_rows=pre.stats.get("total_rows"),
         analyze_ms=analyze_ms,
         summary=_build_preplan_summary(
             enabled=True,

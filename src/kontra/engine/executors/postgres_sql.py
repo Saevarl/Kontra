@@ -42,6 +42,7 @@ class PostgresSqlExecutor(DatabaseSqlExecutor):
     """
 
     DIALECT = "postgres"
+    INCLUDE_ROW_COUNT_IN_AGGREGATE = True
     SUPPORTED_RULES = {
         "not_null", "unique", "min_rows", "max_rows",
         "allowed_values", "disallowed_values",
@@ -120,36 +121,55 @@ class PostgresSqlExecutor(DatabaseSqlExecutor):
         Returns:
             {"row_count": int, "available_cols": [...], "staging": None}
         """
-        table = self._get_table_reference(handle)
+        row_count = kwargs.get("row_count")
+        available_cols = kwargs.get("available_cols")
+        need_row_count = row_count is None
+        need_columns = available_cols is None
 
-        # Get schema and table name for information_schema query
-        if handle.scheme == "byoc" and handle.table_ref:
-            _db, schema, table_name = parse_table_reference(handle.table_ref)
-            schema = schema or get_default_schema(POSTGRESQL)
-        elif handle.db_params:
-            params: PostgresConnectionParams = handle.db_params
-            schema = params.schema
-            table_name = params.table
-        else:
-            raise ValueError("Handle has neither table_ref nor db_params")
+        if not need_row_count and not need_columns:
+            return {
+                "row_count": int(row_count),
+                "available_cols": list(available_cols),
+                "staging": None,
+            }
+
+        table = self._get_table_reference(handle) if need_row_count else None
+
+        schema = table_name = None
+        if need_columns:
+            # Resolve catalog identifiers lazily: plan-derived columns avoid this
+            # schema-discovery query on the normal projected pushdown path.
+            if handle.scheme == "byoc" and handle.table_ref:
+                _db, schema, table_name = parse_table_reference(handle.table_ref)
+                schema = schema or get_default_schema(POSTGRESQL)
+            elif handle.db_params:
+                params: PostgresConnectionParams = handle.db_params
+                schema = params.schema
+                table_name = params.table
+            else:
+                raise ValueError("Handle has neither table_ref nor db_params")
 
         with self._get_connection_ctx(handle) as conn:
             with conn.cursor() as cur:
-                # Get row count
-                cur.execute(f"SELECT COUNT(*) FROM {table}")
-                row_count = cur.fetchone()
-                n = int(row_count[0]) if row_count else 0
+                if need_row_count:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    count_row = cur.fetchone()
+                    row_count = int(count_row[0]) if count_row else 0
 
-                # Get column names
-                cur.execute(
-                    """
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_schema = %s AND table_name = %s
-                    ORDER BY ordinal_position
-                    """,
-                    (schema, table_name),
-                )
-                cols = [row[0] for row in cur.fetchall()]
+                if need_columns:
+                    cur.execute(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = %s AND table_name = %s
+                        ORDER BY ordinal_position
+                        """,
+                        (schema, table_name),
+                    )
+                    available_cols = [row[0] for row in cur.fetchall()]
 
-        return {"row_count": n, "available_cols": cols, "staging": None}
+        return {
+            "row_count": int(row_count),
+            "available_cols": list(available_cols),
+            "staging": None,
+        }

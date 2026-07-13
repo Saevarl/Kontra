@@ -76,6 +76,7 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
     # Subclasses must define these
     DIALECT: Dialect
     SUPPORTED_RULES: Set[str]
+    INCLUDE_ROW_COUNT_IN_AGGREGATE = False
 
     @property
     @abstractmethod
@@ -474,6 +475,7 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
 
         table = self._get_table_reference(handle)
         results: List[Dict[str, Any]] = []
+        row_count = None
 
         # Build rule_kinds mapping from specs
         rule_kinds = {}
@@ -548,13 +550,34 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
 
                 # Phase 2: Aggregate query for remaining rules
                 if aggregate_selects:
-                    agg_sql = self._assemble_single_row(aggregate_selects, table)
+                    selects = list(aggregate_selects)
+                    if self.INCLUDE_ROW_COUNT_IN_AGGREGATE:
+                        # PostgreSQL tally queries already scan the relation. Folding
+                        # the total into that scan avoids a second COUNT(*) round-trip.
+                        selects.append('COUNT(*) AS "__row_count"')
+                    agg_sql = self._assemble_single_row(selects, table)
                     cursor.execute(agg_sql)
                     row = cursor.fetchone()
                     columns = [desc[0] for desc in cursor.description] if cursor.description else []
 
                     if row and columns:
-                        agg_results = results_from_row(columns, row, is_exists=False, rule_kinds=rule_kinds)
+                        result_columns = columns
+                        result_row = row
+                        if columns[-1] == "__row_count":
+                            # The synthetic count is always appended last. Using
+                            # its position also keeps an explicitly named rule
+                            # ID of "__row_count" from colliding with it.
+                            row_count_index = len(columns) - 1
+                            raw_row_count = row[row_count_index]
+                            row_count = int(raw_row_count) if raw_row_count is not None else 0
+                            result_columns = columns[:row_count_index]
+                            result_row = tuple(row[:row_count_index])
+                        agg_results = results_from_row(
+                            result_columns,
+                            result_row,
+                            is_exists=False,
+                            rule_kinds=rule_kinds,
+                        )
                         results.extend(agg_results)
 
                 # Phase 3: Custom SQL queries (executed individually)
@@ -566,7 +589,7 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
             finally:
                 self._close_cursor(cursor)
 
-        return {"results": results, "staging": None}
+        return {"results": results, "row_count": row_count, "staging": None}
 
     def _execute_custom_sql_queries(
         self,

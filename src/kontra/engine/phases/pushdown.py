@@ -37,6 +37,8 @@ def execute_pushdown(
     pushdown_mode: str,
     csv_mode: Literal["auto", "duckdb", "parquet"],
     show_plan: bool = False,
+    preplan_total_rows: Optional[int] = None,
+    require_schema_discovery: bool = False,
 ) -> Tuple[PushdownResult, "DatasetHandle", Optional[Any]]:
     """
     Execute the SQL pushdown phase.
@@ -48,6 +50,8 @@ def execute_pushdown(
         pushdown_mode: "on" or "off"
         csv_mode: CSV handling mode
         show_plan: Print SQL plan
+        preplan_total_rows: Optional metadata row estimate for fail-fast rates
+        require_schema_discovery: Fetch the complete schema for reporting
 
     Returns:
         Tuple of (PushdownResult, updated_handle, staging_tmpdir)
@@ -104,15 +108,61 @@ def execute_pushdown(
         # Get row count and cols from execute result
         t0 = now_ms()
         row_count = duck_out.get("row_count")
-        available_cols = duck_out.get("available_cols") or []
+        available_cols = duck_out.get("available_cols")
+
+        # The compiled plan is authoritative for projected validation paths.
+        # Prefer it over a catalog round-trip; an empty list remains "unknown"
+        # because it can also mean a rule needs the entire schema.
+        if (
+            available_cols is None
+            and not require_schema_discovery
+            and ctx.compiled_full.required_cols
+        ):
+            available_cols = list(ctx.compiled_full.required_cols)
+        elif (
+            available_cols is None
+            and not require_schema_discovery
+            and executor_name == "postgres"
+            and handled_ids_meta | handled_ids >= set(ctx.severity_map)
+        ):
+            # Dataset-only plans need no projected columns, and every rule is
+            # already handled, so discovering the full schema cannot help.
+            available_cols = []
+
+        # EXISTS queries must retain early-stop behavior, so PostgreSQL does not
+        # fold COUNT(*) into them. In fail-fast mode, reuse the already-fetched
+        # reltuples estimate for rates. Counts and pass/fail remain lower-bound
+        # measurements exactly as before. Without an estimate, introspection
+        # falls back to the prior exact COUNT(*) behavior.
+        if (
+            row_count is None
+            and executor_name == "postgres"
+            and preplan_total_rows is not None
+            and preplan_total_rows >= 0
+        ):
+            row_count = preplan_total_rows
 
         # Fallback to introspect if execute didn't return these
         introspect_ms = 0
-        if row_count is None or not available_cols:
-            info = executor.introspect(handle, csv_mode=csv_mode)
+        if (
+            row_count is None
+            or available_cols is None
+            or (executor_name != "postgres" and not available_cols)
+        ):
+            introspect_kwargs = {"csv_mode": csv_mode}
+            if executor_name == "postgres":
+                introspect_kwargs.update(
+                    row_count=row_count,
+                    available_cols=available_cols,
+                )
+            info = executor.introspect(handle, **introspect_kwargs)
             introspect_ms = now_ms() - t0
             row_count = info.get("row_count") if row_count is None else row_count
-            available_cols = info.get("available_cols") or available_cols
+            available_cols = (
+                info.get("available_cols")
+                if available_cols is None
+                else available_cols
+            )
             staging = info.get("staging") or duck_out.get("staging")
         else:
             introspect_ms = now_ms() - t0

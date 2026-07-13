@@ -946,6 +946,8 @@ class ValidationEngine:
             pushdown_mode=self.pushdown,
             csv_mode=self.csv_mode,
             show_plan=self.show_plan,
+            preplan_total_rows=preplan.total_rows,
+            require_schema_discovery=self.stats_mode != "none",
         )
         self._staging_tmpdir = staging_tmpdir
 
