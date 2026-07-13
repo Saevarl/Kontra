@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 import polars as pl
 
 from kontra.api.compare import RelationshipProfile
-from kontra.probes.compare import _align_side_keys, _resolve_keys
+from kontra.probes.compare import _align_side_keys, _resolve_keys, _restore_key_sample_names
 from kontra.probes.utils import load_data
 
 
@@ -88,8 +88,8 @@ def profile_relationship(
         # Get structured output for LLM
         print(profile.to_llm())
     """
-    # Resolve the key specification. The ``left`` side's key names are the
-    # canonical names used throughout the computation and in the result.
+    # Resolve the key specification. The ``left`` side's key names are used
+    # in the result; computation itself uses collision-safe internal aliases.
     left_on_list, right_on_list = _resolve_keys(
         on, "on",
         left_on, right_on, "left_on", "right_on",
@@ -100,12 +100,29 @@ def profile_relationship(
     left_df = load_data(left, storage_options=storage_options, table=left_table)
     right_df = load_data(right, storage_options=storage_options, table=right_table)
 
-    # Align the right side's key columns onto the canonical (left) key names
-    # so the core relationship logic operates on a single set of key names.
-    right_df = _align_side_keys(right_df, right_on_list, left_on_list, "right")
+    # Align both sides onto neutral aliases so non-key columns with a key name
+    # from the opposite side remain untouched.
+    left_df, right_df, internal_key = _align_side_keys(
+        left_df,
+        right_df,
+        left_on_list,
+        right_on_list,
+        "left",
+        "right",
+    )
 
     # Compute the profile
-    result = _compute_relationship(left_df, right_df, left_on_list, sample_limit)
+    result = _compute_relationship(left_df, right_df, internal_key, sample_limit)
+    result.on = left_on_list
+    result.samples_left_unmatched = _restore_key_sample_names(
+        result.samples_left_unmatched, internal_key, left_on_list
+    )
+    result.samples_right_unmatched = _restore_key_sample_names(
+        result.samples_right_unmatched, internal_key, left_on_list
+    )
+    result.samples_right_duplicates = _restore_key_sample_names(
+        result.samples_right_duplicates, internal_key, left_on_list
+    )
 
     if save:
         raise NotImplementedError("Probe save not yet implemented")

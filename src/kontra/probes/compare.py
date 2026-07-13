@@ -85,8 +85,8 @@ def compare(
         # Get structured output for LLM
         print(result.to_llm())
     """
-    # Resolve the key specification. The ``before`` side's key names are the
-    # canonical names used throughout the computation and in the result.
+    # Resolve the key specification. The ``before`` side's key names are used
+    # in the result; computation itself uses collision-safe internal aliases.
     before_key_list, after_key_list = _resolve_keys(
         key, "key",
         before_key, after_key, "before_key", "after_key",
@@ -98,12 +98,20 @@ def compare(
     before_df = load_data(before, storage_options=storage_options, table=before_table)
     after_df = load_data(after, storage_options=storage_options, table=after_table)
 
-    # Align the after side's key columns onto the canonical (before) key names
-    # so the core comparison logic operates on a single set of key names.
-    after_df = _align_side_keys(after_df, after_key_list, before_key_list, "after")
+    # Align both sides onto neutral aliases. This preserves non-key columns
+    # when either dataset already has a column named like the other side's key.
+    before_df, after_df, internal_key = _align_side_keys(
+        before_df,
+        after_df,
+        before_key_list,
+        after_key_list,
+        "before",
+        "after",
+    )
 
     # Compute the comparison
-    result = _compute_compare(before_df, after_df, before_key_list, sample_limit)
+    result = _compute_compare(before_df, after_df, internal_key, sample_limit)
+    _restore_compare_output_key_names(result, internal_key, before_key_list)
 
     if save:
         raise NotImplementedError("Probe save not yet implemented")
@@ -163,39 +171,79 @@ def _resolve_keys(
 
 
 def _align_side_keys(
-    df: pl.DataFrame,
-    side_key: List[str],
-    canonical_key: List[str],
-    side_label: str,
-) -> pl.DataFrame:
+    left: pl.DataFrame,
+    right: pl.DataFrame,
+    left_key: List[str],
+    right_key: List[str],
+    left_label: str,
+    right_label: str,
+) -> tuple[pl.DataFrame, pl.DataFrame, List[str]]:
     """
-    Rename a side's key columns onto the canonical key names.
+    Rename both sides' key columns onto collision-safe internal aliases.
 
     This lets the core join/compare logic operate on a single set of key names
-    even when the two sides use differently-named keys. Non-key columns are
-    never renamed, so user-visible output column names are unchanged.
+    even when the two sides use differently-named keys. Aliases are unique
+    across both input schemas, so non-key columns are never renamed or lost.
 
-    Raises ValueError if a declared key column is missing, or if renaming would
-    collide with an existing (non-key) column on that side.
+    Raises ValueError if a declared key column is missing.
     """
-    for col in side_key:
-        if col not in df.columns:
-            raise ValueError(f"Key column '{col}' not found in {side_label} dataset")
+    for col in left_key:
+        if col not in left.columns:
+            raise ValueError(f"Key column '{col}' not found in {left_label} dataset")
+    for col in right_key:
+        if col not in right.columns:
+            raise ValueError(f"Key column '{col}' not found in {right_label} dataset")
 
-    rename_map: Dict[str, str] = {}
-    for src, dst in zip(side_key, canonical_key):
-        if src == dst:
-            continue
-        if dst in df.columns and dst not in side_key:
-            raise ValueError(
-                f"Cannot align key '{src}' to '{dst}' in {side_label} dataset: "
-                f"a column named '{dst}' already exists."
-            )
-        rename_map[src] = dst
+    occupied_names = set(left.columns) | set(right.columns)
+    internal_key = []
+    alias_index = 0
+    while len(internal_key) < len(left_key):
+        candidate = f"__kontra_key_{alias_index}"
+        alias_index += 1
+        if candidate not in occupied_names:
+            internal_key.append(candidate)
+            occupied_names.add(candidate)
 
-    if rename_map:
-        df = df.rename(rename_map)
-    return df
+    left_rename_map = dict(zip(left_key, internal_key))
+    right_rename_map = dict(zip(right_key, internal_key))
+    return left.rename(left_rename_map), right.rename(right_rename_map), internal_key
+
+
+def _restore_key_sample_names(
+    samples: List[Any],
+    internal_key: List[str],
+    output_key: List[str],
+) -> List[Any]:
+    """Replace internal alias names in composite-key samples."""
+    aliases_to_output = dict(zip(internal_key, output_key))
+    return [
+        {aliases_to_output.get(name, name): value for name, value in sample.items()}
+        if isinstance(sample, dict)
+        else sample
+        for sample in samples
+    ]
+
+
+def _restore_compare_output_key_names(
+    result: CompareResult,
+    internal_key: List[str],
+    output_key: List[str],
+) -> None:
+    """Restore caller-facing key names after internal alias computation."""
+    result.key = output_key
+    result.samples_duplicated_keys = _restore_key_sample_names(
+        result.samples_duplicated_keys, internal_key, output_key
+    )
+    result.samples_dropped_keys = _restore_key_sample_names(
+        result.samples_dropped_keys, internal_key, output_key
+    )
+    for sample in result.samples_changed_rows:
+        key_value = sample["key"]
+        if isinstance(key_value, dict):
+            sample["key"] = {
+                dict(zip(internal_key, output_key)).get(name, name): value
+                for name, value in key_value.items()
+            }
 
 
 def _compute_compare(

@@ -461,6 +461,23 @@ class TestRelationshipAsymmetricKeys:
         assert result.right_keys_with_match == 2
         assert result.right_keys_without_match == 1
 
+    def test_key_aliases_preserve_colliding_right_non_key_column(self):
+        """A right non-key column matching left_on does not block profiling."""
+        left = pl.DataFrame({"organization_id": [1, 2, 3]})
+        right = pl.DataFrame({
+            "__id": [1, 2, 4],
+            "organization_id": [10, 20, 40],
+        })
+
+        result = profile_relationship(
+            left, right, left_on="organization_id", right_on="__id"
+        )
+
+        assert result.on == ["organization_id"]
+        assert result.left_keys_with_match == 2
+        assert result.left_keys_without_match == 1
+        assert result.right_keys_without_match == 1
+
     def test_symmetric_path_still_works(self):
         """Regression: same-named on= path unchanged."""
         left = pl.DataFrame({"id": [1, 2, 3], "n": ["a", "b", "c"]})

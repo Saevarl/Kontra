@@ -499,6 +499,28 @@ class TestCompareAsymmetricKeys:
         assert result.unchanged_rows == 2
         assert "amount" in result.columns_modified
 
+    def test_key_aliases_preserve_colliding_after_non_key_column(self):
+        """A non-key after column matching before_key remains comparable."""
+        before = pl.DataFrame({
+            "organization_id": [1, 2],
+            "status": ["active", "active"],
+        })
+        after = pl.DataFrame({
+            "__id": [1, 2],
+            "organization_id": [100, 200],
+            "status": ["active", "inactive"],
+        })
+
+        result = compare(
+            before, after, before_key="organization_id", after_key="__id"
+        )
+
+        assert result.key == ["organization_id"]
+        assert result.preserved == 2
+        assert result.changed_rows == 1
+        assert "status" in result.columns_modified
+        assert "organization_id" in result.columns_added
+
     def test_symmetric_path_still_works(self):
         """Regression: same-named key= path unchanged."""
         before = pl.DataFrame({"id": [1, 2, 3], "v": [1, 2, 3]})
