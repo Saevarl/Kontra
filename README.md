@@ -136,12 +136,12 @@ pip install "kontra[s3]"           # S3 / MinIO
 
 | Doc | Audience |
 |-----|----------|
-| [Getting Started](docs/getting-started.md) | New users |
-| [Python API](docs/python-api.md) | Library users |
-| [Rules Reference](docs/reference/rules.md) | All 18 rules |
-| [Configuration](docs/reference/config.md) | Project setup |
-| [Advanced Topics](docs/advanced/) | Agents, state, performance |
-| [Architecture](docs/reference/architecture.md) | Contributors |
+| [Getting Started](https://kontrakit.dev/getting-started/) | New users |
+| [Python API](https://kontrakit.dev/python-api/) | Library users |
+| [Rules Reference](https://kontrakit.dev/reference/rules/) | All 18 rules |
+| [Configuration](https://kontrakit.dev/reference/config/) | Project setup |
+| [Agents and MCP](https://kontrakit.dev/advanced/agents-and-llms/) | Agent integrations |
+| [Architecture](https://kontrakit.dev/reference/architecture/) | Contributors |
 
 ## License
 

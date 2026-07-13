@@ -10,7 +10,7 @@ readme = "README.md"
 authors = [{ name = "Saevarlb" }]
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
-keywords = ["data-quality", "validation", "data-contracts", "polars", "duckdb"]
+keywords = ["data-quality", "validation", "data-contracts", "data-profiling", "mcp", "polars", "duckdb"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -35,8 +35,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Saevarl/Kontra"
-Documentation = "https://github.com/Saevarl/Kontra#readme"
+Homepage = "https://kontrakit.io/"
+Documentation = "https://kontrakit.dev/"
 Repository = "https://github.com/Saevarl/Kontra"
 Issues = "https://github.com/Saevarl/Kontra/issues"
 
