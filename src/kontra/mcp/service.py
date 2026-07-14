@@ -97,6 +97,8 @@ class KontraMCPService:
         import kontra
 
         result = kontra.health()
+        # The agent needs readiness, not the server's absolute filesystem layout.
+        result.pop("config_path", None)
         result["mcp"] = {
             "status": "ready",
             "state_backend": "postgresql",
@@ -171,8 +173,13 @@ class KontraMCPService:
                 datasource, preset=preset, columns=columns, sample=sample, save=False
             )
             if save:
-                self._profile_store.save(create_profile_state(result))
-        return result.to_dict()
+                state = create_profile_state(result)
+                # Keep the resolved-source fingerprint for history lookup while
+                # storing only the trusted alias as agent-visible provenance.
+                state.source_uri = datasource
+                state.profile.source_uri = datasource
+                self._profile_store.save(state)
+        return self._profile_payload(result.to_dict(), datasource)
 
     def validation_history(
         self,
@@ -292,7 +299,10 @@ class KontraMCPService:
             states = self._profile_store.get_history(
                 fingerprint_source(resolve_datasource(datasource)), limit=self._limit(limit)
             )
-        return [state.profile.to_dict() for state in states]
+        return [
+            self._profile_payload(state.profile.to_dict(), datasource)
+            for state in states
+        ]
 
     def profile_diff(self, datasource: str) -> dict[str, Any] | None:
         """Compare the two latest persisted profiles for a named datasource."""
@@ -307,7 +317,10 @@ class KontraMCPService:
             )
             if len(states) < 2:
                 return None
-            return ProfileDiff.compute(states[1], states[0]).to_dict()
+            payload = ProfileDiff.compute(states[1], states[0]).to_dict()
+            payload["before"]["source_uri"] = datasource
+            payload["after"]["source_uri"] = datasource
+            return payload
 
     def compare_datasets(
         self,
@@ -421,6 +434,12 @@ class KontraMCPService:
                     f"Probe input '{datasource}' has {estimate}{profile.row_count:,} rows; "
                     f"the MCP materialization limit is {self.settings.max_probe_rows:,}."
                 )
+
+    @staticmethod
+    def _profile_payload(payload: dict[str, Any], datasource: str) -> dict[str, Any]:
+        """Expose the configured alias, never a resolved URI or internal hostname."""
+        payload["source_uri"] = datasource
+        return payload
 
     @staticmethod
     def _limit(limit: int) -> int:

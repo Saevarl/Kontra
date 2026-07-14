@@ -38,7 +38,7 @@ class DuckDBMaterializer(BaseMaterializer):
     Column-pruned materialization via DuckDB httpfs → Arrow → Polars.
 
     Guarantees:
-      - **Format aware**: Parquet via read_parquet(), CSV via read_csv_auto().
+      - **Format aware**: Parquet, CSV, and newline-delimited JSON.
       - **Projection**: SELECT only requested columns at source (true pruning).
       - **Low copy**: Arrow table handoff → Polars DataFrame.
       - **Remote support**: S3/HTTP via DuckDB httpfs (loaded in session factory).
@@ -140,6 +140,8 @@ class DuckDBMaterializer(BaseMaterializer):
             return "read_parquet"
         if fmt == "csv":
             return "read_csv_auto"
+        if fmt == "json":
+            return "read_json_auto"
 
         # Fallback: attempt format autodetection; Parquet is most common.
         return "read_parquet"

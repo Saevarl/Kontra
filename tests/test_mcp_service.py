@@ -200,3 +200,60 @@ def test_failure_samples_request_only_rule_relevant_columns(tmp_path, monkeypatc
     assert captured["sample_columns"] == "relevant"
     assert payload["sample_columns"] == "relevant"
     assert payload["samples"] == [{"id": None}]
+
+
+def test_profile_returns_and_stores_only_the_configured_alias(tmp_path, monkeypatch):
+    import importlib
+    import kontra
+
+    service = _service(tmp_path)
+    service._store_lock = threading.RLock()
+    saved = []
+    service._profile_store = type(
+        "Store", (), {"save": lambda self, state: saved.append(state)}
+    )()
+    profile = type(
+        "Profile",
+        (),
+        {
+            "source_uri": "mssql://sa:secret@private-db/app/dbo.users",
+            "profiled_at": "2026-07-14T00:00:00Z",
+            "to_dict": lambda self: {
+                "source_uri": self.source_uri,
+                "dataset": {"row_count": 5},
+            },
+        },
+    )()
+
+    def fake_state(result):
+        stored_profile = type("StoredProfile", (), {"source_uri": result.source_uri})()
+        return type(
+            "State",
+            (),
+            {"source_uri": result.source_uri, "profile": stored_profile},
+        )()
+
+    monkeypatch.setattr(kontra, "profile", lambda *args, **kwargs: profile)
+    store_module = importlib.import_module("kontra.scout.store")
+    monkeypatch.setattr(store_module, "create_profile_state", fake_state)
+
+    payload = service.profile("warehouse.users")
+
+    assert payload["source_uri"] == "warehouse.users"
+    assert saved[0].source_uri == "warehouse.users"
+    assert saved[0].profile.source_uri == "warehouse.users"
+
+
+def test_health_does_not_expose_config_path(tmp_path, monkeypatch):
+    import kontra
+
+    service = _service(tmp_path)
+    monkeypatch.setattr(
+        kontra,
+        "health",
+        lambda: {"status": "ok", "config_path": "/srv/private/.kontra/config.yml"},
+    )
+
+    payload = service.health()
+
+    assert "config_path" not in payload

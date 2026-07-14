@@ -17,6 +17,26 @@ from kontra.api.compare import CompareResult
 from kontra.probes.utils import load_data
 
 
+def _changed_expr(frame: pl.DataFrame, before_col: str, after_col: str) -> pl.Expr:
+    """Compare a joined column pair without assuming identical driver dtypes."""
+    before = pl.col(before_col)
+    after = pl.col(after_col)
+    before_type = frame.schema[before_col]
+    after_type = frame.schema[after_col]
+
+    if isinstance(before_type, pl.Datetime) and isinstance(after_type, pl.Datetime):
+        before = before.dt.timestamp("us")
+        after = after.dt.timestamp("us")
+    elif (
+        before_type != after_type
+        and not (before_type.is_numeric() and after_type.is_numeric())
+    ):
+        before = before.cast(pl.String, strict=False)
+        after = after.cast(pl.String, strict=False)
+
+    return before.ne_missing(after)
+
+
 def compare(
     before: Any,
     after: Any,
@@ -344,12 +364,7 @@ def _compute_compare(
         for col in common_non_key_cols:
             after_col = f"{col}_after"
             if after_col in merged.columns:
-                # Use ne_missing to treat NULLs as different from values
-                # but NULL == NULL as same
-                change_exprs.append(
-                    (pl.col(col).ne(pl.col(after_col))) |
-                    (pl.col(col).is_null() != pl.col(after_col).is_null())
-                )
+                change_exprs.append(_changed_expr(merged, col, after_col))
 
         if change_exprs:
             # Combine all expressions with OR
@@ -393,8 +408,7 @@ def _compute_compare(
             if after_col in merged.columns and preserved_count > 0:
                 # Count rows where this column changed
                 changed_count = len(merged.filter(
-                    (pl.col(col).ne(pl.col(after_col))) |
-                    (pl.col(col).is_null() != pl.col(after_col).is_null())
+                    _changed_expr(merged, col, after_col)
                 ))
                 if changed_count > 0:
                     columns_modified.append(col)

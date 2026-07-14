@@ -50,9 +50,9 @@ def _get_db_errors() -> Tuple[type, ...]:
 # The profiler builds generic aggregate expressions (see
 # ScoutProfiler._build_column_agg_exprs). Two of them use ANSI SQL that
 # ClickHouse does not speak. We rewrite ONLY those two shapes here; everything
-# else (COUNT, COUNT(DISTINCT), MIN/MAX/AVG, STDDEV, CASE, CAST) is valid
-# ClickHouse as-is. We must NOT change the profiler, so the adaptation lives
-# entirely in this backend.
+# else (COUNT, COUNT(DISTINCT), MIN/MAX/AVG, CASE, CAST) is valid ClickHouse
+# as-is. We must NOT change the profiler, so the adaptation lives entirely in
+# this backend.
 # --------------------------------------------------------------------------- #
 
 # PERCENTILE_CONT(<frac>) WITHIN GROUP (ORDER BY <inner>)  ->  quantileExact(<frac>)(<inner>)
@@ -73,6 +73,10 @@ _LENGTH_RE = re.compile(r"\bLENGTH\s*\(", re.IGNORECASE)
 # to Nullable(Float64) instead. FLOAT only appears inside this CAST shape.
 _CAST_FLOAT_RE = re.compile(r"\bAS\s+FLOAT\s*\)", re.IGNORECASE)
 
+# PostgreSQL's STDDEV is sample standard deviation. ClickHouse exposes the same
+# statistic as stddevSamp and does not provide a STDDEV alias.
+_STDDEV_RE = re.compile(r"\bSTDDEV\s*\(", re.IGNORECASE)
+
 
 def _adapt_expr(expr: str) -> str:
     """Rewrite an ANSI aggregate expression into equivalent ClickHouse SQL."""
@@ -81,6 +85,7 @@ def _adapt_expr(expr: str) -> str:
     )
     expr = _LENGTH_RE.sub("lengthUTF8(", expr)
     expr = _CAST_FLOAT_RE.sub("AS Nullable(Float64))", expr)
+    expr = _STDDEV_RE.sub("stddevSamp(", expr)
     return expr
 
 
@@ -207,8 +212,9 @@ class ClickHouseBackend:
         Run all column aggregates in a single query and return {alias: value}.
 
         The profiler passes generic ANSI-ish expressions; ClickHouse-incompatible
-        shapes (PERCENTILE_CONT ... WITHIN GROUP, LENGTH) are rewritten via
-        ``_adapt_expr``. All computation happens server-side; only scalars return.
+        shapes (PERCENTILE_CONT ... WITHIN GROUP, LENGTH, STDDEV) are rewritten
+        via ``_adapt_expr``. All computation happens server-side; only scalars
+        return.
         """
         if not exprs:
             return {}

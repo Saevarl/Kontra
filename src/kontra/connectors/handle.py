@@ -153,6 +153,8 @@ class DatasetHandle:
             fmt = "parquet"
         elif lower.endswith(".csv") or lower.endswith(".tsv"):
             fmt = "csv"  # TSV is CSV with tab separator (auto-detected by Polars)
+        elif lower.endswith((".json", ".jsonl", ".ndjson")):
+            fmt = "json"
         else:
             fmt = "unknown"
 

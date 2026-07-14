@@ -271,7 +271,7 @@ class TestAzureSchemeVariants:
         ("abfs://c@a.dfs.core.windows.net/data.PARQUET", "parquet"),
         ("abfs://c@a.dfs.core.windows.net/data.csv", "csv"),
         ("abfs://c@a.dfs.core.windows.net/data.CSV", "csv"),
-        ("abfs://c@a.dfs.core.windows.net/data.json", "unknown"),
+        ("abfs://c@a.dfs.core.windows.net/data.json", "json"),
     ])
     def test_format_detection(self, uri, expected_format):
         """File format is correctly detected from URI."""

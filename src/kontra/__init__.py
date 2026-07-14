@@ -2227,129 +2227,20 @@ def list_rules() -> List[Dict[str, Any]]:
         for rule in rules:
             print(f"{rule['name']}: {rule['description']}")
     """
-    from kontra.rule_defs.registry import RULE_REGISTRY
+    from kontra.rule_catalog import list_rule_summaries
 
-    # Rule metadata - manually maintained for quality descriptions
-    # This is better than parsing docstrings which may be inconsistent
-    RULE_METADATA = {
-        "not_null": {
-            "description": "Fails where column contains NULL values (optionally NaN)",
-            "params": {"column": "required", "include_nan": "optional (default: False)"},
-            "scope": "column",
-        },
-        "unique": {
-            "description": "Fails where column contains duplicate values",
-            "params": {"column": "required"},
-            "scope": "column",
-        },
-        "allowed_values": {
-            "description": "Fails where column contains values not in allowed list",
-            "params": {"column": "required", "values": "required (list)"},
-            "scope": "column",
-        },
-        "disallowed_values": {
-            "description": "Fails where column contains values that ARE in the disallowed list",
-            "params": {"column": "required", "values": "required (list)"},
-            "scope": "column",
-        },
-        "range": {
-            "description": "Fails where column values are outside [min, max] range",
-            "params": {"column": "required", "min": "optional", "max": "optional"},
-            "scope": "column",
-        },
-        "length": {
-            "description": "Fails where string length is outside [min, max] bounds",
-            "params": {"column": "required", "min": "optional", "max": "optional"},
-            "scope": "column",
-        },
-        "regex": {
-            "description": "Fails where column values don't match regex pattern",
-            "params": {"column": "required", "pattern": "required"},
-            "scope": "column",
-        },
-        "contains": {
-            "description": "Fails where column values don't contain the substring",
-            "params": {"column": "required", "substring": "required"},
-            "scope": "column",
-        },
-        "starts_with": {
-            "description": "Fails where column values don't start with the prefix",
-            "params": {"column": "required", "prefix": "required"},
-            "scope": "column",
-        },
-        "ends_with": {
-            "description": "Fails where column values don't end with the suffix",
-            "params": {"column": "required", "suffix": "required"},
-            "scope": "column",
-        },
-        "dtype": {
-            "description": "Fails if column data type doesn't match expected type",
-            "params": {"column": "required", "type": "required"},
-            "scope": "column",
-        },
-        "min_rows": {
-            "description": "Fails if dataset has fewer than threshold rows",
-            "params": {"threshold": "required (int)"},
-            "scope": "dataset",
-        },
-        "max_rows": {
-            "description": "Fails if dataset has more than threshold rows",
-            "params": {"threshold": "required (int)"},
-            "scope": "dataset",
-        },
-        "freshness": {
-            "description": "Fails if timestamp column is older than max_age",
-            "params": {"column": "required", "max_age": "required (e.g., '24h', '7d')"},
-            "scope": "column",
-        },
-        "custom_sql_check": {
-            "description": "Escape hatch: run arbitrary SQL that returns violation count",
-            "params": {"sql": "required", "threshold": "optional (default: 0)"},
-            "scope": "dataset",
-        },
-        "compare": {
-            "description": "Fails where left column doesn't satisfy comparison with right column",
-            "params": {
-                "left": "required (column name)",
-                "right": "required (column name)",
-                "op": "required (>, >=, <, <=, ==, !=)",
-            },
-            "scope": "cross-column",
-        },
-        "conditional_not_null": {
-            "description": "Fails where column is NULL when a condition is met",
-            "params": {
-                "column": "required (column to check)",
-                "when": "required (e.g., \"status == 'shipped'\")",
-            },
-            "scope": "cross-column",
-        },
-        "conditional_range": {
-            "description": "Fails where column is outside range when a condition is met",
-            "params": {
-                "column": "required (column to check)",
-                "when": "required (e.g., \"customer_type == 'premium'\")",
-                "min": "optional (minimum value, inclusive)",
-                "max": "optional (maximum value, inclusive)",
-            },
-            "scope": "cross-column",
-        },
-    }
+    return list_rule_summaries()
 
-    # Use RULE_METADATA as source of truth (avoids triggering heavy imports)
-    # All 18 built-in rules are documented in RULE_METADATA
-    result = []
-    for name in sorted(RULE_METADATA.keys()):
-        meta = RULE_METADATA[name]
-        info = {
-            "name": name,
-            "description": meta.get("description", ""),
-            "params": meta.get("params", {}),
-            "scope": meta.get("scope", "unknown"),
-        }
-        result.append(info)
 
-    return result
+def describe_rule(name: str) -> Dict[str, Any]:
+    """Return exact, version-matched semantics for one built-in rule.
+
+    The result includes parameters, failure and NULL behavior, counting
+    semantics, tally support, and a valid contract YAML example.
+    """
+    from kontra.rule_catalog import describe_rule_spec
+
+    return describe_rule_spec(name)
 
 
 def health() -> Dict[str, Any]:
@@ -2443,6 +2334,7 @@ __all__ = [
     "set_config",
     "get_config_path",
     "list_rules",
+    "describe_rule",
     "health",
     # Result types
     "ValidationResult",

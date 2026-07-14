@@ -2,7 +2,7 @@
 """
 DuckDB backend for Scout profiler.
 
-Supports Parquet and CSV files (local + S3/HTTP).
+Supports Parquet, CSV, and newline-delimited JSON files (local + S3/HTTP).
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from kontra.engine.backends.duckdb_utils import lit_str
 
 class DuckDBBackend:
     """
-    DuckDB-based profiler backend for Parquet and CSV files.
+    DuckDB-based profiler backend for Parquet, CSV, and JSON files.
 
     Features:
     - Parquet metadata extraction (row count from footer)
@@ -187,6 +187,8 @@ class DuckDBBackend:
             read_fn = f"read_parquet({lit_str(uri)})"
         elif fmt == "csv":
             read_fn = f"read_csv_auto({lit_str(uri)})"
+        elif fmt == "json":
+            read_fn = f"read_json_auto({lit_str(uri)})"
         else:
             # Try parquet first
             read_fn = f"read_parquet({lit_str(uri)})"
@@ -229,6 +231,8 @@ class DuckDBBackend:
                     elif endpoint.startswith("https://"):
                         endpoint = endpoint[8:]
                         kwargs["scheme"] = "https"
+                    elif opts.get("s3_use_ssl", "").lower() == "false":
+                        kwargs["scheme"] = "http"
                     kwargs["endpoint_override"] = endpoint
                 if opts.get("s3_url_style", "").lower() == "path" or opts.get("s3_endpoint"):
                     kwargs["force_virtual_addressing"] = False

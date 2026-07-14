@@ -2,6 +2,8 @@
 """Tests for the compare probe."""
 
 import json
+from datetime import datetime, timezone
+
 import pytest
 import polars as pl
 
@@ -58,6 +60,37 @@ class TestCompareBasic:
         assert result.unchanged_rows == 2
         assert "value" in result.columns_modified
         assert result.modified_fraction["value"] == pytest.approx(1/3)
+
+    def test_compare_timezone_aware_and_naive_datetimes(self):
+        before = pl.DataFrame({
+            "id": [1, 2],
+            "updated_at": [
+                datetime(2026, 7, 14, 1, 0, tzinfo=timezone.utc),
+                datetime(2026, 7, 14, 2, 0, tzinfo=timezone.utc),
+            ],
+        })
+        after = pl.DataFrame({
+            "id": [1, 2],
+            "updated_at": [
+                datetime(2026, 7, 14, 1, 0),
+                datetime(2026, 7, 14, 3, 0),
+            ],
+        })
+
+        result = compare(before, after, key="id", sample_limit=0)
+
+        assert result.changed_rows == 1
+        assert result.unchanged_rows == 1
+        assert result.modified_fraction["updated_at"] == pytest.approx(0.5)
+
+    def test_compare_equivalent_numeric_driver_dtypes(self):
+        before = pl.DataFrame({"id": [1, 2], "amount": [1, 2]})
+        after = pl.DataFrame({"id": [1, 2], "amount": [1.0, 2.0]})
+
+        result = compare(before, after, key="id", sample_limit=0)
+
+        assert result.changed_rows == 0
+        assert result.columns_modified == []
 
     def test_compare_row_explosion(self):
         """Detect row explosion from JOIN (classic 1:N issue)."""
