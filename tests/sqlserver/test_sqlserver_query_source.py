@@ -26,7 +26,8 @@ class TestQuerySourceSqlServer:
         assert r.added == 1  # id 4
         assert r.preserved == 2  # ids 2, 3
         assert r.changed_rows == 1  # id 3: 300 -> 999
-        assert r.execution_tier == "polars"
+        # Both query sources share one SQL Server engine -> set-based SQL (Mode A).
+        assert r.execution_tier == "sql"
         assert r.samples_dropped_keys == []  # aggregate-only by default
 
     def test_relationship_query_vs_query(self, sqlserver_uri):

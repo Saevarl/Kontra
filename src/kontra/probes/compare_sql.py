@@ -3,19 +3,23 @@
 
 When both sides of ``compare`` resolve to the SAME database engine, the counts
 can be computed with set-based SQL (one join, per-column ``SUM(CASE ...)``) with
-zero rows moved to the client. This must return the SAME counts as the Polars
+zero rows moved to the client. This MUST return the same counts as the Polars
 reference path — and faithfully replicating Polars value-semantics in arbitrary
 SQL is not always possible (type coercion, collation, NULL-key policy, dialect
 join quirks). So Mode A fires only inside a provably-safe envelope and otherwise
 raises ``_FallbackToPolars`` — the caller then runs the proven Polars path.
 
-Safe envelope (v1, PostgreSQL):
-  - both sides same PostgreSQL engine (same connection, or same host/port/db)
-  - symmetric key (same column names on both sides)
-  - aggregate-only (sample_limit == 0)
-  - no NULL key values (checked at runtime)
-  - common non-key columns have identical types on both sides (checked at runtime)
-Anything else -> fallback. Any SQL error -> fallback.
+Design (PostgreSQL + SQL Server):
+  - Query sources are materialized ONCE into a session temp table (so a
+    non-deterministic SELECT can't make different metrics disagree, and to avoid
+    relying on CTE-materialization guarantees SQL Server does not provide).
+    Table sources are referenced directly (two-part on PG, three-part on MSSQL
+    so a cross-database same-server compare works).
+  - String comparisons and string key grouping use a binary collation on SQL
+    Server so case/space/accent match Polars' exact semantics.
+
+Safe envelope: same engine, symmetric key, aggregate-only. Runtime guards fall
+back on NULL key values, cross-type common columns, or any SQL error.
 """
 
 from __future__ import annotations
@@ -25,21 +29,22 @@ from typing import Any, Dict, List, Optional, Tuple
 from kontra.api.compare import CompareResult
 from kontra.engine.sql_ir import esc_ident
 
+# SQL Server binary collation: byte-exact, case/accent/space sensitive.
+_MSSQL_BIN = "Latin1_General_BIN2"
+# PostgreSQL text-like type OIDs (psycopg type_code).
+_PG_TEXT_OIDS = {18, 19, 25, 1042, 1043, 1015, 1014}
+
 
 class _FallbackToPolars(Exception):
     """Mode A cannot guarantee Polars-equivalent counts; use the Polars path."""
 
 
 # --------------------------------------------------------------------------- #
-# Planning: decide whether both sides are one engine we can push down to.
+# Planning
 # --------------------------------------------------------------------------- #
 
 def _as_db_handle(source: Any, table: Optional[str]):
-    """Resolve a compare source to a DatasetHandle if it is a database source.
-
-    Returns None for DataFrames / files / anything not backed by a DB engine,
-    which makes the pair ineligible for set-based compare.
-    """
+    """Resolve a compare source to a DatasetHandle if it is a database source."""
     import polars as pl
 
     from kontra.connectors.handle import DatasetHandle
@@ -54,10 +59,9 @@ def _as_db_handle(source: Any, table: Optional[str]):
 
         uri = _resolve_named_datasource(source)
         lower = uri.lower()
-        if lower.startswith(("postgres://", "postgresql://", "mssql://", "clickhouse://", "clickhouses://")):
+        if lower.startswith(("postgres://", "postgresql://", "mssql://", "sqlserver://")):
             return DatasetHandle.from_uri(uri)
-        return None  # file / cloud path
-    # In-memory (pandas/list/dict) is not a DB source; a live connection is.
+        return None
     from kontra.connectors.detection import is_database_connection
 
     if is_database_connection(source):
@@ -67,36 +71,32 @@ def _as_db_handle(source: Any, table: Optional[str]):
     return None
 
 
-_DIALECT = {
-    "postgres": "postgres",
-    "postgresql": "postgres",
-    "query": None,  # resolved via handle.dialect
-}
-
-
 def _dialect_of(handle) -> Optional[str]:
     scheme = handle.scheme
     if scheme in ("postgres", "postgresql"):
         return "postgres"
-    # query / byoc handles carry the flavor in `dialect`
-    d = getattr(handle, "dialect", None)
+    if scheme in ("mssql", "sqlserver"):
+        return "sqlserver"
+    d = getattr(handle, "dialect", None)  # query / byoc carry flavor here
     if d in ("postgresql", "postgres"):
         return "postgres"
-    return None  # sqlserver / clickhouse: not implemented in v1 -> no Mode A
+    if d in ("sqlserver", "mssql"):
+        return "sqlserver"
+    return None
 
 
-def _engine_key(handle) -> Optional[Tuple]:
-    """A hashable identity for 'same engine'. None if it cannot be determined."""
+def _engine_key(handle, dialect: str) -> Optional[Tuple]:
+    """Hashable 'same engine' identity. SQL Server drops database so a
+    cross-database same-server compare is eligible (via three-part names)."""
     if handle.external_conn is not None:
         return ("conn", id(handle.external_conn))
     dp = handle.db_params
     if dp is not None:
-        return (
-            "params",
-            getattr(dp, "host", None),
-            getattr(dp, "port", None),
-            getattr(dp, "database", getattr(dp, "dbname", None)),
-        )
+        host = getattr(dp, "host", None)
+        port = getattr(dp, "port", None)
+        if dialect == "sqlserver":
+            return ("params", host, port)
+        return ("params", host, port, getattr(dp, "database", getattr(dp, "dbname", None)))
     return None
 
 
@@ -111,9 +111,9 @@ def plan_compare(
 ) -> Optional[Dict[str, Any]]:
     """Return a Mode-A plan if the pair is eligible, else None (use Polars)."""
     if sample_limit and sample_limit > 0:
-        return None  # v1: samples come from the Polars path
+        return None
     if before_key != after_key:
-        return None  # v1: symmetric keys only
+        return None
 
     hb = _as_db_handle(before, before_table)
     ha = _as_db_handle(after, after_table)
@@ -123,8 +123,11 @@ def plan_compare(
     db = _dialect_of(hb)
     if db is None or db != _dialect_of(ha):
         return None
+    if db not in ("postgres", "sqlserver"):
+        return None
 
-    kb, ka = _engine_key(hb), _engine_key(ha)
+    kb = _engine_key(hb, db)
+    ka = _engine_key(ha, db)
     if kb is None or kb != ka:
         return None
 
@@ -132,184 +135,263 @@ def plan_compare(
 
 
 # --------------------------------------------------------------------------- #
-# PostgreSQL set-based execution
+# Dialect helpers
 # --------------------------------------------------------------------------- #
 
-def _relation(handle, dialect: str) -> str:
-    """A FROM-able relation for a handle: a parenthesized query or a table."""
-    sql = getattr(handle, "sql", None)
-    if sql:
-        return f"({sql})"
-    # table source
-    if handle.external_conn is not None and handle.table_ref:
-        from kontra.connectors.detection import parse_table_reference, get_default_schema, POSTGRESQL
+def _q(name: str, dialect: str) -> str:
+    return esc_ident(name, dialect)
 
-        _db, schema, table = parse_table_reference(handle.table_ref)
-        schema = schema or get_default_schema(POSTGRESQL)
-        return f"{esc_ident(schema, dialect)}.{esc_ident(table, dialect)}"
+
+def _is_char(type_code: Any, dialect: str) -> bool:
+    if dialect == "postgres":
+        return type_code in _PG_TEXT_OIDS
+    import pymssql
+
+    return type_code == pymssql.STRING
+
+
+def _char_cmp(expr: str, is_char: bool, dialect: str) -> str:
+    """Byte-exact comparison operand. SQL Server string ``=``/``<>`` ignore
+    trailing spaces and honor a (often case-insensitive) collation; casting to
+    VARBINARY makes the comparison byte-exact, matching Polars. PostgreSQL text
+    comparison is already byte-exact under a deterministic collation."""
+    if dialect == "sqlserver" and is_char:
+        return f"CAST({expr} AS VARBINARY(MAX))"
+    return expr
+
+
+def _table_ref(handle, dialect: str) -> str:
+    """A direct table reference (two-part PG, three-part MSSQL)."""
+    if handle.external_conn is not None and handle.table_ref:
+        from kontra.connectors.detection import (
+            POSTGRESQL, SQLSERVER, get_default_schema, parse_table_reference,
+        )
+
+        db, schema, table = parse_table_reference(handle.table_ref)
+        default = SQLSERVER if dialect == "sqlserver" else POSTGRESQL
+        schema = schema or get_default_schema(default)
+        parts = [schema, table]
+        if dialect == "sqlserver" and db:
+            parts = [db, schema, table]
+        return ".".join(_q(p, dialect) for p in parts)
     dp = handle.db_params
     if dp is not None:
-        return f"{esc_ident(dp.schema, dialect)}.{esc_ident(dp.table, dialect)}"
-    raise _FallbackToPolars("cannot resolve relation for handle")
+        if dialect == "sqlserver":
+            return ".".join(_q(p, dialect) for p in (dp.database, dp.schema, dp.table))
+        return f"{_q(dp.schema, dialect)}.{_q(dp.table, dialect)}"
+    raise _FallbackToPolars("cannot resolve table reference")
 
 
-def _distinct_pred(bc: str, ac: str) -> str:
-    """NULL-safe 'values differ' predicate matching Polars ne_missing.
+def _cursor_exec(conn, sql: str, fetch: str = "none"):
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        if fetch == "one":
+            return cur.fetchone(), [d[0] for d in (cur.description or [])]
+        if fetch == "desc":
+            return [(d[0], d[1]) for d in (cur.description or [])]
+        return None
+    finally:
+        cur.close()
 
-    TRUE when exactly one is NULL, or both are non-NULL and unequal. Written
-    explicitly (no IS DISTINCT FROM) so it ports across dialects.
-    """
+
+def _prepare(conn, handle, dialect: str, side: str, temps: List[str]) -> str:
+    """Return a referable relation for a handle; materialize query sources to a
+    session temp table (recorded in `temps` for cleanup)."""
+    sql = getattr(handle, "sql", None)
+    if not sql:
+        return _table_ref(handle, dialect)
+    if dialect == "postgres":
+        name = f"_kontra_cmp_{side}"
+        _cursor_exec(conn, f"DROP TABLE IF EXISTS {name}")
+        _cursor_exec(conn, f"CREATE TEMP TABLE {name} AS {sql}")
+        temps.append(name)
+        return name
+    # sqlserver
+    name = f"#kontra_cmp_{side}"
+    _cursor_exec(conn, f"IF OBJECT_ID('tempdb..{name}') IS NOT NULL DROP TABLE {name}")
+    _cursor_exec(conn, f"SELECT * INTO {name} FROM ({sql}) _kontra_src")
+    temps.append(name)
+    return name
+
+
+def _describe(conn, ref: str, dialect: str) -> List[Tuple[str, Any]]:
+    if dialect == "postgres":
+        sql = f"SELECT * FROM {ref} AS _kontra_d LIMIT 0"
+    else:
+        sql = f"SELECT TOP 0 * FROM {ref} AS _kontra_d"
+    return _cursor_exec(conn, sql, fetch="desc")
+
+
+def _distinct_pred(bexpr: str, aexpr: str, cmp=None) -> str:
+    """NULL-safe 'values differ' predicate matching Polars ne_missing. Written
+    explicitly (no IS DISTINCT FROM) so it ports across dialects. IS NULL uses the
+    raw column; the ``<>`` operands go through ``cmp`` (byte-exact for strings)."""
+    c = cmp or (lambda e: e)
     return (
-        f"(({bc} IS NULL AND {ac} IS NOT NULL) "
-        f"OR ({ac} IS NULL AND {bc} IS NOT NULL) "
-        f"OR ({bc} IS NOT NULL AND {ac} IS NOT NULL AND {bc} <> {ac}))"
+        f"(({bexpr} IS NULL AND {aexpr} IS NOT NULL) "
+        f"OR ({aexpr} IS NULL AND {bexpr} IS NOT NULL) "
+        f"OR ({bexpr} IS NOT NULL AND {aexpr} IS NOT NULL AND {c(bexpr)} <> {c(aexpr)}))"
     )
 
 
-def _describe(cur, relation: str) -> List[Tuple[str, Any]]:
-    """(name, type_oid) for each column of a relation, without loading data."""
-    cur.execute(f"SELECT * FROM {relation} AS _kontra_desc LIMIT 0")
-    return [(d[0], d[1]) for d in cur.description] if cur.description else []
+def _drop_temps(conn, temps: List[str], dialect: str) -> None:
+    for name in temps:
+        try:
+            if dialect == "postgres":
+                _cursor_exec(conn, f"DROP TABLE IF EXISTS {name}")
+            else:
+                _cursor_exec(conn, f"IF OBJECT_ID('tempdb..{name}') IS NOT NULL DROP TABLE {name}")
+        except Exception:
+            pass
 
+
+def _rollback(conn) -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# Execution
+# --------------------------------------------------------------------------- #
 
 def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
     """Compute a CompareResult with set-based SQL. Raises _FallbackToPolars when
     it cannot guarantee equivalence."""
     dialect = plan["dialect"]
-    if dialect != "postgres":
-        raise _FallbackToPolars(f"dialect {dialect} not implemented")
-
     hb, ha = plan["before"], plan["after"]
     key: List[str] = plan["key"]
+    conn_label = "postgres" if dialect == "postgres" else "sqlserver"
 
     from kontra.connectors.db_utils import get_connection_ctx
 
-    q = lambda name: esc_ident(name, dialect)  # noqa: E731
+    with get_connection_ctx(hb, conn_label) as conn:
+        temps: List[str] = []
+        try:
+            b_ref = _prepare(conn, hb, dialect, "b", temps)
+            a_ref = _prepare(conn, ha, dialect, "a", temps)
 
-    with get_connection_ctx(hb, "postgres") as conn:
-        b_rel = _relation(hb, dialect)
-        a_rel = _relation(ha, dialect)
+            b_cols = _describe(conn, b_ref, dialect)
+            a_cols = _describe(conn, a_ref, dialect)
+            b_names = [n for n, _ in b_cols]
+            a_names = [n for n, _ in a_cols]
+            b_types = dict(b_cols)
+            a_types = dict(a_cols)
 
-        with conn.cursor() as cur:
-            b_cols = _describe(cur, b_rel)
-            a_cols = _describe(cur, a_rel)
-        b_names = [n for n, _ in b_cols]
-        a_names = [n for n, _ in a_cols]
-        b_types = dict(b_cols)
-        a_types = dict(a_cols)
+            for k in key:
+                if k not in b_names:
+                    raise ValueError(f"Key column '{k}' not found in before dataset")
+                if k not in a_names:
+                    raise ValueError(f"Key column '{k}' not found in after dataset")
 
-        for k in key:
-            if k not in b_names:
-                raise ValueError(f"Key column '{k}' not found in before dataset")
-            if k not in a_names:
-                raise ValueError(f"Key column '{k}' not found in after dataset")
+            keyset = set(key)
+            b_nonkey = [c for c in b_names if c not in keyset]
+            a_nonkey = [c for c in a_names if c not in keyset]
+            common = sorted(set(b_nonkey) & set(a_nonkey))
+            for c in common:
+                if b_types.get(c) != a_types.get(c):
+                    raise _FallbackToPolars(f"cross-type common column '{c}'")
 
-        keyset = set(key)
-        b_nonkey = [c for c in b_names if c not in keyset]
-        a_nonkey = [c for c in a_names if c not in keyset]
-        common = sorted(set(b_nonkey) & set(a_nonkey))
-        # Cross-type common columns: Polars would string-cast and may see changes
-        # SQL cannot faithfully mirror; defer to Polars.
-        for c in common:
-            if b_types.get(c) != a_types.get(c):
-                raise _FallbackToPolars(f"cross-type common column '{c}'")
+            columns_added = sorted(set(a_nonkey) - set(b_nonkey))
+            columns_removed = sorted(set(b_nonkey) - set(a_nonkey))
 
-        columns_added = sorted(set(a_nonkey) - set(b_nonkey))
-        columns_removed = sorted(set(b_nonkey) - set(a_nonkey))
+            # SQL Server char-key equality (collation + trailing-space padding)
+            # is hard to match byte-for-byte in GROUP BY/DISTINCT/JOIN; defer.
+            if dialect == "sqlserver":
+                for k in key:
+                    if _is_char(b_types[k], dialect):
+                        raise _FallbackToPolars(f"char key column '{k}' on SQL Server")
 
-        key_sql = ", ".join(q(k) for k in key)
-        key_null = " OR ".join(f"{q(k)} IS NULL" for k in key)
-        cte = f"WITH b AS MATERIALIZED (SELECT * FROM {b_rel} AS _b), " \
-              f"a AS MATERIALIZED (SELECT * FROM {a_rel} AS _a) "
+            key_out = ", ".join(_q(k, dialect) for k in key)
+            key_null = " OR ".join(f"{_q(k, dialect)} IS NULL" for k in key)
 
-        with conn.cursor() as cur:
-            cur.execute(
-                cte + f"""
+            stats_sql = f"""
                 SELECT
-                  (SELECT count(*) FROM b) AS before_rows,
-                  (SELECT count(*) FROM a) AS after_rows,
-                  (SELECT count(*) FROM b WHERE {key_null}) AS b_null_keys,
-                  (SELECT count(*) FROM a WHERE {key_null}) AS a_null_keys,
-                  (SELECT count(*) FROM (SELECT DISTINCT {key_sql} FROM b) t) AS unique_before,
-                  (SELECT count(*) FROM (SELECT DISTINCT {key_sql} FROM a) t) AS unique_after,
+                  (SELECT count(*) FROM {b_ref}) AS before_rows,
+                  (SELECT count(*) FROM {a_ref}) AS after_rows,
+                  (SELECT count(*) FROM {b_ref} WHERE {key_null}) AS b_null_keys,
+                  (SELECT count(*) FROM {a_ref} WHERE {key_null}) AS a_null_keys,
+                  (SELECT count(*) FROM (SELECT DISTINCT {key_out} FROM {b_ref}) t) AS unique_before,
+                  (SELECT count(*) FROM (SELECT DISTINCT {key_out} FROM {a_ref}) t) AS unique_after,
                   (SELECT count(*) FROM (
-                     SELECT DISTINCT {key_sql} FROM b
-                     INTERSECT SELECT DISTINCT {key_sql} FROM a) t) AS preserved,
+                     SELECT DISTINCT {key_out} FROM {b_ref}
+                     INTERSECT SELECT DISTINCT {key_out} FROM {a_ref}) t) AS preserved,
                   (SELECT count(*) FROM (
-                     SELECT {key_sql} FROM a GROUP BY {key_sql} HAVING count(*) > 1) t
-                  ) AS duplicated_after
-                """
+                     SELECT {key_out} FROM {a_ref} GROUP BY {key_out} HAVING count(*) > 1) t
+                  ) AS dup_after
+            """
+            row, _ = _cursor_exec(conn, stats_sql, fetch="one")
+            (before_rows, after_rows, b_null_keys, a_null_keys,
+             unique_before, unique_after, preserved, duplicated_after) = row
+
+            if b_null_keys or a_null_keys:
+                raise _FallbackToPolars("NULL key values present")
+
+            dropped = unique_before - preserved
+            added = unique_after - preserved
+
+            on_clause = " AND ".join(
+                f"b.{_q(k, dialect)} = a.{_q(k, dialect)}" for k in key
             )
-            row = cur.fetchone()
-        (before_rows, after_rows, b_null_keys, a_null_keys,
-         unique_before, unique_after, preserved, duplicated_after) = row
 
-        # NULL keys: distinct/intersect vs join disagree; defer to Polars.
-        if b_null_keys or a_null_keys:
-            raise _FallbackToPolars("NULL key values present")
+            def cmp_pred(c: str) -> str:
+                is_char = _is_char(b_types[c], dialect)
+                cmp = (lambda e: _char_cmp(e, is_char, dialect)) if is_char else None
+                return _distinct_pred("b." + _q(c, dialect), "a." + _q(c, dialect), cmp)
 
-        dropped = unique_before - preserved
-        added = unique_after - preserved
-
-        # Change stats over the row-level join (duplicate keys cross-multiply).
-        m = 0
-        changed_rows = 0
-        per_col_changed: Dict[str, int] = {}
-        if preserved > 0 and common:
-            on_clause = " AND ".join(f"b.{q(k)} = a.{q(k)}" for k in key)
-            row_pred = " OR ".join(_distinct_pred(f"b.{q(c)}", f"a.{q(c)}") for c in common)
-            col_sums = ", ".join(
-                f"COALESCE(SUM(CASE WHEN {_distinct_pred(f'b.{q(c)}', f'a.{q(c)}')} "
-                f"THEN 1 ELSE 0 END), 0) AS {q('chg__' + c)}"
-                for c in common
-            )
-            with conn.cursor() as cur:
-                cur.execute(
-                    cte + f"""
-                    SELECT
-                      count(*) AS m,
+            m = 0
+            changed_rows = 0
+            per_col_changed: Dict[str, int] = {}
+            if preserved > 0 and common:
+                row_pred = " OR ".join(cmp_pred(c) for c in common)
+                col_sums = ", ".join(
+                    f"COALESCE(SUM(CASE WHEN {cmp_pred(c)} THEN 1 ELSE 0 END), 0) AS {_q('chg__' + c, dialect)}"
+                    for c in common
+                )
+                change_sql = f"""
+                    SELECT count(*) AS m,
                       COALESCE(SUM(CASE WHEN {row_pred} THEN 1 ELSE 0 END), 0) AS changed_rows,
                       {col_sums}
-                    FROM b JOIN a ON {on_clause}
-                    """
+                    FROM {b_ref} b JOIN {a_ref} a ON {on_clause}
+                """
+                crow, cnames = _cursor_exec(conn, change_sql, fetch="one")
+                cmap = dict(zip(cnames, crow))
+                m = int(cmap["m"])
+                changed_rows = int(cmap["changed_rows"])
+                for c in common:
+                    per_col_changed[c] = int(cmap["chg__" + c])
+            elif preserved > 0:
+                crow, _ = _cursor_exec(
+                    conn, f"SELECT count(*) FROM {b_ref} b JOIN {a_ref} a ON {on_clause}", fetch="one"
                 )
-                crow = cur.fetchone()
-                cnames = [d[0] for d in cur.description]
-            result_map = dict(zip(cnames, crow))
-            m = int(result_map["m"])
-            changed_rows = int(result_map["changed_rows"])
-            for c in common:
-                per_col_changed[c] = int(result_map["chg__" + c])
-        elif preserved > 0:
-            # preserved rows but no common non-key columns -> nothing can change
-            on_clause = " AND ".join(f"b.{q(k)} = a.{q(k)}" for k in key)
-            with conn.cursor() as cur:
-                cur.execute(cte + f"SELECT count(*) FROM b JOIN a ON {on_clause}")
-                m = int(cur.fetchone()[0])
+                m = int(crow[0])
 
-        unchanged_rows = m - changed_rows
+            unchanged_rows = m - changed_rows
+            columns_modified = [c for c in common if per_col_changed.get(c, 0) > 0]
+            modified_fraction = {c: per_col_changed[c] / m for c in columns_modified if m > 0}
 
-        columns_modified = [c for c in common if per_col_changed.get(c, 0) > 0]
-        modified_fraction = {
-            c: per_col_changed[c] / m for c in columns_modified if m > 0
-        }
-
-        # Nullability delta (over full tables) for modified + added columns.
-        nullability_delta: Dict[str, Dict[str, Optional[float]]] = {}
-        need_before = list(columns_modified)
-        need_after = list(columns_modified) + list(columns_added)
-        b_nulls = _null_counts(conn, cte, "b", need_before, q) if need_before else {}
-        a_nulls = _null_counts(conn, cte, "a", need_after, q) if need_after else {}
-        for c in columns_modified:
-            nullability_delta[c] = {
-                "before": (b_nulls.get(c, 0) / before_rows) if before_rows else 0.0,
-                "after": (a_nulls.get(c, 0) / after_rows) if after_rows else 0.0,
-            }
-        for c in columns_added:
-            nullability_delta[c] = {
-                "before": None,
-                "after": (a_nulls.get(c, 0) / after_rows) if after_rows else 0.0,
-            }
+            nullability_delta: Dict[str, Dict[str, Optional[float]]] = {}
+            need_before = list(columns_modified)
+            need_after = list(columns_modified) + list(columns_added)
+            b_nulls = _null_counts(conn, b_ref, need_before, dialect) if need_before else {}
+            a_nulls = _null_counts(conn, a_ref, need_after, dialect) if need_after else {}
+            for c in columns_modified:
+                nullability_delta[c] = {
+                    "before": (b_nulls.get(c, 0) / before_rows) if before_rows else 0.0,
+                    "after": (a_nulls.get(c, 0) / after_rows) if after_rows else 0.0,
+                }
+            for c in columns_added:
+                nullability_delta[c] = {
+                    "before": None,
+                    "after": (a_nulls.get(c, 0) / after_rows) if after_rows else 0.0,
+                }
+        except Exception:
+            _rollback(conn)
+            raise
+        finally:
+            _drop_temps(conn, temps, dialect)
 
     row_delta = after_rows - before_rows
     row_ratio = after_rows / before_rows if before_rows > 0 else float("inf")
@@ -341,16 +423,13 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
     )
 
 
-def _null_counts(conn, cte: str, alias: str, cols: List[str], q) -> Dict[str, int]:
-    """NULL count per column over CTE `alias` (b or a)."""
+def _null_counts(conn, ref: str, cols: List[str], dialect: str) -> Dict[str, int]:
     if not cols:
         return {}
     sums = ", ".join(
-        f"SUM(CASE WHEN {q(c)} IS NULL THEN 1 ELSE 0 END) AS {q('n__' + c)}" for c in cols
+        f"SUM(CASE WHEN {_q(c, dialect)} IS NULL THEN 1 ELSE 0 END) AS {_q('n__' + c, dialect)}"
+        for c in cols
     )
-    with conn.cursor() as cur:
-        cur.execute(cte + f"SELECT {sums} FROM {alias}")
-        row = cur.fetchone()
-        names = [d[0] for d in cur.description]
+    row, names = _cursor_exec(conn, f"SELECT {sums} FROM {ref}", fetch="one")
     m = dict(zip(names, row))
     return {c: int(m["n__" + c] or 0) for c in cols}
