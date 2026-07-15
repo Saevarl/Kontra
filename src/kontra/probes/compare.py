@@ -14,6 +14,12 @@ from typing import Any, Dict, List, Optional, Union
 import polars as pl
 
 from kontra.api.compare import CompareResult
+from kontra.probes.compare_facts import (
+    CompareFacts,
+    CompareSamples,
+    CompareSchema,
+    finalize_compare_result,
+)
 from kontra.probes.utils import load_data
 
 
@@ -328,186 +334,81 @@ def _compute_compare(
         if cast_exprs:
             before = before.select(cast_exprs)
 
-    # ==========================================================================
-    # 1. Row stats
-    # ==========================================================================
+    # Primitive measurements only — every derived field lives in the finalizer,
+    # shared with the set-based SQL path so the two cannot interpret facts differently.
     before_rows = len(before)
     after_rows = len(after)
-    row_delta = after_rows - before_rows
-    row_ratio = after_rows / before_rows if before_rows > 0 else float('inf')
 
-    # ==========================================================================
-    # 2. Key stats
-    # ==========================================================================
     before_keys = before.select(key).unique()
     after_keys = after.select(key).unique()
-
     unique_before = len(before_keys)
     unique_after = len(after_keys)
+    preserved = len(before_keys.join(after_keys, on=key, how="inner"))
 
-    # Keys in both (preserved)
-    preserved_keys = before_keys.join(after_keys, on=key, how="inner")
-    preserved = len(preserved_keys)
-
-    # Keys dropped (in before but not in after)
-    dropped = unique_before - preserved
-
-    # Keys added (in after but not in before)
-    added = unique_after - preserved
-
-    # Duplicated after: count of keys appearing >1x in after
-    # (This is key count, not row count)
     after_key_counts = after.group_by(key).agg(pl.len().alias("_count"))
     duplicated_keys_df = after_key_counts.filter(pl.col("_count") > 1)
     duplicated_after = len(duplicated_keys_df)
 
-    # ==========================================================================
-    # 3. Change stats (for preserved keys only)
-    # ==========================================================================
-    # Join before and after on key to find matching rows
-    # Use suffix to disambiguate columns
-    non_key_cols_before = [c for c in before.columns if c not in key]
-    non_key_cols_after = [c for c in after.columns if c not in key]
-    common_non_key_cols = set(non_key_cols_before) & set(non_key_cols_after)
+    non_key_before = [c for c in before.columns if c not in key]
+    non_key_after = [c for c in after.columns if c not in key]
+    common = sorted(set(non_key_before) & set(non_key_after))
+    columns_added = sorted(set(non_key_after) - set(non_key_before))
+    columns_removed = sorted(set(non_key_before) - set(non_key_after))
 
-    unchanged_rows = 0
+    # Change stats over the row-level inner join (duplicate keys cross-multiply).
+    matched_rows = 0
     changed_rows = 0
-
-    if preserved > 0 and common_non_key_cols:
-        # For each preserved key, compare values
-        # Join on key, suffix the after columns
+    changed_by_column: Dict[str, int] = {}
+    if preserved > 0 and common:
         merged = before.join(after, on=key, how="inner", suffix="_after")
-
-        # Build a change mask: True if any common non-key column differs
-        # Handle NULL comparison: NULL != value should be True
+        matched_rows = len(merged)
         change_exprs = []
-        for col in common_non_key_cols:
+        for col in common:
             after_col = f"{col}_after"
             if after_col in merged.columns:
-                change_exprs.append(_changed_expr(merged, col, after_col))
-
+                expr = _changed_expr(merged, col, after_col)
+                changed_by_column[col] = len(merged.filter(expr))
+                change_exprs.append(expr)
         if change_exprs:
-            # Combine all expressions with OR
-            combined_mask = change_exprs[0]
-            for expr in change_exprs[1:]:
-                combined_mask = combined_mask | expr
+            combined = change_exprs[0]
+            for e in change_exprs[1:]:
+                combined = combined | e
+            changed_rows = len(merged.filter(combined))
 
-            # Count changed and unchanged
-            changed_df = merged.filter(combined_mask)
-            changed_rows = len(changed_df)
-            unchanged_rows = len(merged) - changed_rows
-        else:
-            # No common columns to compare
-            unchanged_rows = len(merged)
-            changed_rows = 0
-    elif preserved > 0:
-        # No common non-key columns, so no changes possible
-        unchanged_rows = preserved
-        changed_rows = 0
+    changed_cols = [c for c in common if changed_by_column.get(c, 0) > 0]
+    nulls_before = {c: before[c].null_count() for c in changed_cols}
+    nulls_after = {c: after[c].null_count() for c in changed_cols + columns_added}
 
-    # ==========================================================================
-    # 4. Column stats
-    # ==========================================================================
-    before_cols = set(before.columns)
-    after_cols = set(after.columns)
-
-    columns_added = sorted(after_cols - before_cols)
-    columns_removed = sorted(before_cols - after_cols)
-
-    # Modified columns: columns in both where at least one value differs
-    # Also compute modified_fraction
-    columns_modified = []
-    modified_fraction: Dict[str, float] = {}
-
-    if preserved > 0:
-        merged = before.join(after, on=key, how="inner", suffix="_after")
-        preserved_count = len(merged)
-
-        for col in sorted(common_non_key_cols):
-            after_col = f"{col}_after"
-            if after_col in merged.columns and preserved_count > 0:
-                # Count rows where this column changed
-                changed_count = len(merged.filter(
-                    _changed_expr(merged, col, after_col)
-                ))
-                if changed_count > 0:
-                    columns_modified.append(col)
-                    modified_fraction[col] = changed_count / preserved_count
-
-    # Nullability delta
-    nullability_delta: Dict[str, Dict[str, Optional[float]]] = {}
-
-    # For modified columns, compute before and after null rates
-    for col in columns_modified:
-        before_null = before[col].null_count() / before_rows if before_rows > 0 else 0.0
-        after_null = after[col].null_count() / after_rows if after_rows > 0 else 0.0
-        nullability_delta[col] = {"before": before_null, "after": after_null}
-
-    # For added columns, only after rate
-    for col in columns_added:
-        after_null = after[col].null_count() / after_rows if after_rows > 0 else 0.0
-        nullability_delta[col] = {"before": None, "after": after_null}
-
-    # ==========================================================================
-    # 5. Samples
-    # ==========================================================================
-
-    # Sample duplicated keys
-    samples_duplicated_keys = _extract_key_samples(
-        duplicated_keys_df.select(key),
-        key,
-        sample_limit
+    samples = CompareSamples(
+        duplicated_keys=_extract_key_samples(
+            duplicated_keys_df.select(key), key, sample_limit
+        ),
+        dropped_keys=_extract_key_samples(
+            before_keys.join(after_keys, on=key, how="anti"), key, sample_limit
+        ),
+        changed_rows=_extract_changed_row_samples(
+            before, after, key, set(common), sample_limit
+        ),
     )
 
-    # Sample dropped keys (in before but not in after)
-    dropped_keys_df = before_keys.join(after_keys, on=key, how="anti")
-    samples_dropped_keys = _extract_key_samples(dropped_keys_df, key, sample_limit)
-
-    # Sample changed rows (with before/after values)
-    samples_changed_rows = _extract_changed_row_samples(
-        before, after, key, common_non_key_cols, sample_limit
+    schema = CompareSchema(
+        key=list(key), common=common, added=columns_added, removed=columns_removed
     )
-
-    # ==========================================================================
-    # Build result
-    # ==========================================================================
-    return CompareResult(
-        # Meta
+    facts = CompareFacts(
         before_rows=before_rows,
         after_rows=after_rows,
-        key=key,
-        execution_tier="polars",
-
-        # Row stats
-        row_delta=row_delta,
-        row_ratio=row_ratio,
-
-        # Key stats
         unique_before=unique_before,
         unique_after=unique_after,
         preserved=preserved,
-        dropped=dropped,
-        added=added,
         duplicated_after=duplicated_after,
-
-        # Change stats
-        unchanged_rows=unchanged_rows,
+        matched_rows=matched_rows,
         changed_rows=changed_rows,
-
-        # Column stats
-        columns_added=columns_added,
-        columns_removed=columns_removed,
-        columns_modified=columns_modified,
-        modified_fraction=modified_fraction,
-        nullability_delta=nullability_delta,
-
-        # Samples
-        samples_duplicated_keys=samples_duplicated_keys,
-        samples_dropped_keys=samples_dropped_keys,
-        samples_changed_rows=samples_changed_rows,
-
-        # Config
-        sample_limit=sample_limit,
+        changed_by_column=changed_by_column,
+        nulls_before=nulls_before,
+        nulls_after=nulls_after,
+    )
+    return finalize_compare_result(
+        facts, schema, execution_tier="polars", sample_limit=sample_limit, samples=samples
     )
 
 

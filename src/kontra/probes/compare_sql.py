@@ -39,6 +39,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.api.compare import CompareResult
 from kontra.engine.sql_ir import esc_ident
+from kontra.probes.compare_facts import (
+    CompareFacts,
+    CompareSchema,
+    finalize_compare_result,
+)
 
 # PostgreSQL text-like type OIDs (psycopg type_code).
 _PG_TEXT_OIDS = {18, 19, 25, 1042, 1043, 1015, 1014}
@@ -393,9 +398,6 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
             if b_null_keys or a_null_keys:
                 raise _FallbackToPolars("NULL key values present")
 
-            dropped = unique_before - preserved
-            added = unique_after - preserved
-
             on_clause = " AND ".join(
                 f"b.{_q(k, dialect)} = a.{_q(k, dialect)}" for k in key
             )
@@ -405,9 +407,8 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
                 cmp = (lambda e: _char_cmp(e, is_char, dialect)) if is_char else None
                 return _distinct_pred("b." + _q(c, dialect), "a." + _q(c, dialect), cmp)
 
-            m = 0
+            matched_rows = 0
             changed_rows = 0
-            unchanged_rows = 0
             per_col_changed: Dict[str, int] = {}
             if preserved > 0 and common:
                 row_pred = " OR ".join(cmp_pred(c) for c in common)
@@ -423,35 +424,19 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
                 """
                 crow, cnames = _cursor_exec(conn, change_sql, fetch="one")
                 cmap = dict(zip(cnames, crow))
-                m = int(cmap["m"])
+                matched_rows = int(cmap["m"])
                 changed_rows = int(cmap["changed_rows"])
-                unchanged_rows = m - changed_rows
                 for c in common:
                     per_col_changed[c] = int(cmap["chg__" + c])
-            elif preserved > 0:
-                # No common non-key columns: nothing can change. The Polars
-                # reference sets unchanged_rows = preserved (distinct keys), NOT
-                # the row-level join count.
-                unchanged_rows = preserved
 
-            columns_modified = [c for c in common if per_col_changed.get(c, 0) > 0]
-            modified_fraction = {c: per_col_changed[c] / m for c in columns_modified if m > 0}
-
-            nullability_delta: Dict[str, Dict[str, Optional[float]]] = {}
-            need_before = list(columns_modified)
-            need_after = list(columns_modified) + list(columns_added)
-            b_nulls = _null_counts(conn, b_ref, need_before, dialect) if need_before else {}
-            a_nulls = _null_counts(conn, a_ref, need_after, dialect) if need_after else {}
-            for c in columns_modified:
-                nullability_delta[c] = {
-                    "before": (b_nulls.get(c, 0) / before_rows) if before_rows else 0.0,
-                    "after": (a_nulls.get(c, 0) / after_rows) if after_rows else 0.0,
-                }
-            for c in columns_added:
-                nullability_delta[c] = {
-                    "before": None,
-                    "after": (a_nulls.get(c, 0) / after_rows) if after_rows else 0.0,
-                }
+            # Null counts are needed only for columns that actually changed
+            # (+ added columns on the after side) — the nullability delta.
+            changed_cols = [c for c in common if per_col_changed.get(c, 0) > 0]
+            b_nulls = _null_counts(conn, b_ref, changed_cols, dialect) if changed_cols else {}
+            a_nulls = (
+                _null_counts(conn, a_ref, changed_cols + columns_added, dialect)
+                if (changed_cols or columns_added) else {}
+            )
         finally:
             if savepoint is not None:
                 # Undo ONLY Mode A's work (temp tables + our tx state); the
@@ -460,33 +445,24 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
             else:
                 _drop_temps(conn, temps, dialect)
 
-    row_delta = after_rows - before_rows
-    row_ratio = after_rows / before_rows if before_rows > 0 else float("inf")
-
-    return CompareResult(
+    schema = CompareSchema(
+        key=list(key), common=common, added=columns_added, removed=columns_removed
+    )
+    facts = CompareFacts(
         before_rows=before_rows,
         after_rows=after_rows,
-        key=key,
-        execution_tier="sql",
-        row_delta=row_delta,
-        row_ratio=row_ratio,
         unique_before=unique_before,
         unique_after=unique_after,
         preserved=preserved,
-        dropped=dropped,
-        added=added,
         duplicated_after=duplicated_after,
-        unchanged_rows=unchanged_rows,
+        matched_rows=matched_rows,
         changed_rows=changed_rows,
-        columns_added=columns_added,
-        columns_removed=columns_removed,
-        columns_modified=columns_modified,
-        modified_fraction=modified_fraction,
-        nullability_delta=nullability_delta,
-        samples_duplicated_keys=[],
-        samples_dropped_keys=[],
-        samples_changed_rows=[],
-        sample_limit=sample_limit,
+        changed_by_column=per_col_changed,
+        nulls_before=b_nulls,
+        nulls_after=a_nulls,
+    )
+    return finalize_compare_result(
+        facts, schema, execution_tier="sql", sample_limit=sample_limit
     )
 
 
