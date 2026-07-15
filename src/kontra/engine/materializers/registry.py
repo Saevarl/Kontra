@@ -53,8 +53,9 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
 
     This logic is INDEPENDENT of the projection flag.
     """
-    # BYOC: route based on dialect
-    if handle.scheme == "byoc":
+    # BYOC and query sources: route based on dialect (both carry external_conn
+    # / db_params + dialect; a query source materializes a SELECT, not a table).
+    if handle.scheme in ("byoc", "query"):
         if handle.dialect == "postgresql":
             ctor = _MATS.get("postgres")
             if ctor:

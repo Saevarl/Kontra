@@ -57,7 +57,57 @@ class DatasetHandle:
     # be used for BYOC, whose external_conn remains caller-owned.
     owned_conn: Optional[Any] = field(default=None, repr=False, compare=False)
 
+    # Query source: when set, this handle is a read-only SELECT to run on the
+    # resolved engine (via external_conn / db_params) instead of a table read.
+    # `dialect`/`format` carry the engine flavor for materializer routing.
+    sql: Optional[str] = field(default=None)
+
     # ------------------------------ Constructors ------------------------------
+
+    @staticmethod
+    def from_query(query: Any) -> "DatasetHandle":
+        """Create a handle for a ``Query`` source (a read-only SELECT).
+
+        The query's ``source`` identifies the engine. Today that is a live
+        database connection (psycopg / pyodbc / SQLAlchemy); DB-URI and
+        named-datasource binding are additive and route through the same handle.
+
+        The SQL runs verbatim on the engine — Kontra never rewrites it — and is
+        materialized as a subquery so column projection still applies.
+        """
+        from kontra.connectors.detection import (
+            detect_connection_dialect,
+            is_database_connection,
+            unwrap_sqlalchemy_connection,
+        )
+        from kontra.connectors.query import validate_read_only_sql
+
+        validate_read_only_sql(query.sql)
+        src = query.source
+        if src is None:
+            raise ValueError("Query(source=...) is required.")
+
+        if is_database_connection(src):
+            dialect = detect_connection_dialect(src)
+            raw_conn = unwrap_sqlalchemy_connection(src)
+            return DatasetHandle(
+                uri=f"query://{dialect}",
+                scheme="query",
+                path="",
+                format=dialect,
+                fs_opts={},
+                db_params=None,
+                external_conn=raw_conn,
+                dialect=dialect,
+                table_ref=None,
+                owned=False,  # caller owns the connection
+                sql=query.sql,
+            )
+
+        raise ValueError(
+            "Query(source=...) must be a live database connection "
+            "(URI and named-datasource sources are coming next)."
+        )
 
     @staticmethod
     def from_connection(conn: Any, table: str) -> "DatasetHandle":

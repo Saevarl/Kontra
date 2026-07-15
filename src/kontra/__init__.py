@@ -174,6 +174,9 @@ from kontra.api.results import (
 # Probe types (lightweight - just dataclasses)
 from kontra.api.compare import CompareResult, RelationshipProfile
 
+# Query source (lightweight - a read-only SELECT usable anywhere a source is)
+from kontra.connectors.query import Query
+
 # Transformation probes - lazy loaded via __getattr__ (they import polars)
 # Users access via: kontra.compare(), kontra.profile_relationship()
 
@@ -2351,6 +2354,8 @@ __all__ = [
     # Probe result types
     "CompareResult",
     "RelationshipProfile",
+    # Query source
+    "Query",
     # Rules helpers
     "rules",
     # Decorators

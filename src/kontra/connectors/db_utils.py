@@ -318,8 +318,8 @@ def get_connection_ctx(handle: "DatasetHandle", dialect: str):
         handle: DatasetHandle with connection info
         dialect: "postgres" or "sqlserver"
     """
-    if handle.scheme == "byoc" and handle.external_conn is not None:
-        # BYOC: yield external connection directly, don't close it
+    if handle.scheme in ("byoc", "query") and handle.external_conn is not None:
+        # BYOC / query source: yield the external connection directly, don't close it
         yield handle.external_conn
     elif handle.owned_conn is not None:
         try:

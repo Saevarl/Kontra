@@ -93,6 +93,14 @@ def load_data(
     if isinstance(data, pl.DataFrame):
         return data
 
+    # Query source: a read-only SELECT run on its bound engine.
+    from kontra.connectors.query import Query
+
+    if isinstance(data, Query):
+        from kontra.connectors.handle import DatasetHandle
+
+        return _materialize_handle(DatasetHandle.from_query(data))
+
     # In-memory: pandas DataFrame, list-of-dicts, dict-of-columns.
     if not isinstance(data, str):
         from kontra.connectors.detection import is_database_connection

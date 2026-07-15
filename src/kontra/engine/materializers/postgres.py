@@ -43,9 +43,16 @@ class PostgresMaterializer(BaseMaterializer):
     def __init__(self, handle: DatasetHandle):
         super().__init__(handle)
 
-        self._is_byoc = handle.scheme == "byoc" and handle.external_conn is not None
+        self._sql: Optional[str] = getattr(handle, "sql", None)
+        self._is_byoc = handle.external_conn is not None and handle.scheme in ("byoc", "query")
 
-        if self._is_byoc:
+        if self._sql:
+            # Query source: materialize the SELECT as a subquery so column
+            # projection still applies. No table to qualify.
+            self._schema_name = None
+            self._table_name = None
+            self._qualified_table = f"({self._sql}) AS _kontra_q"
+        elif self._is_byoc:
             # BYOC: get table info from handle
             if not handle.table_ref:
                 raise ValueError("BYOC handle missing table_ref")
@@ -69,6 +76,10 @@ class PostgresMaterializer(BaseMaterializer):
         """Return column names without loading data."""
         with _get_connection_ctx(self.handle) as conn:
             with conn.cursor() as cur:
+                if self._sql:
+                    # Query source: describe via an empty result set.
+                    cur.execute(f"SELECT * FROM {self._qualified_table} LIMIT 0")
+                    return [d[0] for d in cur.description] if cur.description else []
                 cur.execute(
                     """
                     SELECT column_name
