@@ -113,6 +113,25 @@ def compare(
         before_key, after_key, "before_key", "after_key",
     )
 
+    # Mode A: when both sides are the same DB engine, compute the counts with
+    # set-based SQL (zero rows moved). It fires only inside a provably-safe
+    # envelope and otherwise falls back to the Polars path below.
+    from kontra.logging import get_logger
+    from kontra.probes.compare_sql import _FallbackToPolars, compare_sql, plan_compare
+
+    _log = get_logger(__name__)
+    _plan = plan_compare(
+        before, after, before_key_list, after_key_list,
+        before_table, after_table, sample_limit,
+    )
+    if _plan is not None:
+        try:
+            return compare_sql(_plan, sample_limit)
+        except _FallbackToPolars as e:
+            _log.debug("compare: SQL pushdown not applicable (%s); using Polars", e)
+        except Exception as e:  # noqa: BLE001 - graceful pushdown fallback, like validate
+            _log.warning("compare: SQL pushdown failed (%s); using Polars", e)
+
     # Materialize both sides from any supported source (file, db table, named
     # datasource, DataFrame, or BYOC connection). before_table/after_table
     # apply only when the corresponding side is a live database connection.

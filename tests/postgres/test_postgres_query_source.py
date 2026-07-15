@@ -34,7 +34,8 @@ class TestQuerySourceCompare:
         assert r.added == 1  # id 4 new
         assert r.preserved == 2  # ids 2, 3
         assert r.changed_rows == 1  # id 3: 'c' -> 'X'
-        assert r.execution_tier == "polars"  # Mode C (client-side)
+        # Both query sources share one engine -> set-based SQL (Mode A).
+        assert r.execution_tier == "sql"
         # Samples default to zero (no row-level values leak).
         assert r.samples_dropped_keys == []
         assert r.samples_changed_rows == []
@@ -81,7 +82,8 @@ class TestQuerySourceFromUri:
         r = kontra.compare(before, after, key="id")
 
         assert r.dropped == 1 and r.added == 1 and r.changed_rows == 1
-        assert r.execution_tier == "polars"
+        # Same engine on both sides -> set-based SQL (Mode A).
+        assert r.execution_tier == "sql"
 
 
 @pytest.mark.integration
