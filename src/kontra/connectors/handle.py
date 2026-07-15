@@ -38,6 +38,17 @@ from urllib.parse import urlparse
 from kontra.connectors.db_utils import mask_credentials
 
 
+# Map a URI scheme/format onto the dialect label used for materializer routing.
+_QUERY_DIALECT = {
+    "postgres": "postgresql",
+    "postgresql": "postgresql",
+    "mssql": "sqlserver",
+    "sqlserver": "sqlserver",
+    "clickhouse": "clickhouse",
+    "clickhouses": "clickhouse",
+}
+
+
 @dataclass(frozen=True)
 class DatasetHandle:
     uri: str
@@ -104,9 +115,45 @@ class DatasetHandle:
                 sql=query.sql,
             )
 
+        if isinstance(src, str):
+            # A database URI or a named-datasource reference. Only the connection
+            # is used; any table in the reference is ignored (the SQL defines the
+            # dataset). In compare(query, table) the source and compared table
+            # typically share an engine, so reusing that reference is natural.
+            if "://" in src:
+                uri = src
+            else:
+                from kontra.config.settings import resolve_datasource
+
+                uri = resolve_datasource(src)
+
+            base = DatasetHandle.from_uri(uri)
+            if base.db_params is None:
+                raise ValueError(
+                    "Query(source=...) string must resolve to a database engine; "
+                    f"got a non-database source: {src!r}"
+                )
+            dialect = _QUERY_DIALECT.get(base.scheme) or _QUERY_DIALECT.get(base.format)
+            if dialect is None:
+                raise ValueError(
+                    f"Unsupported query source engine '{base.scheme or base.format}'."
+                )
+
+            import dataclasses
+
+            return dataclasses.replace(
+                base,
+                uri=f"query://{dialect}",
+                scheme="query",
+                path="",
+                dialect=dialect,
+                table_ref=None,
+                sql=query.sql,
+            )
+
         raise ValueError(
-            "Query(source=...) must be a live database connection "
-            "(URI and named-datasource sources are coming next)."
+            "Query(source=...) must be a database connection, a database URI, "
+            "or a named datasource."
         )
 
     @staticmethod

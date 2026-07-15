@@ -37,9 +37,15 @@ class ClickHouseMaterializer(BaseMaterializer):
 
     def __init__(self, handle: DatasetHandle):
         super().__init__(handle)
-        self._is_byoc = handle.scheme == "byoc" and handle.external_conn is not None
+        self._sql: Optional[str] = getattr(handle, "sql", None)
+        self._is_byoc = handle.external_conn is not None and handle.scheme in ("byoc", "query")
 
-        if self._is_byoc:
+        if self._sql:
+            # Query source: materialize the SELECT as a subquery.
+            self._database = ""
+            self._table_name = None
+            self._qualified_table = f"({self._sql}) AS _kontra_q"
+        elif self._is_byoc:
             if not handle.table_ref:
                 raise ValueError("BYOC handle missing table_ref")
             _db, _schema, table = parse_table_reference(handle.table_ref)
@@ -52,11 +58,12 @@ class ClickHouseMaterializer(BaseMaterializer):
         else:
             raise ValueError("ClickHouse handle missing db_params or external_conn")
 
-        self._qualified_table = (
-            f"{_ch_ident(self._database)}.{_ch_ident(self._table_name)}"
-            if self._database
-            else _ch_ident(self._table_name)
-        )
+        if not self._sql:
+            self._qualified_table = (
+                f"{_ch_ident(self._database)}.{_ch_ident(self._table_name)}"
+                if self._database
+                else _ch_ident(self._table_name)
+            )
         self._io_debug_enabled = bool(os.getenv("KONTRA_IO_DEBUG"))
         self._last_io_debug: Optional[Dict[str, Any]] = None
 
@@ -71,6 +78,9 @@ class ClickHouseMaterializer(BaseMaterializer):
         from kontra.engine.sql_ir import lit_str
 
         with get_connection_ctx(self.handle, "clickhouse") as conn:
+            if self._sql:
+                arrow = conn.query_arrow(f"SELECT * FROM {self._qualified_table} LIMIT 0")
+                return list(arrow.column_names)
             cur = conn.cursor()
             cur.execute(
                 "SELECT name FROM system.columns "

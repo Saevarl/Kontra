@@ -68,6 +68,23 @@ class TestQuerySourceCompare:
 
 
 @pytest.mark.integration
+class TestQuerySourceFromUri:
+    def test_compare_query_uri_source(self, postgres_uri):
+        # source is a DB URI (its table is ignored; only the connection is used)
+        before = Query(
+            "SELECT * FROM (VALUES (1,10),(2,20),(3,30)) AS t(id, amt)", source=postgres_uri
+        )
+        after = Query(
+            "SELECT * FROM (VALUES (2,20),(3,99),(4,40)) AS t(id, amt)", source=postgres_uri
+        )
+
+        r = kontra.compare(before, after, key="id")
+
+        assert r.dropped == 1 and r.added == 1 and r.changed_rows == 1
+        assert r.execution_tier == "polars"
+
+
+@pytest.mark.integration
 class TestQuerySourceRelationship:
     def test_relationship_query_vs_query(self, postgres_connection):
         conn = postgres_connection
