@@ -27,7 +27,7 @@ def profile_relationship(
     right_on: Optional[Union[str, List[str]]] = None,
     left_table: Optional[str] = None,
     right_table: Optional[str] = None,
-    sample_limit: int = 5,
+    sample_limit: int = 0,
     save: bool = False,
     storage_options: Optional[Dict[str, Any]] = None,
 ) -> RelationshipProfile:
@@ -61,7 +61,8 @@ def profile_relationship(
             and must have the same number of columns.
         left_table: Table reference when ``left`` is a DB connection object.
         right_table: Table reference when ``right`` is a DB connection object.
-        sample_limit: Max samples per category (default 5)
+        sample_limit: Max samples per category. Defaults to 0 (aggregate-only,
+            no row-level values). Opt in by passing a positive limit, like validate.
         save: Persist result to state backend (not yet implemented)
 
     Returns:

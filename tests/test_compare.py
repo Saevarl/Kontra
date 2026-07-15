@@ -222,7 +222,7 @@ class TestCompareSamples:
             "value": [1, 1, 1, 2, 3],
         })
 
-        result = compare(before, after, key="id")
+        result = compare(before, after, key="id", sample_limit=5)
 
         assert result.duplicated_after == 1  # Only A is duplicated
         assert "A" in result.samples_duplicated_keys
@@ -238,13 +238,27 @@ class TestCompareSamples:
             "value": [100, 999],
         })
 
-        result = compare(before, after, key="id")
+        result = compare(before, after, key="id", sample_limit=5)
 
         assert len(result.samples_changed_rows) == 1
         sample = result.samples_changed_rows[0]
         assert sample["key"] == 2
         assert sample["before"]["value"] == 200
         assert sample["after"]["value"] == 999
+
+    def test_samples_default_to_zero(self):
+        """By default compare emits no row-level samples (aggregate-only)."""
+        before = pl.DataFrame({"id": ["A", "A", "B"], "value": [1, 1, 2]})
+        after = pl.DataFrame({"id": ["A", "C"], "value": [9, 3]})
+
+        result = compare(before, after, key="id")
+
+        assert result.sample_limit == 0
+        assert result.samples_duplicated_keys == []
+        assert result.samples_dropped_keys == []
+        assert result.samples_changed_rows == []
+        # Aggregate counts are still produced.
+        assert result.dropped == 1 and result.added == 1
 
 
 class TestCompareCompositeKey:
@@ -517,7 +531,7 @@ class TestCompareAsymmetricKeys:
             "amount": [20, 30, 30, 50],  # id=4 amount changed 40->30
         })
 
-        result = compare(orders, customers, before_key="customer_id", after_key="id")
+        result = compare(orders, customers, before_key="customer_id", after_key="id", sample_limit=5)
 
         assert isinstance(result, CompareResult)
         # Canonical key name comes from the before side

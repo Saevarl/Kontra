@@ -108,7 +108,7 @@ class CompareResult:
     samples_changed_rows: List[Dict[str, Any]] = field(default_factory=list)
 
     # Config
-    sample_limit: int = 5
+    sample_limit: int = 0
 
     def __repr__(self) -> str:
         delta_sign = "+" if self.row_delta >= 0 else ""
@@ -302,7 +302,7 @@ class RelationshipProfile:
     samples_right_duplicates: List[Any] = field(default_factory=list)
 
     # Config
-    sample_limit: int = 5
+    sample_limit: int = 0
 
     def __repr__(self) -> str:
         return (

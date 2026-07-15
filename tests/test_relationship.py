@@ -172,7 +172,7 @@ class TestRelationshipSamples:
             "id": [1, 1, 1, 2, 3],  # id=1 appears 3 times
         })
 
-        result = profile_relationship(left, right, on="id")
+        result = profile_relationship(left, right, on="id", sample_limit=5)
 
         assert result.right_duplicate_keys == 1
         assert 1 in result.samples_right_duplicates
@@ -385,7 +385,7 @@ class TestRelationshipAgentWalkthrough:
             "status": ["active", "inactive", "active", "active", "active"],
         })
 
-        result = profile_relationship(orders, customers, on="customer_id")
+        result = profile_relationship(orders, customers, on="customer_id", sample_limit=5)
 
         # Agent sees:
         # - Right side is not unique (max multiplicity > 1)
@@ -439,7 +439,7 @@ class TestRelationshipAsymmetricKeys:
         })
 
         result = profile_relationship(
-            orders, customers, left_on="customer_id", right_on="id"
+            orders, customers, left_on="customer_id", right_on="id", sample_limit=5
         )
 
         assert isinstance(result, RelationshipProfile)

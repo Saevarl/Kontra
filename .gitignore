@@ -102,3 +102,6 @@ CLAUDE.md
 AGENTS.md
 benchmarks/
 test_install/
+
+# Internal dev tooling (not shipped, not tracked)
+scripts/slop_check.py

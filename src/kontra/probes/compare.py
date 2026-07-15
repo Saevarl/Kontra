@@ -46,7 +46,7 @@ def compare(
     after_key: Optional[Union[str, List[str]]] = None,
     before_table: Optional[str] = None,
     after_table: Optional[str] = None,
-    sample_limit: int = 5,
+    sample_limit: int = 0,
     save: bool = False,
     storage_options: Optional[Dict[str, Any]] = None,
 ) -> CompareResult:
@@ -80,7 +80,8 @@ def compare(
             keys and must have the same number of columns.
         before_table: Table reference when ``before`` is a DB connection object.
         after_table: Table reference when ``after`` is a DB connection object.
-        sample_limit: Max samples per category (default 5)
+        sample_limit: Max samples per category. Defaults to 0 (aggregate-only,
+            no row-level values). Opt in by passing a positive limit, like validate.
         save: Persist result to state backend (not yet implemented)
 
     Returns:
