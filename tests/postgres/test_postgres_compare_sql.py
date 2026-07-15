@@ -100,6 +100,15 @@ _SAFE = [
         "id",
     ),
     (
+        # Regression (sol #4): duplicate keys AND no common non-key columns.
+        # Polars sets unchanged_rows = preserved (distinct keys), not the join
+        # cardinality M (=4 here). Mode A must agree.
+        "dup_keys_no_common_cols",
+        pl.DataFrame({"k": [1, 1]}),
+        pl.DataFrame({"k": [1, 1]}),
+        "k",
+    ),
+    (
         "null_values_in_nonkey",  # NULL/NULL same, NULL/value changed, value/value
         pl.DataFrame({"id": [1, 2, 3], "v": [None, 5, 7]}, schema={"id": pl.Int64, "v": pl.Int64}),
         pl.DataFrame({"id": [1, 2, 3], "v": [None, None, 8]}, schema={"id": pl.Int64, "v": pl.Int64}),
@@ -166,6 +175,60 @@ class TestFallsBackToPolars:
         _load(postgres_connection, "eq_after", after)
         r = kontra.compare(_BASE + "eq_before", _BASE + "eq_after", key="id")
         assert r.execution_tier == "polars"  # cross-type common column -> fallback
+
+    def test_cross_type_key_falls_back(self, postgres_connection):
+        # sol #5: key types differ across sides (bigint vs integer) -> defer.
+        before = pl.DataFrame({"k": [1, 2], "v": [1, 2]}, schema={"k": pl.Int64, "v": pl.Int64})
+        after = pl.DataFrame({"k": [1, 3], "v": [1, 2]}, schema={"k": pl.Int32, "v": pl.Int64})
+        _load(postgres_connection, "eq_before", before)
+        _load(postgres_connection, "eq_after", after)
+        r = kontra.compare(_BASE + "eq_before", _BASE + "eq_after", key="k")
+        assert r.execution_tier == "polars"
+
+    def test_bpchar_falls_back(self, postgres_connection):
+        # sol #8: CHAR(n) ignores trailing padding in SQL; Polars does not -> defer.
+        cur = postgres_connection.cursor()
+        for t in ("eq_before", "eq_after"):
+            cur.execute(f"DROP TABLE IF EXISTS {t}")
+            cur.execute(f"CREATE TABLE {t} (id int, name char(4))")
+        cur.execute("INSERT INTO eq_before VALUES (1, 'x')")
+        cur.execute("INSERT INTO eq_after  VALUES (1, 'x')")
+        postgres_connection.commit()
+        r = kontra.compare(_BASE + "eq_before", _BASE + "eq_after", key="id")
+        assert r.execution_tier == "polars"
+
+    def test_duplicate_key_names_not_accelerated(self, postgres_connection):
+        # sol #11: duplicate key names -> Mode A defers; Polars raises (as before).
+        before = pl.DataFrame({"id": [1, 2], "v": [1, 2]})
+        after = pl.DataFrame({"id": [1, 2], "v": [1, 2]})
+        _load(postgres_connection, "eq_before", before)
+        _load(postgres_connection, "eq_after", after)
+        with pytest.raises(Exception):
+            kontra.compare(_BASE + "eq_before", _BASE + "eq_after", key=["id", "id"])
+
+
+class TestSharedConnectionSafety:
+    def test_fallback_preserves_caller_uncommitted_work(self, postgres_connection):
+        # sol #1: a Mode A fallback on a caller-owned connection must undo only its
+        # own work (via savepoint), never the caller's prior uncommitted work.
+        from kontra import Query
+
+        conn = postgres_connection
+        cur = conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS caller_work")
+        cur.execute("CREATE TABLE caller_work (x int)")
+        conn.commit()
+        cur.execute("INSERT INTO caller_work VALUES (42)")  # uncommitted
+
+        # Both sides share `conn` -> Mode A; the NULL key forces a mid-way fallback.
+        q1 = Query("SELECT * FROM (VALUES (1,'a'),(NULL,'b')) AS t(id, v)", source=conn)
+        q2 = Query("SELECT * FROM (VALUES (1,'a'),(NULL,'c')) AS t(id, v)", source=conn)
+        r = kontra.compare(q1, q2, key="id")
+
+        assert r.execution_tier == "polars"  # NULL key -> fallback
+        cur.execute("SELECT count(*) FROM caller_work")
+        assert cur.fetchone()[0] == 1  # caller's uncommitted INSERT survived
+        conn.rollback()
 
     def test_samples_requested_falls_back(self, postgres_connection):
         before = pl.DataFrame({"id": [1, 2], "v": [1, 2]})

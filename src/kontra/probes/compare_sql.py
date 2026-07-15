@@ -18,21 +18,33 @@ Design (PostgreSQL + SQL Server):
   - String comparisons and string key grouping use a binary collation on SQL
     Server so case/space/accent match Polars' exact semantics.
 
-Safe envelope: same engine, symmetric key, aggregate-only. Runtime guards fall
-back on NULL key values, cross-type common columns, or any SQL error.
+Safe envelope: same engine + identity (host/port/user), symmetric non-duplicate
+key, aggregate-only. Runtime guards fall back on NULL keys, cross-type key or
+common columns, PostgreSQL bpchar/CHAR(n), SQL Server char keys, or any SQL
+error. Caller-owned connections run inside a savepoint so a fallback never
+disturbs the caller's uncommitted work.
+
+Known limitations (rare; would need extra native-type/isolation work):
+  - SQL Server VARCHAR-vs-NVARCHAR for the *same* column across sides shares one
+    DB-API type code, so the VARBINARY compare can over-report a change.
+  - Reads run at the connection's isolation (READ COMMITTED); a table mutated by
+    another session *between* the metric statements could mix states. The shadow-
+    eval workflow compares stable snapshots, so this does not arise there.
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.api.compare import CompareResult
 from kontra.engine.sql_ir import esc_ident
 
-# SQL Server binary collation: byte-exact, case/accent/space sensitive.
-_MSSQL_BIN = "Latin1_General_BIN2"
 # PostgreSQL text-like type OIDs (psycopg type_code).
 _PG_TEXT_OIDS = {18, 19, 25, 1042, 1043, 1015, 1014}
+# bpchar / CHAR(n) and its array: SQL comparison ignores trailing padding, which
+# Polars does not — defer these to Polars.
+_PG_BPCHAR_OIDS = {1042, 1014}
 
 
 class _FallbackToPolars(Exception):
@@ -86,17 +98,22 @@ def _dialect_of(handle) -> Optional[str]:
 
 
 def _engine_key(handle, dialect: str) -> Optional[Tuple]:
-    """Hashable 'same engine' identity. SQL Server drops database so a
-    cross-database same-server compare is eligible (via three-part names)."""
+    """Hashable 'same engine' identity: same host/port AND same identity (user).
+    SQL Server drops the database ONLY for table handles (three-part names
+    qualify them); a query handle runs in the connection's database, so its
+    database stays in the key to keep cross-database query pairs ineligible."""
     if handle.external_conn is not None:
         return ("conn", id(handle.external_conn))
     dp = handle.db_params
     if dp is not None:
         host = getattr(dp, "host", None)
         port = getattr(dp, "port", None)
+        user = getattr(dp, "user", getattr(dp, "username", None))
+        db = getattr(dp, "database", getattr(dp, "dbname", None))
         if dialect == "sqlserver":
-            return ("params", host, port)
-        return ("params", host, port, getattr(dp, "database", getattr(dp, "dbname", None)))
+            is_query = getattr(handle, "sql", None) is not None
+            return ("params", host, port, user, db if is_query else None)
+        return ("params", host, port, user, db)
     return None
 
 
@@ -113,6 +130,10 @@ def plan_compare(
     if sample_limit and sample_limit > 0:
         return None
     if before_key != after_key:
+        return None
+    # Duplicate or empty keys: the Polars reference rejects them; don't let SQL
+    # silently succeed where Polars raises.
+    if not before_key or len(set(before_key)) != len(before_key):
         return None
 
     hb = _as_db_handle(before, before_table)
@@ -195,21 +216,19 @@ def _cursor_exec(conn, sql: str, fetch: str = "none"):
         cur.close()
 
 
-def _prepare(conn, handle, dialect: str, side: str, temps: List[str]) -> str:
+def _prepare(conn, handle, dialect: str, side: str, run: str, temps: List[str]) -> str:
     """Return a referable relation for a handle; materialize query sources to a
-    session temp table (recorded in `temps` for cleanup)."""
+    uniquely-named session temp table (recorded in `temps` for cleanup)."""
     sql = getattr(handle, "sql", None)
     if not sql:
         return _table_ref(handle, dialect)
     if dialect == "postgres":
-        name = f"_kontra_cmp_{side}"
-        _cursor_exec(conn, f"DROP TABLE IF EXISTS {name}")
+        name = f"_kontra_cmp_{side}_{run}"
         _cursor_exec(conn, f"CREATE TEMP TABLE {name} AS {sql}")
         temps.append(name)
         return name
     # sqlserver
-    name = f"#kontra_cmp_{side}"
-    _cursor_exec(conn, f"IF OBJECT_ID('tempdb..{name}') IS NOT NULL DROP TABLE {name}")
+    name = f"#kontra_cmp_{side}_{run}"
     _cursor_exec(conn, f"SELECT * INTO {name} FROM ({sql}) _kontra_src")
     temps.append(name)
     return name
@@ -246,9 +265,34 @@ def _drop_temps(conn, temps: List[str], dialect: str) -> None:
             pass
 
 
-def _rollback(conn) -> None:
+def _savepoint_begin(conn, dialect: str) -> Optional[str]:
+    """Create a savepoint so Mode A can undo ONLY its own work on a caller-owned
+    connection (never the caller's prior uncommitted work). None if unavailable."""
+    name = "kontra_cmp_" + uuid.uuid4().hex[:10]
     try:
-        conn.rollback()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"SAVEPOINT {name}" if dialect == "postgres"
+                else f"SAVE TRANSACTION {name}"
+            )
+        finally:
+            cur.close()
+        return name
+    except Exception:
+        return None
+
+
+def _savepoint_rollback(conn, name: str, dialect: str) -> None:
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"ROLLBACK TO SAVEPOINT {name}" if dialect == "postgres"
+                else f"ROLLBACK TRANSACTION {name}"
+            )
+        finally:
+            cur.close()
     except Exception:
         pass
 
@@ -267,11 +311,19 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
 
     from kontra.connectors.db_utils import get_connection_ctx
 
+    external = hb.external_conn is not None  # caller-owned connection
+    run = uuid.uuid4().hex[:10]
     with get_connection_ctx(hb, conn_label) as conn:
+        # On a caller-owned connection, isolate all Mode A work behind a savepoint
+        # so a fallback or error undoes only our temp tables — never the caller's
+        # uncommitted work. If we can't isolate, don't touch the connection.
+        savepoint = _savepoint_begin(conn, dialect) if external else None
+        if external and savepoint is None:
+            raise _FallbackToPolars("cannot isolate Mode A on the caller's connection")
         temps: List[str] = []
         try:
-            b_ref = _prepare(conn, hb, dialect, "b", temps)
-            a_ref = _prepare(conn, ha, dialect, "a", temps)
+            b_ref = _prepare(conn, hb, dialect, "b", run, temps)
+            a_ref = _prepare(conn, ha, dialect, "a", run, temps)
 
             b_cols = _describe(conn, b_ref, dialect)
             a_cols = _describe(conn, a_ref, dialect)
@@ -290,19 +342,31 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
             b_nonkey = [c for c in b_names if c not in keyset]
             a_nonkey = [c for c in a_names if c not in keyset]
             common = sorted(set(b_nonkey) & set(a_nonkey))
+
+            # Key columns must have identical types on both sides — Polars joins on
+            # matching dtypes; SQL would coerce (e.g. int vs '01'). Common non-key
+            # columns too (Polars string-casts differing types; SQL cannot mirror).
+            for k in key:
+                if b_types.get(k) != a_types.get(k):
+                    raise _FallbackToPolars(f"cross-type key column '{k}'")
             for c in common:
                 if b_types.get(c) != a_types.get(c):
                     raise _FallbackToPolars(f"cross-type common column '{c}'")
 
-            columns_added = sorted(set(a_nonkey) - set(b_nonkey))
-            columns_removed = sorted(set(b_nonkey) - set(a_nonkey))
-
-            # SQL Server char-key equality (collation + trailing-space padding)
-            # is hard to match byte-for-byte in GROUP BY/DISTINCT/JOIN; defer.
+            # PostgreSQL bpchar/CHAR(n) ignores trailing padding; defer keys+values.
+            if dialect == "postgres":
+                for name in list(key) + common:
+                    if b_types.get(name) in _PG_BPCHAR_OIDS:
+                        raise _FallbackToPolars(f"bpchar/CHAR column '{name}' on PostgreSQL")
+            # SQL Server char keys: collation + trailing-space equality in
+            # GROUP BY/DISTINCT/JOIN is not reliably byte-equal; defer (either side).
             if dialect == "sqlserver":
                 for k in key:
-                    if _is_char(b_types[k], dialect):
+                    if _is_char(b_types[k], dialect) or _is_char(a_types[k], dialect):
                         raise _FallbackToPolars(f"char key column '{k}' on SQL Server")
+
+            columns_added = sorted(set(a_nonkey) - set(b_nonkey))
+            columns_removed = sorted(set(b_nonkey) - set(a_nonkey))
 
             key_out = ", ".join(_q(k, dialect) for k in key)
             key_null = " OR ".join(f"{_q(k, dialect)} IS NULL" for k in key)
@@ -343,6 +407,7 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
 
             m = 0
             changed_rows = 0
+            unchanged_rows = 0
             per_col_changed: Dict[str, int] = {}
             if preserved > 0 and common:
                 row_pred = " OR ".join(cmp_pred(c) for c in common)
@@ -360,15 +425,15 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
                 cmap = dict(zip(cnames, crow))
                 m = int(cmap["m"])
                 changed_rows = int(cmap["changed_rows"])
+                unchanged_rows = m - changed_rows
                 for c in common:
                     per_col_changed[c] = int(cmap["chg__" + c])
             elif preserved > 0:
-                crow, _ = _cursor_exec(
-                    conn, f"SELECT count(*) FROM {b_ref} b JOIN {a_ref} a ON {on_clause}", fetch="one"
-                )
-                m = int(crow[0])
+                # No common non-key columns: nothing can change. The Polars
+                # reference sets unchanged_rows = preserved (distinct keys), NOT
+                # the row-level join count.
+                unchanged_rows = preserved
 
-            unchanged_rows = m - changed_rows
             columns_modified = [c for c in common if per_col_changed.get(c, 0) > 0]
             modified_fraction = {c: per_col_changed[c] / m for c in columns_modified if m > 0}
 
@@ -387,11 +452,13 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
                     "before": None,
                     "after": (a_nulls.get(c, 0) / after_rows) if after_rows else 0.0,
                 }
-        except Exception:
-            _rollback(conn)
-            raise
         finally:
-            _drop_temps(conn, temps, dialect)
+            if savepoint is not None:
+                # Undo ONLY Mode A's work (temp tables + our tx state); the
+                # caller's prior uncommitted work on this connection is preserved.
+                _savepoint_rollback(conn, savepoint, dialect)
+            else:
+                _drop_temps(conn, temps, dialect)
 
     row_delta = after_rows - before_rows
     row_ratio = after_rows / before_rows if before_rows > 0 else float("inf")
