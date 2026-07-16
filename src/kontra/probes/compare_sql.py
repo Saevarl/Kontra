@@ -222,8 +222,15 @@ class _SqlServer(_Backend):
         return f"ROLLBACK TRANSACTION {name}"
 
     def is_char(self, type_code):
-        import pymssql
-
+        # pyodbc (the Entra/ODBC driver) reports Python types in cursor.description;
+        # pymssql reports its own DBAPIType objects. Detect char columns for both,
+        # and never hard-import pymssql — an Entra-only install has no pymssql.
+        if isinstance(type_code, type):
+            return type_code is str
+        try:
+            import pymssql
+        except ImportError:
+            return False
         return type_code == pymssql.STRING
 
     def value_operand(self, expr, is_char):
