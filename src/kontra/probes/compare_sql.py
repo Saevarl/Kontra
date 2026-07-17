@@ -91,6 +91,12 @@ class _Backend:
     def _key_database(self, handle, dp) -> Any:
         return getattr(dp, "database", getattr(dp, "dbname", None))
 
+    def same_engine(self, before, after) -> bool:
+        """Whether two handles can be evaluated through one connection."""
+        before_key = self.engine_key(before)
+        after_key = self.engine_key(after)
+        return before_key is not None and before_key == after_key
+
     # -- SQL syntax --------------------------------------------------------- #
     def quote(self, name: str) -> str:
         return esc_ident(name, self.dialect)
@@ -201,6 +207,25 @@ class _SqlServer(_Backend):
         # server; a query handle runs in the connection's DB, so keep the DB in
         # the key to make cross-database query pairs ineligible.
         return getattr(dp, "database", None) if getattr(handle, "sql", None) else None
+
+    def same_engine(self, before, after):
+        """SQL Server tables are three-part referable from a query connection.
+
+        Database identity matters only when both sides are database-relative
+        query text. A table handle's database may differ because its reference
+        is fully qualified and can be read through the query side's connection.
+        """
+        before_key = self.engine_key(before)
+        after_key = self.engine_key(after)
+        if before_key is None or after_key is None:
+            return False
+        if before_key[0] != "params" or after_key[0] != "params":
+            return before_key == after_key
+        if before_key[:4] != after_key[:4]:
+            return False
+        if getattr(before, "sql", None) and getattr(after, "sql", None):
+            return before_key[4] == after_key[4]
+        return True
 
     def _qualify(self, db, schema, table):
         parts = [db, schema, table] if db else [schema, table]
@@ -314,12 +339,20 @@ def plan_compare(
     if backend is None or backend is not _backend_for(ha):
         return None
 
-    kb = backend.engine_key(hb)
-    ka = backend.engine_key(ha)
-    if kb is None or kb != ka:
+    if not backend.same_engine(hb, ha):
         return None
 
-    return {"backend": backend, "before": hb, "after": ha, "key": list(before_key)}
+    # Query SQL is database-relative, whereas SQL Server table references are
+    # three-part qualified. For a mixed pair, execute on the query side so its
+    # SQL sees the database selected by Query(source=...).
+    connection = ha if getattr(ha, "sql", None) and not getattr(hb, "sql", None) else hb
+    return {
+        "backend": backend,
+        "before": hb,
+        "after": ha,
+        "connection": connection,
+        "key": list(before_key),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -380,15 +413,16 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
     it cannot guarantee Polars-equivalent counts."""
     backend: _Backend = plan["backend"]
     hb, ha = plan["before"], plan["after"]
+    connection = plan["connection"]
     key: List[str] = plan["key"]
 
     from kontra.connectors.db_utils import get_connection_ctx
 
     q = backend.quote
-    external = hb.external_conn is not None  # caller-owned connection
+    external = connection.external_conn is not None  # caller-owned connection
     run = uuid.uuid4().hex[:10]
 
-    with get_connection_ctx(hb, backend.conn_label) as conn:
+    with get_connection_ctx(connection, backend.conn_label) as conn:
         # On a caller-owned connection, isolate all Mode A work behind a savepoint
         # so a fallback or error undoes only our temp tables — never the caller's
         # uncommitted work. If we can't isolate, don't touch the connection.

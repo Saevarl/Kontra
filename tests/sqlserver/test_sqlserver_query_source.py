@@ -1,14 +1,53 @@
 # tests/sqlserver/test_query_source.py
 """Query source (read-only SELECT) integration tests for SQL Server."""
 
+import uuid
+
 import pytest
 
 import kontra
 from kontra import Query
 
 
+@pytest.fixture
+def cross_database_users_uri():
+    """Clone users into tempdb so mixed-pair planning must use the query DB."""
+    import pymssql
+
+    table = "kontra_query_compare_" + uuid.uuid4().hex[:8]
+    conn = pymssql.connect(
+        server="localhost", port=1433, user="sa",
+        password="Kontra_Test123!", database="kontra_test",
+    )
+    cur = conn.cursor()
+    cur.execute(f"SELECT * INTO tempdb.dbo.{table} FROM dbo.users")
+    conn.commit()
+    try:
+        yield f"mssql://sa:Kontra_Test123!@localhost:1433/tempdb/dbo.{table}"
+    finally:
+        cur.execute(f"DROP TABLE tempdb.dbo.{table}")
+        conn.commit()
+        conn.close()
+
+
 @pytest.mark.integration
 class TestQuerySourceSqlServer:
+    @pytest.mark.parametrize("query_first", [True, False], ids=["query-table", "table-query"])
+    def test_compare_query_and_table_uses_sql_pushdown(
+        self, sqlserver_uri, cross_database_users_uri, query_first,
+    ):
+        query = Query("SELECT * FROM dbo.users", source=sqlserver_uri)
+        before, after = (
+            (query, cross_database_users_uri)
+            if query_first else (cross_database_users_uri, query)
+        )
+
+        r = kontra.compare(before, after, key="user_id")
+
+        assert r.execution_tier == "sql"
+        assert r.dropped == 0 and r.added == 0 and r.changed_rows == 0
+        assert r.preserved == r.before_rows == r.after_rows
+
     def test_compare_query_vs_query(self, sqlserver_uri):
         before = Query(
             "SELECT 1 AS id, 100 AS amt UNION ALL SELECT 2, 200 UNION ALL SELECT 3, 300",
