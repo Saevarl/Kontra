@@ -1114,12 +1114,18 @@ class ScoutProfiler:
         if _is_numeric(dtype) and self.include_numeric_stats:
             percentiles = {}
             quantiles = results.get(f"__quantiles__{col_name}")
-            if (quantiles is not None and self.backend.source_format == "clickhouse"
-                    and "Nullable(" in raw_type and distinct_count == 0):
-                # quantilesExact on an all-null Nullable integer returns zero
-                # elements, but the old scalar quantileExact returns NULL.
-                # The same aggregate's distinct count proves this input empty.
-                quantiles = [None] * len(quantiles)
+            if quantiles is not None and self.backend.source_format == "clickhouse":
+                low = results.get(f"__min__{col_name}")
+                # Sampled aggregates can disagree with row_count, so an empty
+                # distinct count also proves there was no aggregate input.
+                empty = distinct_count == 0 or non_null_count <= 0
+                if empty or (isinstance(low, float) and low != low):
+                    # Without a finite value, quantilesExact returns zeros (or no
+                    # elements for Nullable input), whereas scalar quantileExact
+                    # returned NULL for all-null Nullable input and NaN otherwise.
+                    # min() skips NaN, so a NaN minimum means every value is NaN.
+                    fill = None if "Nullable(" in raw_type and empty else float("nan")
+                    quantiles = [fill] * (1 + sum(p != 50 for p in self.percentiles))
             if quantiles is not None:
                 percentiles = {
                     f"p{p}": float(value)

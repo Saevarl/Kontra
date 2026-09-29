@@ -285,3 +285,41 @@ def test_nonfinite_and_all_null_quantiles_match_scalar_sql(sql_profile_table):
                 )
     finally:
         backend.close()
+
+
+@pytest.mark.parametrize("values", ["(nan),(nan)", None])
+def test_no_finite_values_quantiles_match_scalar_sql(sql_profile_table, values):
+    family, uri, cls, execute, _name = sql_profile_table
+    if family == "sqlserver":
+        pytest.skip("SQL Server profiles do not compute percentiles")
+    execute(
+        "DELETE FROM sqlprof_regression"
+        if family != "clickhouse"
+        else "TRUNCATE TABLE sqlprof_regression"
+    )
+    if values is not None:
+        execute(
+            "INSERT INTO sqlprof_regression (x) VALUES "
+            + (values.replace("nan", "\x27NaN\x27") if family == "postgres" else values)
+        )
+    p = kontra.profile(uri, preset="interrogate", columns=["x"], save=False)
+    from math import isnan
+
+    from kontra.connectors.handle import DatasetHandle
+
+    backend = cls(DatasetHandle.from_uri(uri))
+    backend.connect()
+    try:
+        expected = backend.execute_stats_query(
+            [
+                f"PERCENTILE_CONT({level / 100}) WITHIN GROUP (ORDER BY x) AS q{level}"
+                for level in (25, 50, 75, 99)
+            ]
+        )
+    finally:
+        backend.close()
+    c = p.get_column("x")
+    actual = {50: c.numeric.median, **{i: c.numeric.percentiles.get(f"p{i}") for i in (25, 75, 99)}}
+    for level, value in actual.items():
+        ref = expected[f"q{level}"]
+        assert value == ref or (value is not None and ref is not None and isnan(value) and isnan(ref))

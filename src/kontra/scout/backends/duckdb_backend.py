@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import stat
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,6 +18,10 @@ import duckdb
 from kontra.logging import get_logger
 
 _logger = get_logger(__name__)
+
+_HISTOGRAM_SAFE_TYPE = re.compile(
+    r"(U?(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT)|BOOLEAN|VARCHAR|DECIMAL\(\d+,\s*\d+\))"
+)
 
 try:
     import pyarrow.parquet as pq
@@ -183,7 +188,16 @@ class DuckDBBackend:
         still controls whether the public result includes a complete value list. Sampled
         views retain their previous per-query sampling behavior.
         """
-        columns = [name for name, limit in requests if limit is None]
+        # Only scalar types whose DuckDB and Python equality agree. HISTOGRAM
+        # merges finite values into a NaN bucket, nested keys do not convert to
+        # dict keys, and nanosecond timestamps and DATE 'infinity' collide with
+        # other values once converted to Python datetimes/dates.
+        # Other columns keep their GROUP BY queries.
+        types = dict(self.get_schema())
+        columns = [
+            name for name, limit in requests
+            if limit is None and _HISTOGRAM_SAFE_TYPE.fullmatch(types.get(name, "").upper())
+        ]
         if self.sample_size is not None or len(columns) < 2:
             return
         exprs = ", ".join(f"HISTOGRAM({self.esc_ident(c)})" for c in columns)

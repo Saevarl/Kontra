@@ -168,3 +168,49 @@ def test_batched_medium_cardinality_preserves_public_list_and_top_limits(tmp_pat
     assert all(len(c.top_values) == 3 for c in p.columns)
     assert [v.count for v in p.get_column("x").top_values] == [34] * 3
     assert [v.count for v in p.get_column("y").top_values] == [25] * 3
+
+
+def test_batched_distributions_keep_nan_separate(tmp_path):
+    path = tmp_path / "nan.parquet"
+    nan = float("nan")
+    pl.DataFrame({"x": [nan, 1.0, nan, 1.0], "y": [False, True, False, True]}).write_parquet(path)
+    batched = kontra.profile(str(path), preset="interrogate")
+    alone = kontra.profile(str(path), preset="interrogate", columns=["x"])
+    x, x_alone = (next(c for c in p.columns if c.name == "x") for p in (batched, alone))
+    assert sorted(t.count for t in x.top_values) == [2, 2]
+    assert [t.count for t in x.top_values] == [t.count for t in x_alone.top_values]
+    assert len(x.values) == 2
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pl.DataFrame({"tags": [["a"], ["b"], ["a"]], "k": [1, 2, 1]}),
+        pl.DataFrame({
+            "t": pl.Series([1, 2, 3] * 10, dtype=pl.Int64).cast(pl.Datetime("ns")),
+            "k": [1, 2] * 15,
+        }),
+    ],
+    ids=["nested", "timestamp_ns"],
+)
+def test_batched_distributions_skip_unsafe_key_types(tmp_path, frame):
+    path = tmp_path / "keys.parquet"
+    frame.write_parquet(path)
+    assert_batched_matches_single_column(str(path), frame.columns[0], frame.height)
+
+
+def test_batched_distributions_keep_infinite_dates_separate(tmp_path):
+    path = tmp_path / "dates.parquet"
+    duckdb.sql(
+        "SELECT * FROM (VALUES (DATE 'infinity', 1), (DATE '9999-12-31', 2),"
+        " (DATE 'infinity', 1), (DATE '9999-12-31', 2)) t(d, k)"
+    ).write_parquet(str(path))
+    assert_batched_matches_single_column(str(path), "d", 4)
+
+
+def assert_batched_matches_single_column(path, name, height):
+    batched = kontra.profile(path, preset="interrogate")
+    alone = kontra.profile(path, preset="interrogate", columns=[name])
+    col, col_alone = (next(c for c in p.columns if c.name == name) for p in (batched, alone))
+    assert sorted(t.count for t in col.top_values) == sorted(t.count for t in col_alone.top_values)
+    assert sum(t.count for t in col.top_values) == height

@@ -96,6 +96,10 @@ def _compatible_schema(rules, schema):
             }[kind]
             if any(v is not None and type(v) not in types for v in rule.params["values"]):
                 return False
+            # Polars infers a list's dtype from its first element, so [1, 2.5]
+            # fails Series construction where SQL compares both exactly.
+            if len({type(v) for v in rule.params["values"] if v is not None}) > 1:
+                return False
     return True
 
 

@@ -26,6 +26,16 @@ def test_local_route_matches_sql_null_nan_and_duplicate_counts(tmp_path, suffix,
     assert signature(actual) == signature(sql)
 
 
+def test_mixed_numeric_allowed_values_matches_sql(tmp_path):
+    path = tmp_path / "mixed.parquet"
+    pl.DataFrame({"x": [1.0, 2.5]}).write_parquet(path)
+    kwargs = {"rules": [rules.allowed_values("x", [1, 2.5])], "tally": True, "save": False}
+    actual = kontra.validate(str(path), **kwargs)
+    sql = kontra.validate(str(path), preplan="off", **kwargs)
+    assert signature(actual) == signature(sql)
+    assert actual.rules[0].passed
+
+
 @pytest.mark.parametrize("bounds", [{"min": 0}, {"max": 2}, {"min": 0, "max": 2}])
 def test_float_range_nan_matches_sql(tmp_path, bounds):
     path = tmp_path / "nan.parquet"
