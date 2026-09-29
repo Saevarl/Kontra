@@ -25,7 +25,7 @@ def pyodbc_conn():
     if not drivers:
         pytest.skip("no SQL Server ODBC driver installed")
     conn_str = (
-        f"DRIVER={{{drivers[-1]}}};SERVER=localhost,1433;DATABASE=kontra_test;"
+        f"DRIVER={{{drivers[-1]}}};SERVER=127.0.0.1,1433;DATABASE=kontra_test;"
         "UID=sa;PWD=Kontra_Test123!;TrustServerCertificate=yes;Encrypt=no"
     )
     try:

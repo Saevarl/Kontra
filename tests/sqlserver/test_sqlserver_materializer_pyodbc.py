@@ -28,7 +28,8 @@ import datetime
 import pytest
 
 # Connection parameters mirror tests/sqlserver/conftest.py (the mssql:// URI).
-_HOST = "localhost"
+# Explicit IPv4 matches the local Docker port binding on IPv6-first hosts.
+_HOST = "127.0.0.1"
 _PORT = 1433
 _DATABASE = "kontra_test"
 _USER = "sa"

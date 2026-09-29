@@ -76,15 +76,37 @@ class PostgreSQLBackend:
         if self._schema is not None:
             return self._schema
 
+        # Match information_schema.columns' type names and visibility, but
+        # resolve this one relation directly. Avoid planning its unrelated
+        # defaults, collation, identity, and sequence joins on every profile.
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT column_name, data_type
-                FROM information_schema.columns
-                WHERE table_schema = %s AND table_name = %s
-                ORDER BY ordinal_position
+                SELECT a.attname,
+                    CASE WHEN t.typtype = 'd' THEN
+                        CASE WHEN bt.typelem <> 0 AND bt.typlen = -1 THEN 'ARRAY'
+                             WHEN nbt.nspname = 'pg_catalog' THEN pg_catalog.format_type(t.typbasetype, NULL)
+                             ELSE 'USER-DEFINED' END
+                    ELSE
+                        CASE WHEN t.typelem <> 0 AND t.typlen = -1 THEN 'ARRAY'
+                             WHEN nt.nspname = 'pg_catalog' THEN pg_catalog.format_type(a.atttypid, NULL)
+                             ELSE 'USER-DEFINED' END
+                    END
+                FROM pg_catalog.pg_attribute a
+                JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+                JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
+                JOIN pg_catalog.pg_namespace nt ON nt.oid = t.typnamespace
+                LEFT JOIN pg_catalog.pg_type bt ON t.typtype = 'd' AND bt.oid = t.typbasetype
+                LEFT JOIN pg_catalog.pg_namespace nbt ON nbt.oid = bt.typnamespace
+                WHERE a.attrelid = pg_catalog.to_regclass(%s)
+                  AND a.attnum > 0 AND NOT a.attisdropped
+                  AND c.relkind IN ('r', 'v', 'f', 'p')
+                  AND NOT pg_catalog.pg_is_other_temp_schema(c.relnamespace)
+                  AND (pg_catalog.pg_has_role(c.relowner, 'USAGE')
+                       OR pg_catalog.has_column_privilege(c.oid, a.attnum, 'SELECT, INSERT, UPDATE, REFERENCES'))
+                ORDER BY a.attnum
                 """,
-                (self.params.schema, self.params.table),
+                (self._qualified_table(),),
             )
             self._schema = [(row[0], row[1]) for row in cur.fetchall()]
             return self._schema
@@ -193,6 +215,28 @@ class PostgreSQLBackend:
         except _get_db_error() as e:
             _logger.debug(f"Query error fetching top values for {column}: {e}")
             return []
+
+    def fetch_value_counts(self, column: str) -> Optional[List[Tuple[Any, int]]]:
+        """All non-null values and exact frequencies, in database value order.
+
+        Used only when the profiler already needs the complete distinct list.
+        This replaces separate top-value and DISTINCT scans of the same column.
+        """
+        col = self.esc_ident(column)
+        sql = (
+            f"SELECT {col}, COUNT(*) FROM {self._qualified_table()} "
+            f"WHERE {col} IS NOT NULL GROUP BY {col} ORDER BY {col}"
+        )
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(sql)
+                return [(r[0], int(r[1])) for r in cur.fetchall()]
+        except _get_db_error() as e:
+            # This connection is owned by this read-only profile call. Recover
+            # from an unsupported grouping/sort so the original queries can run.
+            self._conn.rollback()
+            _logger.debug("Combined value query failed for %s: %s", column, e)
+            return None
 
     def fetch_distinct_values(self, column: str) -> List[Any]:
         col = self.esc_ident(column)

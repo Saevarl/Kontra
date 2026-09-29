@@ -203,6 +203,18 @@ The footer is parsed with a built-in reader, so a validation fully resolved by p
 
 ## Profile Presets: Behind the Scenes
 
+File profiling binds CSV format and schema once per `profile()` call, so its
+statistics and value queries do not repeatedly infer the same file. Each call
+creates a fresh reader; replacing a file at the same path is observed by the
+next call. DuckDB connections and Parquet metadata readers are explicitly
+closed after use, including when profiling fails.
+
+For DuckDB-backed `interrogate` profiles, the median and requested percentiles
+share one exact quantile aggregate per numeric column. This preserves the
+existing finite-value filtering and percentile output; it does not substitute
+approximate statistics. DataFrame profiling still includes conversion and
+temporary Parquet serialization inside the public API call.
+
 ### scout (metadata only)
 
 Reads only file/database metadata:
@@ -334,3 +346,45 @@ Stats  •  rows=5,000,000  duration=1403ms  engine=duckdb+polars
 Each rule shows which path resolved it: `[metadata]` (preplan) or `[sql]` (pushdown).
 
 To preview tier assignments without running validation, use `--explain` or `explain=True` in the Python API.
+
+## SQL profiling
+
+`kontra.profile()` reuses one connection within each call. For SQL sources it
+combines low-cardinality value queries, uses exact counts to avoid regrouping
+proven constant or unique columns, and batches ClickHouse distributions. Sampled
+or estimated counts cannot authorize the exact-frequency shortcut. PostgreSQL
+schema discovery retains the type names and visibility of `information_schema`.
+
+## Local execution and repeated profiling reads
+
+Small local Parquet files with exact-count scalar contracts can execute through
+one projected Polars read. The selection requires enabled, successful metadata analysis and
+compatible built-in `not_null`, `unique`, integer `range`, or
+`allowed_values` rules. Routing budgets are 32 MiB on disk, 64 MiB of Parquet
+row-group uncompressed bytes, and 250,000 rows. These are conservative selection
+budgets, not hard limits on validation inputs or peak memory. Numeric coercions (including integer columns with float bounds), oversized integer
+literals, Float32/unsigned numeric predicates, unsupported schemas,
+pruned row-group manifests, mixed/fail-fast tally plans, and reader failures retain
+the existing SQL/residual pipeline. Explicit CSV modes retain their execution
+paths. Rule results and statistics report the actual execution source.
+
+Routing reuses the preplan's byte-size estimate and reads the schema with Polars,
+avoiding a PyArrow/NumPy import solely for route selection. Duplicate failure
+details reuse a single frequency table.
+
+CSV validation retains DuckDB's reader and execution path: an experimental switch
+to Polars execution did not show reliable gains with the same parser, and changing
+parsers could change dialect, inferred types, or null handling.
+
+For `profile()`, exact counts can establish constant and unique value frequencies
+without another grouping query. DuckDB batches distributions for columns with at
+most 256 known distinct values (or the caller's larger complete-list threshold).
+The preset's public `top_n` and value-list limits still apply. Unsupported batching
+falls back to the original queries.
+
+Unsampled local `.csv` profiles requesting top values for at least four columns
+can read a file of at most 32 MiB into a projected DuckDB temporary table. All
+subsequent queries in that call reuse the parsed data. The table and distributions
+belong to the current connection and are discarded when it closes; the next
+`profile()` call reads the source afresh. Sampling, narrow projections, larger or
+remote files, and metadata-only work retain their existing read strategies.

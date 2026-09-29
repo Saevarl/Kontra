@@ -8,6 +8,8 @@ Supports Parquet, CSV, and newline-delimited JSON files (local + S3/HTTP).
 from __future__ import annotations
 
 import logging
+import os
+import stat
 from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
@@ -41,6 +43,10 @@ class DuckDBBackend:
     - S3/HTTP support via DuckDB httpfs
     """
 
+    exact_value_frequency = True
+    value_counts_batch_limit = 256
+    _MAX_MATERIALIZED_CSV_BYTES = 32 * 1024 * 1024
+
     def __init__(
         self,
         handle: DatasetHandle,
@@ -52,6 +58,7 @@ class DuckDBBackend:
         self.con: Optional[duckdb.DuckDBPyConnection] = None
         self._parquet_metadata: Optional[Any] = None
         self._view_name = "_scout"
+        self._value_counts: Dict[str, List[Tuple[Any, int]]] = {}
         # DuckDB row counts are exact (Parquet footer num_rows or COUNT(*)),
         # never statistics estimates. Exposed for provenance parity with the
         # database backends.
@@ -59,21 +66,50 @@ class DuckDBBackend:
 
     def connect(self) -> None:
         """Create DuckDB connection and source view."""
+        self._view_name = "_scout"
+        self._value_counts.clear()
         self.con = create_duckdb_connection(self.handle)
         self._create_source_view()
 
     def close(self) -> None:
         """Clean up resources."""
-        if self.con:
+        if self.con is not None:
             try:
-                self.con.execute(f"DROP VIEW IF EXISTS {self._view_name}")
-            except duckdb.Error:
-                pass  # View cleanup is best-effort
+                self.con.close()
+            finally:
+                self.con = None
+                self._value_counts.clear()
 
     def get_schema(self) -> List[Tuple[str, str]]:
         """Return [(column_name, raw_type), ...]"""
         cur = self.con.execute(f"SELECT * FROM {self._view_name} LIMIT 0")
         return [(d[0], str(d[1])) for d in cur.description]
+
+    def prepare_repeated_reads(self, columns: List[str]) -> None:
+        """Read a bounded local CSV once for this profile's subsequent queries.
+
+        Preserve DuckDB's bound dialect/types/null handling and column projection.
+        The temporary table is owned by this connection and disappears on close;
+        no source data or profile results survive across calls. Sampling keeps
+        its existing view semantics instead of freezing a new sample here.
+        """
+        if (self.handle.format != "csv" or self.handle.scheme not in ("", "file")
+                or not self.handle.uri.lower().endswith(".csv")
+                or self.sample_size is not None or len(columns) < 4):
+            return
+        try:
+            info = os.stat(self.handle.uri)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > self._MAX_MATERIALIZED_CSV_BYTES:
+                return
+            projection = ", ".join(self.esc_ident(c) for c in columns)
+            self.con.execute(
+                f"CREATE TEMP TABLE _scout_materialized AS "
+                f"SELECT {projection} FROM {self._view_name}"
+            )
+        except (OSError, duckdb.Error) as exc:
+            _logger.debug("CSV materialization unavailable: %s", exc)
+            return
+        self._view_name = "_scout_materialized"
 
     def get_row_count(self) -> int:
         """
@@ -120,6 +156,8 @@ class DuckDBBackend:
 
     def fetch_top_values(self, column: str, limit: int) -> List[Tuple[Any, int]]:
         """Fetch top N most frequent values."""
+        if column in self._value_counts:
+            return sorted(self._value_counts[column], key=lambda row: row[1], reverse=True)[:limit]
         col = self.esc_ident(column)
         sql = f"""
             SELECT {col} AS val, COUNT(*) AS cnt
@@ -135,6 +173,44 @@ class DuckDBBackend:
         except duckdb.Error as e:
             _logger.debug(f"Query error getting null counts: {e}")
             return []
+
+    def prefetch_value_counts(self, requests: List[Tuple[str, Optional[int]]]) -> None:
+        """Batch exact low-cardinality distributions into one projected scan.
+
+        HISTOGRAM ignores NULL and returns ordered native value/count pairs.
+        Only columns with a known bounded distinct count are included;
+        high-cardinality columns keep bounded top-N queries. The profiler
+        still controls whether the public result includes a complete value list. Sampled
+        views retain their previous per-query sampling behavior.
+        """
+        columns = [name for name, limit in requests if limit is None]
+        if self.sample_size is not None or len(columns) < 2:
+            return
+        exprs = ", ".join(f"HISTOGRAM({self.esc_ident(c)})" for c in columns)
+        try:
+            row = self.con.execute(f"SELECT {exprs} FROM {self._view_name}").fetchone()
+            if row is not None:
+                for name, counts in zip(columns, row):
+                    self._value_counts[name] = list(counts.items()) if counts else []
+        except (duckdb.Error, TypeError, AttributeError) as exc:
+            # Optional batching must never suppress the original query fallback.
+            self._value_counts.clear()
+            _logger.debug("Batched distributions unavailable: %s", exc)
+
+    def fetch_value_counts(self, column: str) -> Optional[List[Tuple[Any, int]]]:
+        """One ordered distribution supplies both all values and top counts."""
+        if column in self._value_counts:
+            return self._value_counts[column]
+        col = self.esc_ident(column)
+        try:
+            rows = self.con.execute(
+                f"SELECT {col}, COUNT(*) FROM {self._view_name} "
+                f"WHERE {col} IS NOT NULL GROUP BY {col} ORDER BY {col}"
+            ).fetchall()
+            return [(value, int(count)) for value, count in rows]
+        except duckdb.Error as exc:
+            _logger.debug("Combined value query failed for %s: %s", column, exc)
+            return None
 
     def fetch_distinct_values(self, column: str) -> List[Any]:
         """Fetch all distinct values for a column."""
@@ -186,7 +262,15 @@ class DuckDBBackend:
         if fmt == "parquet":
             read_fn = f"read_parquet({lit_str(uri)})"
         elif fmt == "csv":
-            read_fn = f"read_csv_auto({lit_str(uri)})"
+            # A SQL read_csv_auto view repeats dialect/schema inference for
+            # every aggregate and value query. Bind the reader once for this
+            # connection; each public profile() call still opens a fresh reader.
+            reader = self.con.read_csv(uri)
+            if not self.sample_size:
+                reader.create_view(self._view_name, replace=True)
+                return
+            reader.create_view("_scout_csv", replace=True)
+            read_fn = "_scout_csv"
         elif fmt == "json":
             read_fn = f"read_json_auto({lit_str(uri)})"
         else:
@@ -282,8 +366,8 @@ class DuckDBBackend:
                     _logger.debug(f"Could not create Azure filesystem: {e}")
                     return None
 
-            pf = pq.ParquetFile(uri, filesystem=fs)
-            self._parquet_metadata = pf.metadata
+            with pq.ParquetFile(uri, filesystem=fs) as pf:
+                self._parquet_metadata = pf.metadata
             return self._parquet_metadata
 
         except (OSError, ValueError) as e:

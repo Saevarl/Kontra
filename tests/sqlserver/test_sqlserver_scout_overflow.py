@@ -106,7 +106,7 @@ class TestSqlServerScanOverflow:
         # STDEV is computed (widened to FLOAT); just ensure it is populated.
         assert col.numeric.std is not None and col.numeric.std >= 0
 
-    def test_scan_matches_duckdb_parquet(self, overflow_table):
+    def test_scan_matches_duckdb_parquet(self, overflow_table, tmp_path):
         """Cross-backend: mean/min/max agree with a DuckDB/parquet copy."""
         import kontra
         pl = pytest.importorskip("polars")
@@ -119,7 +119,7 @@ class TestSqlServerScanOverflow:
                 "label": [r[3] for r in ROWS],
             }
         )
-        pq = "/private/tmp/bug6_scan_overflow.parquet"
+        pq = str(tmp_path / "bug6_scan_overflow.parquet")
         df.write_parquet(pq)
 
         ss = kontra.profile(overflow_table, preset="scan")

@@ -310,6 +310,13 @@ class ScoutProfiler:
             if self.columns_filter:
                 schema = [(n, t) for n, t in schema if n in self.columns_filter]
 
+            # Value-heavy local CSV profiles can reuse a projected temporary
+            # table within this call. Metadata-only and sampled paths retain
+            # their existing behavior; backends opt in explicitly.
+            if (self.include_top_values and self.top_n > 0
+                    and getattr(type(self.backend), "prepare_repeated_reads", None) is not None):
+                self.backend.prepare_repeated_reads([name for name, _ in schema])
+
             # 2. Get row count (backend handles optimization)
             row_count = self.backend.get_row_count()
 
@@ -461,13 +468,69 @@ class ScoutProfiler:
                 profile.distinct_count_estimated = True
             profiles.append(profile)
 
-        # Fetch top values and low-cardinality values
+        # A complete low-cardinality distribution supplies both the distinct
+        # list (in database order) and top frequencies without a second scan.
+        value_counts = getattr(type(self.backend), "fetch_value_counts", None)
+        if (getattr(type(self.backend), "prefetch_value_counts", None) is not None
+                and self.include_top_values and self.top_n > 0 and row_count > 0):
+            batch_threshold = max(
+                self.list_values_threshold,
+                getattr(type(self.backend), "value_counts_batch_limit", 0),
+            )
+            self.backend.prefetch_value_counts([
+                (p.name, None if p.distinct_count <= batch_threshold else self.top_n)
+                for p in profiles if not self._has_exact_value_frequency(p, row_count)
+            ])
         for profile in profiles:
+            if (self.include_top_values and self.top_n > 0
+                    and self._has_exact_value_frequency(profile, row_count)):
+                constant = profile.distinct_count == 1
+                values = self.backend.fetch_sample_values(profile.name, 1 if constant else self.top_n)
+                count = row_count - profile.null_count if constant else 1
+                profile.top_values = [
+                    TopValue(value=v, count=count, pct=count / row_count * 100) for v in values
+                ]
+                if constant:
+                    profile.values = values
+                continue
+            if (value_counts is not None and self.include_top_values and self.top_n > 0
+                    and row_count > 0 and profile.distinct_count <= self.list_values_threshold):
+                try:
+                    rows = self.backend.fetch_value_counts(profile.name)
+                except (ValueError, TypeError, OSError) as e:
+                    _logger.debug("Could not combine value queries for %s: %s", profile.name, e)
+                    rows = None
+                if rows is not None:
+                    profile.values = [v for v, _ in rows]
+                    profile.top_values = [
+                        TopValue(value=v, count=int(n), pct=int(n) / row_count * 100)
+                        for v, n in sorted(rows, key=lambda row: row[1], reverse=True)[:self.top_n]
+                    ]
+                    continue
             self._fetch_top_values(profile, row_count)
             if profile.distinct_count <= self.list_values_threshold:
                 self._fetch_all_values(profile)
 
         return profiles
+
+    def _has_exact_value_frequency(self, profile: ColumnProfile, row_count: int) -> bool:
+        """Only exact full-table counts can prove constant/unique frequencies.
+
+        Unique values are tied at frequency one, so a bounded non-null read
+        supplies valid top values without grouping the whole column again.
+        Complete multi-value lists still use database ordering.
+        """
+        return (
+            (self.backend.source_format in ("postgres", "sqlserver", "clickhouse")
+             or getattr(type(self.backend), "exact_value_frequency", False))
+            and row_count > 0
+            and not profile.null_count_estimated
+            and not profile.distinct_count_estimated
+            and (profile.distinct_count == 1 or (
+                profile.distinct_count == row_count - profile.null_count
+                and profile.distinct_count > self.list_values_threshold
+            ))
+        )
 
     def _profile_columns_from_metadata(
         self, schema: List[Tuple[str, str]], row_count: int
@@ -565,7 +628,10 @@ class ScoutProfiler:
 
         # Step 2: Get metadata (null/distinct) and classify columns
         metadata = self.backend.profile_metadata_only(schema, row_count)
-        classification = self.backend.classify_columns(schema, row_count)
+        if self.backend.source_format == "sqlserver":
+            classification = self.backend.classify_columns(schema, row_count, metadata=metadata)
+        else:
+            classification = self.backend.classify_columns(schema, row_count)
 
         # Adopt a same-moment exact COUNT(*) if the backend captured one while
         # scanning for exact null/distinct counts (avoids pairing exact
@@ -950,18 +1016,34 @@ class ScoutProfiler:
                 exprs.append(f"STDEV({c}) AS {esc(f'__std__{col}')}")
             elif is_duckdb:
                 finite_col = f"CASE WHEN ISFINITE({c}) THEN {c} END"
-                exprs.extend([
-                    f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {finite_col}) AS {esc(f'__median__{col}')}",
-                    f"STDDEV({finite_col}) AS {esc(f'__std__{col}')}",
-                ])
-                # Additional percentiles for DuckDB: expensive, only in interrogate preset
                 if self.include_percentiles:
-                    for p in self.percentiles:
-                        if p != 50:  # 50th is already the median
-                            exprs.append(
-                                f"PERCENTILE_CONT({p / 100}) WITHIN GROUP (ORDER BY {finite_col}) "
-                                f"AS {esc(f'__p{p}__{col}')}"
-                            )
+                    # One exact quantile aggregate shares selection work across
+                    # the median and requested percentiles for this column.
+                    fractions = [0.5] + [p / 100 for p in self.percentiles if p != 50]
+                    exprs.append(
+                        f"QUANTILE_CONT({finite_col}, [{', '.join(str(p) for p in fractions)}]) "
+                        f"AS {esc(f'__quantiles__{col}')}"
+                    )
+                else:
+                    exprs.append(
+                        f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {finite_col}) "
+                        f"AS {esc(f'__median__{col}')}"
+                    )
+                exprs.append(f"STDDEV({finite_col}) AS {esc(f'__std__{col}')}")
+            elif source_fmt in ("postgres", "clickhouse") and self.include_percentiles:
+                fractions = [0.5] + [p / 100 for p in self.percentiles if p != 50]
+                levels = ", ".join(str(p) for p in fractions)
+                # Keep each backend's existing exact definition: PostgreSQL
+                # interpolates, whereas ClickHouse uses quantileExact.
+                aggregate = (
+                    f"PERCENTILE_CONT(ARRAY[{levels}]) WITHIN GROUP (ORDER BY {c})"
+                    if source_fmt == "postgres"
+                    else f"quantilesExact({levels})({c})"
+                )
+                exprs.extend([
+                    f"{aggregate} AS {esc(f'__quantiles__{col}')}",
+                    f"STDDEV({c}) AS {esc(f'__std__{col}')}",
+                ])
             else:
                 exprs.extend([
                     f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {c}) AS {esc(f'__median__{col}')}",
@@ -1031,7 +1113,22 @@ class ScoutProfiler:
         # Add type-specific stats (only if included by preset)
         if _is_numeric(dtype) and self.include_numeric_stats:
             percentiles = {}
-            if self.include_percentiles:
+            quantiles = results.get(f"__quantiles__{col_name}")
+            if (quantiles is not None and self.backend.source_format == "clickhouse"
+                    and "Nullable(" in raw_type and distinct_count == 0):
+                # quantilesExact on an all-null Nullable integer returns zero
+                # elements, but the old scalar quantileExact returns NULL.
+                # The same aggregate's distinct count proves this input empty.
+                quantiles = [None] * len(quantiles)
+            if quantiles is not None:
+                percentiles = {
+                    f"p{p}": float(value)
+                    for p, value in zip(
+                        (p for p in self.percentiles if p != 50), quantiles[1:]
+                    )
+                    if value is not None
+                }
+            elif self.include_percentiles:
                 for p in self.percentiles:
                     val = results.get(f"__p{p}__{col_name}")
                     if val is not None:
@@ -1041,7 +1138,10 @@ class ScoutProfiler:
                 min=self._to_float(results.get(f"__min__{col_name}")),
                 max=self._to_float(results.get(f"__max__{col_name}")),
                 mean=self._to_float(results.get(f"__mean__{col_name}")),
-                median=self._to_float(results.get(f"__median__{col_name}")),
+                median=self._to_float(
+                    quantiles[0] if quantiles is not None
+                    else results.get(f"__median__{col_name}")
+                ),
                 std=self._to_float(results.get(f"__std__{col_name}")),
                 percentiles=percentiles,
             )

@@ -186,6 +186,7 @@ def _execute_parquet_preplan(
         row_groups=row_groups,
         columns=columns,
         total_rows=total_rows,
+        parquet_byte_size=pre.stats.get("total_byte_size"),
         analyze_ms=analyze_ms,
         summary=_build_preplan_summary(
             enabled=True,

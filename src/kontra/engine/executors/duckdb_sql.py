@@ -256,10 +256,11 @@ def _create_source_view(
 
     if mode in {"auto", "duckdb"}:
         try:
-            con.execute(
-                f"CREATE OR REPLACE VIEW {esc_ident(view)} AS "
-                f"SELECT * FROM read_csv_auto({lit_str(handle.uri)})"
-            )
+            # A relation view retains the bound CSV reader (dialect/schema).
+            # A SQL text view reruns automatic detection for every query,
+            # including LIMIT 0. This binding lives only for this connection;
+            # every validation still reads the source and infers it afresh.
+            con.read_csv(handle.uri).create_view(view, replace=True)
             return None, None, "duckdb"
         except duckdb.Error:
             if mode == "duckdb":
@@ -304,14 +305,7 @@ DIALECT = "duckdb"
 def _assemble_single_row(selects: List[str]) -> str:
     if not selects:
         return "SELECT 0 AS __no_sql_rules__ LIMIT 1;"
-    ctes, aliases = [], []
-    for i, sel in enumerate(selects):
-        nm = f"a{i}"
-        ctes.append(f"{nm} AS (SELECT {sel} FROM _data)")
-        aliases.append(nm)
-    with_clause = "WITH " + ", ".join(ctes)
-    cross = " CROSS JOIN ".join(aliases)
-    return f"{with_clause} SELECT * FROM {cross};"
+    return "SELECT " + ", ".join(selects) + " FROM _data;"
 
 
 def _results_from_single_row_map(values: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -650,7 +644,8 @@ class DuckDBSqlExecutor(SqlExecutor):
 
             # Get available columns to filter out rules with missing columns
             cur = con.execute(f"SELECT * FROM {esc_ident(view)} LIMIT 0")
-            available_cols_set = {d[0] for d in cur.description} if cur.description else set()
+            available_cols = [d[0] for d in cur.description] if cur.description else []
+            available_cols_set = set(available_cols)
 
             # Filter exists_specs to only include rules with valid columns
             valid_exists_specs = []
@@ -738,24 +733,25 @@ class DuckDBSqlExecutor(SqlExecutor):
                         results.extend(exists_results)
 
             # Phase 2: Aggregate query for remaining rules
+            row_count = None
             if aggregate_selects:
-                agg_sql = _assemble_single_row(aggregate_selects)
+                agg_sql = _assemble_single_row(
+                    aggregate_selects + ['COUNT(*) AS "__kontra_row_count__"']
+                )
                 cur = con.execute(agg_sql)
                 row = cur.fetchone()
                 cols = [d[0] for d in cur.description] if (row and cur.description) else []
 
                 if row and cols:
-                    agg_results = results_from_row(cols, row, is_exists=False, rule_kinds=rule_kinds)
+                    row_count = int(row[-1])
+                    agg_results = results_from_row(cols[:-1], row[:-1], is_exists=False, rule_kinds=rule_kinds)
                     results.extend(agg_results)
 
             # Get row count and column names (avoid separate introspect call)
-            row_count = None
-            available_cols = []
             try:
-                nrow = con.execute(f"SELECT COUNT(*) FROM {esc_ident(view)}").fetchone()
-                row_count = int(nrow[0]) if nrow and nrow[0] is not None else None
-                cur = con.execute(f"SELECT * FROM {esc_ident(view)} LIMIT 0")
-                available_cols = [d[0] for d in cur.description] if cur.description else []
+                if row_count is None:
+                    nrow = con.execute(f"SELECT COUNT(*) FROM {esc_ident(view)}").fetchone()
+                    row_count = int(nrow[0]) if nrow and nrow[0] is not None else None
             except duckdb.Error as e:
                 _logger.debug(f"Could not get row count/columns: {e}")
 
@@ -771,10 +767,7 @@ class DuckDBSqlExecutor(SqlExecutor):
             _raise_if_azure_error(handle, e)
             raise
         finally:
-            try:
-                con.execute(f"DROP VIEW IF EXISTS {esc_ident(view)};")
-            except duckdb.Error:
-                pass  # View cleanup is best-effort
+            con.close()
 
     def introspect(
         self,
@@ -815,7 +808,4 @@ class DuckDBSqlExecutor(SqlExecutor):
             _raise_if_azure_error(handle, e)
             raise
         finally:
-            try:
-                con.execute(f"DROP VIEW IF EXISTS {esc_ident(view)};")
-            except duckdb.Error:
-                pass  # View cleanup is best-effort
+            con.close()

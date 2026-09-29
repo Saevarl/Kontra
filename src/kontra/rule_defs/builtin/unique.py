@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from typing import Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import polars as pl
@@ -39,10 +39,6 @@ class UniqueRule(BaseRule):
 
         failed_count = total_count - distinct_count - null_count
 
-        # For sampling, still identify duplicated rows (non-null)
-        non_null_mask = col.is_not_null()
-        duplicates = col.is_duplicated() & non_null_mask
-
         # Build result manually to use SQL-semantics count
         res = {
             "rule_id": self.rule_id,
@@ -58,7 +54,7 @@ class UniqueRule(BaseRule):
             res["failure_mode"] = str(FailureMode.DUPLICATE_VALUES)
             res["details"] = self._explain_failure(df, column)
             # Store mask for sampling (still shows all duplicate rows)
-            res["_failure_mask"] = duplicates
+            res["_failure_mask"] = col.is_duplicated() & col.is_not_null()
 
         return res
 
@@ -66,34 +62,18 @@ class UniqueRule(BaseRule):
         """Generate detailed failure explanation."""
         import polars as pl
 
-        # Find duplicated values and their counts
+        # Count one Series once. Grouping the full frame twice built redundant
+        # hash tables, particularly costly when almost every value is unique.
+        # Rename the Series so a user column named "count" cannot collide with
+        # the frequency column. Keep null groups in the existing diagnostics;
+        # the validation count and sampling mask exclude nulls independently.
         duplicates_df = (
-            df.group_by(column)
-            .agg(pl.len().alias("count"))
+            df.get_column(column).rename("value").value_counts(name="count")
             .filter(pl.col("count") > 1)
-            .sort("count", descending=True)
-            .head(10)  # Top 10 duplicates
         )
-
-        top_duplicates: List[Dict[str, Any]] = []
-        for row in duplicates_df.iter_rows(named=True):
-            val = row[column]
-            count = row["count"]
-            top_duplicates.append({
-                "value": val,
-                "count": count,
-            })
-
-        total_duplicates = (
-            df.group_by(column)
-            .agg(pl.len().alias("count"))
-            .filter(pl.col("count") > 1)
-            .height
-        )
-
         return {
-            "duplicate_value_count": total_duplicates,
-            "top_duplicates": top_duplicates,
+            "duplicate_value_count": duplicates_df.height,
+            "top_duplicates": duplicates_df.sort("count", descending=True).head(10).to_dicts(),
         }
 
     def compile_predicate(self) -> Optional[Predicate]:

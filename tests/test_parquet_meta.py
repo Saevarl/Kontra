@@ -205,3 +205,33 @@ def test_all_null_column(tmp_path):
     entry = mine.row_groups[0]["x"]
     assert entry["min"] is None and entry["max"] is None
     assert entry["null_count"] == 3
+
+
+@pytest.mark.parametrize("writer", ["arrow", "polars"])
+@pytest.mark.parametrize("n", [0, 17])
+def test_uncompressed_budget_matches_arrow_for_every_row_group(tmp_path, writer, n):
+    import polars as pl
+    from kontra.preplan.planner import _read_meta_pyarrow, preplan_single_parquet
+
+    path = str(tmp_path / "budget.parquet")
+    table = pa.table({"id": pa.array(range(n), pa.int64()), "s": pa.array(["x" * 90] * n)})
+    if writer == "arrow":
+        pq.write_table(table, path, row_group_size=4)
+    else:
+        pl.from_arrow(table).write_parquet(path, row_group_size=4)
+    with pq.ParquetFile(path) as pf:
+        expected = sum(pf.metadata.row_group(i).total_byte_size for i in range(pf.num_row_groups))
+    assert read_parquet_meta(path).total_byte_size == expected
+    assert _read_meta_pyarrow(path).total_byte_size == expected
+    assert preplan_single_parquet(path, ["id"], []).stats["total_byte_size"] == expected
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [(b"\x00", None), (b"\x26\x01\x00", None), (b"\x26\x00\x00", 0), (b"\x26\x14\x00", 10)],
+)
+def test_missing_negative_and_zero_row_group_sizes(payload, expected):
+    from kontra.preplan.parquet_meta import _Reader, _parse_row_group
+
+    # Compact protocol field 2, i64: zig-zag values -1, 0, 10.
+    assert _parse_row_group(_Reader(payload)) == ([], expected)

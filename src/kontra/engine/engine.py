@@ -933,7 +933,15 @@ class ValidationEngine:
         # ------------------------------------------------------------------ #
         # Phase 6: Materializer Setup
         # ------------------------------------------------------------------ #
-        materializer = pick_materializer(handle)
+        from kontra.engine.phases.local_route import select_local_materializer
+
+        route_start = now_ms()
+        local_materializer = select_local_materializer(
+            handle, ctx, preplan, pushdown_mode=self.pushdown,
+            csv_mode=self.csv_mode, enable_projection=self.enable_projection,
+        )
+        local_route_ms = now_ms() - route_start
+        materializer = local_materializer or pick_materializer(handle)
         materializer_name = getattr(materializer, "name", "duckdb")
 
         # ------------------------------------------------------------------ #
@@ -943,7 +951,7 @@ class ValidationEngine:
             handle=handle,
             ctx=ctx,
             handled_ids_meta=preplan.handled_ids,
-            pushdown_mode=self.pushdown,
+            pushdown_mode="off" if local_materializer is not None else self.pushdown,
             csv_mode=self.csv_mode,
             show_plan=self.show_plan,
             preplan_total_rows=preplan.total_rows,
@@ -969,7 +977,7 @@ class ValidationEngine:
             enable_projection=self.enable_projection,
         )
         self.df = residual.df
-        timers.data_load_ms = residual.load_ms
+        timers.data_load_ms = residual.load_ms + local_route_ms
         timers.execute_ms = residual.execute_ms
 
         # ------------------------------------------------------------------ #

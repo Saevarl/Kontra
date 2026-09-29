@@ -18,19 +18,27 @@ from kontra.scout.dtype_mapping import normalize_dtype
 
 _logger = logging.getLogger(__name__)
 
-# Lazy-loaded pyodbc exception (pyodbc may not be installed)
-_PyodbcError = None
+# Both supported drivers are optional and must remain lazy imports.
+_DbErrors = None
+
 
 def _get_db_error():
-    """Get the pyodbc base error class, lazy-loaded."""
-    global _PyodbcError
-    if _PyodbcError is None:
+    """Return error classes for both SQL authentication and Entra connections."""
+    global _DbErrors
+    if _DbErrors is None:
+        errors = []
         try:
             import pyodbc
-            _PyodbcError = pyodbc.Error
+            errors.append(pyodbc.Error)
         except ImportError:
-            _PyodbcError = Exception
-    return _PyodbcError
+            pass
+        try:
+            import pymssql
+            errors.append(pymssql.Error)
+        except ImportError:
+            pass
+        _DbErrors = tuple(errors) or (Exception,)
+    return _DbErrors
 
 
 class SqlServerBackend:
@@ -209,6 +217,27 @@ class SqlServerBackend:
             return []
         finally:
             cursor.close()
+
+    def fetch_value_counts(self, column: str) -> Optional[List[Tuple[Any, int]]]:
+        """All non-null values and exact frequencies, in database value order.
+
+        Used only when the profiler already needs the complete distinct list.
+        This replaces separate top-value and DISTINCT scans of the same column.
+        """
+        col = self.esc_ident(column)
+        sql = (
+            f"SELECT {col}, COUNT(*) FROM {self._qualified_table()} "
+            f"WHERE {col} IS NOT NULL GROUP BY {col} ORDER BY {col}"
+        )
+        cur = self._conn.cursor()
+        try:
+            cur.execute(sql)
+            return [(r[0], int(r[1])) for r in cur.fetchall()]
+        except _get_db_error() as e:
+            _logger.debug("Combined value query failed for %s: %s", column, e)
+            return None
+        finally:
+            cur.close()
 
     def fetch_distinct_values(self, column: str) -> List[Any]:
         col = self.esc_ident(column)
@@ -768,7 +797,8 @@ class SqlServerBackend:
         return result
 
     def classify_columns(
-        self, schema: List[Tuple[str, str]], row_count: int
+        self, schema: List[Tuple[str, str]], row_count: int,
+        *, metadata: Optional[Dict[str, Dict[str, Any]]] = None
     ) -> Dict[str, Dict[str, Any]]:
         """
         Classify columns based on histogram metadata for strategic profiling.
@@ -779,7 +809,8 @@ class SqlServerBackend:
         - high: distinct > 10000 → trust histogram only
         """
         # First get metadata
-        metadata = self.profile_metadata_only(schema, row_count)
+        if metadata is None:
+            metadata = self.profile_metadata_only(schema, row_count)
 
         result = {}
         for col_name, raw_type in schema:

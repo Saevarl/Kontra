@@ -98,8 +98,11 @@ def execute_residual(
     t0 = now_ms()
 
     # If preplan produced a row-group manifest, honor it
-    if preplan.effective and _is_parquet(handle.uri) and preplan.row_groups:
-        import pyarrow as pa
+    native_full_read = (
+        getattr(materializer, "prefer_native_parquet", False)
+        and preplan.summary.get("row_groups_pruned") == 0
+    )
+    if preplan.effective and _is_parquet(handle.uri) and preplan.row_groups and not native_full_read:
         import pyarrow.parquet as pq
 
         cols = (required_cols_residual or None) if enable_projection else None
@@ -124,11 +127,8 @@ def execute_residual(
             residual_path = _azure_uri_to_path(handle.uri)
         else:
             residual_path = handle.uri
-        pf = pq.ParquetFile(residual_path, filesystem=residual_fs)
-
-        pa_cols = cols if cols else None
-        rg_tables = [pf.read_row_group(i, columns=pa_cols) for i in preplan.row_groups]
-        pa_tbl = pa.concat_tables(rg_tables) if len(rg_tables) > 1 else rg_tables[0]
+        with pq.ParquetFile(residual_path, filesystem=residual_fs) as pf:
+            pa_tbl = pf.read_row_groups(preplan.row_groups, columns=cols or None)
         df = pl.from_arrow(pa_tbl)
     else:
         # Materializer respects projection (engine passes residual required cols)

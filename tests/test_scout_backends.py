@@ -23,8 +23,11 @@ class TestPostgreSQLBackendUnit:
         """Create PostgreSQLBackend with mocked connection."""
         from kontra.scout.backends.postgres_backend import PostgreSQLBackend
 
-        with patch(
-            "kontra.scout.backends.postgres_backend.get_connection"
+        # Python 3.10 mock.patch cannot traverse the public kontra.scout
+        # function to the same-named package. Resolve the module explicitly.
+        from importlib import import_module
+        with patch.object(
+            import_module("kontra.scout.backends.postgres_backend"), "get_connection"
         ) as mock_conn:
             backend = PostgreSQLBackend(mock_handle)
             backend._conn = MagicMock()
@@ -323,8 +326,9 @@ class TestSqlServerBackendUnit:
         """Create SqlServerBackend with mocked connection."""
         from kontra.scout.backends.sqlserver_backend import SqlServerBackend
 
-        with patch(
-            "kontra.scout.backends.sqlserver_backend.get_connection"
+        from importlib import import_module
+        with patch.object(
+            import_module("kontra.scout.backends.sqlserver_backend"), "get_connection"
         ) as mock_conn:
             backend = SqlServerBackend(mock_handle)
             backend._conn = MagicMock()

@@ -390,6 +390,7 @@ def _read_meta_pyarrow(path: str, filesystem: "pafs.FileSystem | None" = None) -
         schema_names=schema_names,
         schema_types=_get_schema_types(md.schema),
         row_groups=row_groups,
+        total_byte_size=sum(md.row_group(i).total_byte_size for i in range(md.num_row_groups)),
     )
 
 
@@ -449,24 +450,23 @@ def preplan_single_parquet(
     schema_names_set = set(schema_names)
     rule_decisions: Dict[str, Decision] = {}
     fail_details: Dict[str, Dict[str, Any]] = {}
-    for rule_id, col, op, val in predicates:
+
+    def decide(col, op, val, rule_id) -> Decision:
         # If column doesn't exist in schema, skip to Polars for proper error (BUG-014)
         if op != "dtype" and col not in schema_names_set:
-            rule_decisions[rule_id] = "unknown"
-            continue
+            return "unknown"
 
         # Handle dtype checks via schema (no row-group stats needed)
         if op == "dtype":
             actual_type = schema_types.get(col)
             if actual_type is None:
                 # Column not found in schema - unknown
-                rule_decisions[rule_id] = "unknown"
+                return "unknown"
             elif _dtype_matches(actual_type, val):
-                rule_decisions[rule_id] = "pass_meta"
+                return "pass_meta"
             else:
-                rule_decisions[rule_id] = "fail_meta"
                 fail_details[rule_id] = {"expected": val, "actual": actual_type}
-            continue
+                return "fail_meta"
 
         # Handle row-group stats-based predicates
         #
@@ -479,14 +479,25 @@ def preplan_single_parquet(
         if not is_conditional:
             stats_iter = (rgc.get(col) for rgc in rg_stats)
             if _decide_fail(op, val, stats_iter):
-                rule_decisions[rule_id] = "fail_meta"
-                continue
-        # need a fresh iterator
+                return "fail_meta"
+        # Need a fresh iterator after testing for failure.
         stats_iter = (rgc.get(col) for rgc in rg_stats)
         if _decide_pass(op, val, stats_iter):
-            rule_decisions[rule_id] = "pass_meta"
+            return "pass_meta"
         else:
+            return "unknown"
+
+    # A rule may have several conjunctive bounds. Every bound must pass;
+    # one failing bound disproves the rule, and uncertainty cannot be erased.
+    for rule_id, col, op, val in predicates:
+        decision = decide(col, op, val, rule_id)
+        previous = rule_decisions.get(rule_id, "pass_meta")
+        if "fail_meta" in (previous, decision):
+            rule_decisions[rule_id] = "fail_meta"
+        elif "unknown" in (previous, decision):
             rule_decisions[rule_id] = "unknown"
+        else:
+            rule_decisions[rule_id] = "pass_meta"
 
     # Determine which RGs we still need to scan (conservative):
     # - If no predicates at all -> keep ALL RGs.
@@ -522,6 +533,8 @@ def preplan_single_parquet(
         },
         fail_details=fail_details,
     )
+    if md.total_byte_size is not None:
+        preplan.stats["total_byte_size"] = md.total_byte_size
     return preplan
 
 

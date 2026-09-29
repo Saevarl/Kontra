@@ -46,6 +46,13 @@ def test_scout_parquet_metadata_honors_non_tls_s3_endpoint(monkeypatch):
 
     class FakeParquetFile:
         metadata = object()
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            FakeParquetFile.closed = True
 
     monkeypatch.setattr(duckdb_backend.pafs, "S3FileSystem", fake_filesystem)
     monkeypatch.setattr(
@@ -55,5 +62,6 @@ def test_scout_parquet_metadata_honors_non_tls_s3_endpoint(monkeypatch):
     )
 
     assert DuckDBBackend(handle)._get_parquet_metadata() is FakeParquetFile.metadata
+    assert FakeParquetFile.closed
     assert filesystem_options["scheme"] == "http"
     assert filesystem_options["endpoint_override"] == "127.0.0.1:9000"

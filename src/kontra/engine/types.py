@@ -187,6 +187,8 @@ class PreplanResult:
     analyze_ms: int = 0
     # Summary for stats
     summary: Dict[str, Any] = field(default_factory=dict)
+    # Per-call Parquet routing budget; no retained reader or cross-call cache.
+    parquet_byte_size: Optional[int] = None
 
 
 @dataclass

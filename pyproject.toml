@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77.0.3,<85", "wheel>=0.45,<0.49"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,13 +8,12 @@ version = "0.14.2"
 description = "Developer-first data quality engine"
 readme = "README.md"
 authors = [{ name = "Saevarlb" }]
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 requires-python = ">=3.10"
 keywords = ["data-quality", "validation", "data-contracts", "data-profiling", "mcp", "polars", "duckdb"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -24,14 +23,14 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
-    "polars>=0.20.0",
-    "duckdb>=0.9.0",
-    "pydantic>=2.0.0",
-    "typer>=0.9.0",
-    "rich>=13.0.0",
-    "pyarrow>=14.0.0",
-    "pyyaml>=6.0.0",
-    "sqlglot>=20.0.0",
+    "polars>=1.34,<2",
+    "duckdb>=1.4,<2",
+    "pydantic>=2.11,<3",
+    "typer>=0.19,<0.28",
+    "rich>=13.9,<16",
+    "pyarrow>=20,<26",
+    "pyyaml>=6.0.2,<7",
+    "sqlglot>=28,<31",
 ]
 
 [project.urls]
@@ -45,31 +44,38 @@ kontra = "kontra.cli.main:main"
 kontra-mcp = "kontra.mcp.cli:main"
 
 [project.optional-dependencies]
-s3 = ["s3fs>=2024.6.0"]
-postgres = ["psycopg[binary]>=3.0.0"]
-mcp = ["mcp>=1.27,<2"]
-mcp-postgres = ["mcp>=1.27,<2", "psycopg[binary]>=3.0.0"]
-sqlserver = ["pymssql>=2.2.0"]
+s3 = ["s3fs>=2025.3"]
+postgres = ["psycopg[binary]>=3.2,<4"]
+# MCP 2 renames FastMCP and changes transports and return types.
+mcp = ["mcp>=1.30,<2"]
+mcp-postgres = ["mcp>=1.30,<2", "psycopg[binary]>=3.2,<4"]
+sqlserver = ["pymssql>=2.3,<3"]
 # Entra ID (Azure AD) auth for Azure SQL / Managed Instance. Requires a
 # Microsoft ODBC driver (msodbcsql18) installed on the host. On Linux/macOS the
 # driver acquires the token via the Authentication=ActiveDirectory* keywords. On
 # Windows those keywords are unsupported, so azure-identity is used to acquire an
 # access token that is passed to the driver via pyodbc attrs_before.
-sqlserver-entra = ["pyodbc>=5.0.0", "azure-identity>=1.15.0"]
+sqlserver-entra = ["pyodbc>=5.2,<6", "azure-identity>=1.23,<2"]
 # ClickHouse: HTTP client for the columnar OLAP store.
-clickhouse = ["clickhouse-connect>=0.7.0"]
+clickhouse = ["clickhouse-connect>=1.0,<2"]
 all = [
-    "s3fs>=2024.6.0",
-    "psycopg[binary]>=3.0.0",
-    "pymssql>=2.2.0",
-    "pyodbc>=5.0.0",
-    "azure-identity>=1.15.0",
-    "clickhouse-connect>=0.7.0",
+    "s3fs>=2025.3",
+    "psycopg[binary]>=3.2,<4",
+    "pymssql>=2.3,<3",
+    "pyodbc>=5.2,<6",
+    "azure-identity>=1.23,<2",
+    "clickhouse-connect>=1.0,<2",
 ]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
-    "ruff>=0.1.0",
+    "pytest>=8.4,<10",
+    "pytest-cov>=7,<8",
+    "ruff>=0.14,<0.17",
+    # Required by conftest and pandas/MCP tests; [all] is backend-only.
+    "numpy>=2.2,<3",
+    "pandas>=2.2,<3; python_version < '3.11'",
+    "pandas>=2.2,<4; python_version >= '3.11'",
+    "mcp>=1.30,<2",
+    "build>=1.2,<2",
 ]
 
 [tool.setuptools.packages.find]

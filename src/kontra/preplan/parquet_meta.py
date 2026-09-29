@@ -74,6 +74,9 @@ class ParquetMeta:
     # Per row group: column name -> {"min": ..., "max": ..., "null_count": int?}
     # min/max are typed Python values (int/float/str/bool/date/datetime/time).
     row_groups: List[Dict[str, Dict[str, Any]]]
+    # Sum of RowGroup.total_byte_size (uncompressed, still encoded). Unknown
+    # sizes must not be treated as zero by optional materialization budgets.
+    total_byte_size: Optional[int] = None
 
     @property
     def num_row_groups(self) -> int:
@@ -117,7 +120,8 @@ class _Reader:
         result = 0
         shift = 0
         while True:
-            b = self.u8()
+            b = self.buf[self.pos]
+            self.pos += 1
             result |= (b & 0x7F) << shift
             if not b & 0x80:
                 return result
@@ -140,7 +144,8 @@ class _Reader:
 
     def field_header(self, last_fid: int) -> tuple:
         """Return (ftype, fid); ftype == _T_STOP terminates the struct."""
-        byte = self.u8()
+        byte = self.buf[self.pos]
+        self.pos += 1
         if byte == 0:
             return (_T_STOP, 0)
         delta = (byte >> 4) & 0x0F
@@ -149,7 +154,8 @@ class _Reader:
         return (ftype, fid)
 
     def list_header(self) -> tuple:
-        byte = self.u8()
+        byte = self.buf[self.pos]
+        self.pos += 1
         size = (byte >> 4) & 0x0F
         etype = byte & 0x0F
         if size == 15:
@@ -166,7 +172,13 @@ class _Reader:
         if ftype == _T_BYTE:
             self.pos += 1
         elif ftype in (_T_I16, _T_I32, _T_I64):
-            self.varint()
+            # Discard the encoded integer without constructing a Python value.
+            start = self.pos
+            while self.buf[self.pos] & 0x80:
+                self.pos += 1
+                if self.pos - start > 10:
+                    raise ParquetMetaError("varint too long")
+            self.pos += 1
         elif ftype == _T_DOUBLE:
             self.pos += 8
         elif ftype == _T_BINARY:
@@ -413,17 +425,21 @@ def _parse_column_chunk(r: _Reader) -> Optional[tuple]:
         last_fid = fid
 
 
-def _parse_row_group(r: _Reader) -> List[Optional[tuple]]:
-    """Return list of per-column (path, physical, stats) tuples."""
+def _parse_row_group(r: _Reader) -> tuple[List[Optional[tuple]], Optional[int]]:
+    """Return column metadata and the declared uncompressed byte size."""
     columns: List[Optional[tuple]] = []
+    total_byte_size = None
     last_fid = 0
     while True:
         ftype, fid = r.field_header(last_fid)
         if ftype == _T_STOP:
-            return columns
+            return columns, total_byte_size
         if fid == 1:
             size, _etype = r.list_header()
             columns = [_parse_column_chunk(r) for _ in range(size)]
+        elif fid == 2 and ftype == _T_I64:
+            size = r.zigzag()
+            total_byte_size = size if size >= 0 else None
         else:
             r.skip(ftype)
         last_fid = fid
@@ -578,7 +594,7 @@ def _parse_file_meta(footer: bytes) -> ParquetMeta:
     r = _Reader(footer)
     num_rows = 0
     schema_elems: List[tuple] = []
-    raw_row_groups: List[List[Optional[tuple]]] = []
+    raw_row_groups: List[tuple[List[Optional[tuple]], Optional[int]]] = []
     last_fid = 0
     while True:
         ftype, fid = r.field_header(last_fid)
@@ -634,7 +650,7 @@ def _parse_file_meta(footer: bytes) -> ParquetMeta:
         walk("", True)
 
     row_groups: List[Dict[str, Dict[str, Any]]] = []
-    for raw_rg in raw_row_groups:
+    for raw_rg, _size in raw_row_groups:
         per_col: Dict[str, Dict[str, Any]] = {}
         for chunk in raw_rg:
             if chunk is None:
@@ -666,4 +682,9 @@ def _parse_file_meta(footer: bytes) -> ParquetMeta:
         schema_names=schema_names,
         schema_types=schema_types,
         row_groups=row_groups,
+        total_byte_size=(
+            sum(size for _, size in raw_row_groups)
+            if all(size is not None for _, size in raw_row_groups)
+            else None
+        ),
     )

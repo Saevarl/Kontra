@@ -111,6 +111,8 @@ class ClickHouseBackend:
         self._conn = None
         self._schema: Optional[List[Tuple[str, str]]] = None
         self._raw_types: Dict[str, str] = {}
+        self._value_counts: Dict[str, List[Tuple[Any, int]]] = {}
+        self._top_values: Dict[Tuple[str, int], List[Tuple[Any, int]]] = {}
         # ClickHouse row count is always exact (system.parts / count()), so this
         # stays False. Present for interface parity with PostgreSQLBackend, which
         # the profiler reads via getattr for provenance flagging.
@@ -130,6 +132,8 @@ class ClickHouseBackend:
         self._conn = self._conn_ctx.__enter__()
 
     def close(self) -> None:
+        self._value_counts.clear()
+        self._top_values.clear()
         if self._conn is not None:
             self._conn_ctx.__exit__(None, None, None)
             self._conn = None
@@ -245,6 +249,8 @@ class ClickHouseBackend:
 
     def fetch_top_values(self, column: str, limit: int) -> List[Tuple[Any, int]]:
         """Top N most frequent non-null values, computed server-side."""
+        if (column, limit) in self._top_values:
+            return self._top_values[column, limit]
         col = self.esc_ident(column)
         sql = (
             f"SELECT {col} AS val, count() AS cnt "
@@ -259,6 +265,69 @@ class ClickHouseBackend:
         except _get_db_errors() as e:
             _logger.debug(f"Query error fetching top values for {column}: {e}")
             return []
+        finally:
+            cur.close()
+
+    def prefetch_value_counts(self, requests: List[Tuple[str, Optional[int]]]) -> None:
+        """Batch bounded scalar distributions, keeping each column's native type.
+
+        None means the caller already requires the entire distinct-value list.
+        Each subquery still groups the original column exactly; no text/JSON
+        conversion or approximate topK aggregate is used. Small batches bound
+        simultaneous aggregation state on the server. Failed batches fall back
+        to the existing individual queries.
+        """
+        for start in range(0, len(requests), 8):
+            batch = requests[start:start + 8]
+            parts = []
+            for column, limit in batch:
+                col = self.esc_ident(column)
+                order = "__value" if limit is None else "count() DESC"
+                sort = "arraySort(x -> x.1," if limit is None else "arrayReverseSort(x -> x.2,"
+                cap = "" if limit is None else f" LIMIT {int(limit)}"
+                parts.append(
+                    f"(SELECT {sort} groupArray(tuple(v, n))) FROM ("
+                    f"SELECT __value AS v, count() AS n FROM ("
+                    f"SELECT {col} AS __value FROM {self._qualified_table()} "
+                    f"WHERE {col} IS NOT NULL) "
+                    f"GROUP BY __value ORDER BY {order}{cap}))"
+                )
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT " + ", ".join(parts))
+                row = cur.fetchone()
+                if row is not None:
+                    for (column, limit), values in zip(batch, row):
+                        counts = [(v, int(n)) for v, n in values]
+                        if limit is None:
+                            self._value_counts[column] = counts
+                        else:
+                            self._top_values[column, limit] = counts
+            except _get_db_errors() as e:
+                _logger.debug("Value distribution batch failed; using individual queries: %s", e)
+            finally:
+                cur.close()
+
+    def fetch_value_counts(self, column: str) -> Optional[List[Tuple[Any, int]]]:
+        """All non-null values and exact frequencies, in database value order.
+
+        Used only when the profiler already needs the complete distinct list.
+        This replaces separate top-value and DISTINCT scans of the same column.
+        """
+        if column in self._value_counts:
+            return self._value_counts[column]
+        col = self.esc_ident(column)
+        sql = (
+            f"SELECT {col}, COUNT(*) FROM {self._qualified_table()} "
+            f"WHERE {col} IS NOT NULL GROUP BY {col} ORDER BY {col}"
+        )
+        cur = self._conn.cursor()
+        try:
+            cur.execute(sql)
+            return [(r[0], int(r[1])) for r in cur.fetchall()]
+        except _get_db_errors() as e:
+            _logger.debug("Combined value query failed for %s: %s", column, e)
+            return None
         finally:
             cur.close()
 
