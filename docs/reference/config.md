@@ -409,6 +409,71 @@ Requires `pip install kontra[clickhouse]` (clickhouse-connect). Direct URIs use
 - Every other rule (including regex, via `match()`) executes as a native
   ClickHouse aggregate; the Polars tier rarely runs.
 
+### Trino
+
+Trino is a distributed SQL query engine. Tables live in a catalog (Iceberg,
+Hive, PostgreSQL or any other Trino connector), so a table reference has three
+parts: `catalog/schema.table`.
+
+```yaml
+datasources:
+  lake:
+    type: trino
+    host: ${TRINO_HOST}
+    port: 8080
+    user: ${TRINO_USER}
+    catalog: iceberg
+    tables:
+      orders: sales.orders   # <schema>.<table> within the catalog
+```
+
+```bash
+kontra validate contract.yml --data lake.orders
+kontra profile "trino://user@host:8080/iceberg/sales.orders"
+```
+
+Requires `pip install kontra[trino]` (the `trino` client). Direct URIs use
+`trino://user@host:8080/catalog/schema.table`; `catalog/schema/table` also
+works. A password enables HTTP basic authentication, which Trino only accepts
+over HTTPS: use `trinos://user:pass@host:443/catalog/schema.table`, or set
+`secure: true` and `password: ${TRINO_PASSWORD}` on the datasource.
+
+You can also pass your own `trino.dbapi` connection:
+
+```python
+conn = trino.dbapi.connect(host="localhost", port=8080, user="kontra")
+kontra.validate(conn, table="iceberg.sales.orders", rules=[rules.not_null("id")])
+```
+
+Connections Kontra opens use a UTC session time zone, so naive timestamps
+compare the same way the Polars tier reads them. On your own connection the
+session time zone is unknown, so `freshness` on a naive `timestamp` or `date`
+column runs in Polars.
+
+**Performance notes:**
+
+- A column declared `NOT NULL` cannot contain NULL, so `not_null` on it is
+  proven from `information_schema.columns` with zero rows read. Trino's table
+  statistics are estimates and never decide a rule.
+- Other rules run as one batched Trino aggregate, but only when Trino's answer
+  matches the Polars tier for the column's type. Trino's semantics differ in a
+  few places (NaN compares as false, `CHAR(n)` is padded, regex is Java, strings
+  don't cast to dates implicitly). These rules run in Polars instead, and report
+  `execution_source: polars`:
+    - `range`, `unique`, value lists and `compare` on `real`/`double` columns
+    - value lists and string rules on `CHAR(n)` columns
+    - value lists whose literal type doesn't match the column
+    - float literals against integer or decimal columns
+    - timestamps finer than microseconds (`timestamp(7)` and up), which load
+      at microsecond precision
+    - regex outside the subset that Rust and Java read the same way: shorthand
+      classes (`\w`, `\d`, `\s`, `\b`), inline flags, lookaround,
+      backreferences, nested classes, and a `-` inside a class anywhere other
+      than at either end or between two plain characters
+- `kontra.profile()` computes every statistic in Trino with an exact
+  `COUNT(*)`. Exact percentiles hold a column's values in memory, so use
+  `sample` on very large tables.
+
 ---
 
 ## Environments
