@@ -81,7 +81,7 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
                 "ClickHouse materializer not registered. "
                 "Ensure clickhouse-connect is installed: pip install 'kontra[clickhouse]'"
             )
-        elif handle.dialect == "trino" and handle.scheme == "byoc":
+        elif handle.dialect == "trino":
             ctor = _MATS.get("trino")
             if ctor:
                 return ctor(handle)
@@ -91,7 +91,7 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
             )
         raise RuntimeError(
             f"Unsupported BYOC dialect: {handle.dialect}. "
-            "Supported: postgresql, sqlserver, clickhouse, trino (tables only)"
+            "Supported: postgresql, sqlserver, clickhouse, trino"
         )
 
     # PostgreSQL: use dedicated materializer
