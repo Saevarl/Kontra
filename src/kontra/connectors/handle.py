@@ -46,6 +46,8 @@ _QUERY_DIALECT = {
     "sqlserver": "sqlserver",
     "clickhouse": "clickhouse",
     "clickhouses": "clickhouse",
+    "trino": "trino",
+    "trinos": "trino",
 }
 
 

@@ -1207,11 +1207,67 @@ class TestTrinoFrameDecoder:
         assert _fast_decoder("varchar", None) is None
 
 
-def test_profile_reports_trino_unsupported():
-    import kontra
+class TestProfileAdaptation:
+    """The Trino scout backend's rewrites of the profiler's ANSI aggregates."""
 
-    with pytest.raises(ValueError, match="Profiling Trino sources is not supported yet"):
-        kontra.profile("trino://u@host/lake/s.t")
+    def test_profiler_selects_trino_backend(self):
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.scout.backends.trino_backend import TrinoBackend
+        from kontra.scout.profiler import _select_backend
+
+        backend = _select_backend(DatasetHandle.from_uri("trino://u@host/lake/s.t"))
+        assert isinstance(backend, TrinoBackend)
+        assert backend._qualified_table() == '"lake"."s"."t"'
+
+    def test_percentile_cont_is_exact_not_approximate(self):
+        from kontra.scout.backends.trino_backend import _adapt_expr
+
+        scalar = _adapt_expr(
+            'PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY "a""b") AS "__median__a"', {}
+        )
+        assert "PERCENTILE_CONT" not in scalar and "approx" not in scalar
+        assert 'CAST("a""b" AS DOUBLE)' in scalar
+        assert scalar.startswith("element_at(element_at(")
+        assert scalar.endswith(' AS "__median__a"')
+
+        array = _adapt_expr(
+            'PERCENTILE_CONT(ARRAY[0.5, 0.25]) WITHIN GROUP (ORDER BY "x") AS "q"', {}
+        )
+        assert "ARRAY[0.5, 0.25]" in array
+        assert array.startswith("element_at(transform(")
+
+    def test_mean_float_cast_and_text_forms(self):
+        from kontra.scout.backends.trino_backend import _adapt_expr, _text_sql
+
+        assert _adapt_expr('AVG("d") AS "m"', {}) == 'AVG(CAST("d" AS DOUBLE)) AS "m"'
+        assert _adapt_expr('AVG(CAST(LENGTH("s") AS FLOAT)) AS "l"', {}) == (
+            'AVG(CAST(LENGTH("s") AS DOUBLE)) AS "l"'
+        )
+        text_of = {'"j"': _text_sql('"j"', "json"), '"u"': _text_sql('"u"', "uuid")}
+        assert _text_sql('"s"', "varchar(10)") is None
+        assert _adapt_expr('MIN(LENGTH("j"))', text_of) == 'MIN(LENGTH(json_format("j")))'
+        assert _adapt_expr("SUM(CASE WHEN \"u\" = '' THEN 1 ELSE 0 END)", text_of) == (
+            "SUM(CASE WHEN CAST(\"u\" AS VARCHAR) = '' THEN 1 ELSE 0 END)"
+        )
+        assert _adapt_expr('MIN(LENGTH("s"))', text_of) == 'MIN(LENGTH("s"))'
+
+    def test_char_empty_count_uses_length(self):
+        from kontra.scout.backends.trino_backend import _adapt_expr, _is_padded
+
+        assert _is_padded("char(3)") and _is_padded("CHAR") and not _is_padded("varchar(3)")
+        empty = "SUM(CASE WHEN \"c\" = '' THEN 1 ELSE 0 END)"
+        assert _adapt_expr(empty, {}, frozenset({'"c"'})) == (
+            'SUM(CASE WHEN LENGTH("c") = 0 THEN 1 ELSE 0 END)'
+        )
+        assert _adapt_expr(empty, {}) == empty
+
+    def test_query_source_resolves_trino_dialect(self):
+        from kontra import Query
+        from kontra.connectors.handle import DatasetHandle
+
+        handle = DatasetHandle.from_query(Query("SELECT 1 AS id", source="trino://u@host/lake/s.t"))
+        assert handle.scheme == "query" and handle.dialect == "trino"
+        assert handle.sql == "SELECT 1 AS id"
 
 
 @pytest.mark.lazy_loading
