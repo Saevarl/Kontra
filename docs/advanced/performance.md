@@ -26,7 +26,7 @@ Unlike validators that run one query per rule or require loading data into Pytho
 | Term | Meaning |
 |------|---------|
 | **Preplan** | Resolve a rule from metadata (no data scan) |
-| **Pushdown** | Run a rule as SQL in the engine (DuckDB/Postgres/SQL Server/ClickHouse) |
+| **Pushdown** | Run a rule as SQL in the engine (DuckDB/Postgres/SQL Server/ClickHouse/Trino) |
 | **Tally** | Controls counting behavior. `tally=False` uses fail-fast checks (EXISTS). `tally=True` forces exact counts (aggregates) and disables preplan for that rule. |
 
 In the tables below:
@@ -199,6 +199,9 @@ The footer is parsed with a built-in reader, so a validation fully resolved by p
 
 **SQL Server:** Reads `sys.dm_db_stats_histogram` (more limited).
 
+**Trino:** Proves `not_null` from declared `NOT NULL` columns only. Trino's
+table statistics are estimates, so they never decide a rule.
+
 ---
 
 ## Profile Presets: Behind the Scenes
@@ -264,7 +267,9 @@ On databases, some metrics come from the catalog's statistics rather than a live
 scan: the row count (PostgreSQL `pg_class.reltuples`, SQL Server
 `sys.dm_db_partition_stats`), and `distinct_count` / `null_count` in the `scout`
 and `scan` presets (`pg_stats`, SQL Server histograms). These are estimates that
-can lag the live table.
+can lag the live table. Trino has no exact catalog statistics, so Trino profiles
+use an exact `COUNT(*)` and live queries in every preset, and report no
+estimates unless `sample` is set.
 
 Estimated values are labelled, never presented as exact:
 

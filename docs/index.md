@@ -69,7 +69,7 @@ incident, or needs human review.
 
 ## Supported data sources
 
-Parquet, CSV, PostgreSQL, SQL Server, ClickHouse, S3-compatible object storage,
+Parquet, CSV, PostgreSQL, SQL Server, ClickHouse, Trino, S3-compatible object storage,
 Azure ADLS Gen2, Polars DataFrames, pandas DataFrames, and Python records all
 enter the same measurement API.
 

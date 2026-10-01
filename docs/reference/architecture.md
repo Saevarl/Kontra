@@ -41,7 +41,7 @@ Contract YAML → Parse (Pydantic) → Build Rules (Factory) → Compile Plan
     ↓
 Preplan: Attempt metadata resolution (Parquet stats, pg_stats)
     ↓
-Pushdown: Batch remaining rules into SQL (DuckDB/Postgres/SQL Server/ClickHouse)
+Pushdown: Batch remaining rules into SQL (DuckDB/Postgres/SQL Server/ClickHouse/Trino)
     ↓
 Fallback: Execute residual rules in Polars
     ↓
@@ -60,6 +60,10 @@ Zero-scan validation using file/database metadata.
 **PostgreSQL:** Reads `pg_stats` catalog (requires `ANALYZE`).
 
 **SQL Server:** Reads `sys.dm_db_stats_histogram` (more limited).
+
+**Trino:** Proves `not_null` from columns declared `NOT NULL` in
+`information_schema.columns`. Table statistics (`SHOW STATS`) are estimates and
+never decide a rule.
 
 **Execution source:** `metadata`
 
@@ -92,6 +96,7 @@ FROM data;
 | `postgres://` | PostgreSQL |
 | `mssql://` | SQL Server |
 | `clickhouse://` | ClickHouse |
+| `trino://` | Trino |
 
 DuckDB is a core dependency—it powers local file execution.
 
@@ -127,7 +132,8 @@ src/kontra/
 │   ├── handle.py         # DatasetHandle (unified data source)
 │   ├── postgres.py       # PostgreSQL connection
 │   ├── sqlserver.py      # SQL Server connection
-│   └── clickhouse.py     # ClickHouse connection
+│   ├── clickhouse.py     # ClickHouse connection
+│   └── trino.py          # Trino connection
 ├── engine/
 │   ├── engine.py         # ValidationEngine orchestrator
 │   ├── phases/           # Run phases: compilation, preplan, pushdown, residual, merge
@@ -137,12 +143,14 @@ src/kontra/
 │   │   ├── duckdb_sql.py
 │   │   ├── postgres_sql.py
 │   │   ├── sqlserver_sql.py
-│   │   └── clickhouse_sql.py
+│   │   ├── clickhouse_sql.py
+│   │   └── trino_sql.py
 │   ├── materializers/    # Data loading with projection
 │   │   ├── duckdb.py
 │   │   ├── postgres.py
 │   │   ├── sqlserver.py
-│   │   └── clickhouse.py
+│   │   ├── clickhouse.py
+│   │   └── trino.py
 │   └── backends/
 │       └── polars_backend.py
 ├── preplan/              # Metadata resolution
@@ -150,7 +158,8 @@ src/kontra/
 │   ├── parquet_meta.py   # Pure-Python Parquet footer reader (pyarrow-free)
 │   ├── postgres.py       # pg_stats analysis
 │   ├── sqlserver.py      # sys.columns analysis
-│   └── clickhouse.py     # ClickHouse metadata analysis
+│   ├── clickhouse.py     # ClickHouse metadata analysis
+│   └── trino.py          # Trino declared-nullability analysis
 ├── rule_defs/            # Rule definitions
 │   ├── base.py           # BaseRule abstract class
 │   ├── factory.py        # Rule instantiation
@@ -160,7 +169,7 @@ src/kontra/
 ├── scout/                # Dataset profiling
 │   ├── profiler.py       # ScoutProfiler
 │   ├── suggest.py        # Rule suggestion
-│   └── backends/         # DuckDB, PostgreSQL, SQL Server, ClickHouse
+│   └── backends/         # DuckDB, PostgreSQL, SQL Server, ClickHouse, Trino
 ├── state/                # Validation history
 │   └── backends/         # local, S3, PostgreSQL, SQL Server
 ├── reporters/
@@ -236,7 +245,10 @@ agg_not_null("user_id", "rule_1", dialect="mssql")
 
 - **Exact counts from preplan**: Returns "≥1 violation", not exact count
 - **Metadata availability**: Parquet stats depend on writer; pg_stats depends on ANALYZE
-- **Identical SQL behavior**: DuckDB/PostgreSQL/SQL Server may differ on edge cases
+- **Identical SQL behavior**: DuckDB/PostgreSQL/SQL Server may differ on edge cases.
+  The Trino executor pushes a rule only when Trino's answer matches the Polars
+  tier for the column's type, and runs every other rule in Polars (see
+  [Configuration](config.md#trino))
 
 ---
 
@@ -322,6 +334,7 @@ def positive(column: str, **kwargs) -> Dict[str, Any]:
 | PostgreSQL | `kontra[postgres]` | Requires psycopg |
 | SQL Server | `kontra[sqlserver]` | Requires pymssql |
 | ClickHouse | `kontra[clickhouse]` | Requires clickhouse-connect |
+| Trino | `kontra[trino]` | Requires trino |
 
 ---
 

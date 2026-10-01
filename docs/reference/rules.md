@@ -341,6 +341,12 @@ rules.custom_sql_check("SELECT * FROM {table} WHERE balance < 0 AND account_type
 
 Use `{table}` placeholder. Kontra transforms your query to `COUNT(*)` for efficiency.
 
+**Engine semantics:** the query runs on the source's own SQL engine. Kontra
+translates syntax between SQL dialects, but casts and functions keep that engine's behavior. For
+example, `TRY_CAST('2026-01-01T00:00:00.000Z' AS TIMESTAMPTZ)` parses in DuckDB
+but returns NULL in Trino, which expects a space between date and time. The
+same check can then count different rows on different sources.
+
 **Cross-table queries:**
 
 ```python
