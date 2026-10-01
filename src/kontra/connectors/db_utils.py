@@ -336,6 +336,8 @@ def get_connection_ctx(handle: "DatasetHandle", dialect: str):
             from kontra.connectors.sqlserver import get_connection
         elif dialect in ("clickhouse", "clickhouses"):
             from kontra.connectors.clickhouse import get_connection
+        elif dialect in ("trino", "trinos"):
+            from kontra.connectors.trino import get_connection
         else:
             raise ValueError(f"Unknown dialect: {dialect}")
         with get_connection(handle.db_params) as conn:

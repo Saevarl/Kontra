@@ -356,6 +356,8 @@ class ValidationEngine:
                 return "sqlserver"
             if key in ("clickhouse", "clickhouses"):
                 return "clickhouse"
+            if key in ("trino", "trinos"):
+                return "trino"
         return None
 
     # --------------------------------------------------------------------- #

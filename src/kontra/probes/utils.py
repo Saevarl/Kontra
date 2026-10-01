@@ -127,7 +127,17 @@ def load_data(
     uri = _resolve_named_datasource(data)
     lower = uri.lower()
 
-    if lower.startswith(("postgres://", "postgresql://", "mssql://", "clickhouse://", "clickhouses://")):
+    if lower.startswith(
+        (
+            "postgres://",
+            "postgresql://",
+            "mssql://",
+            "clickhouse://",
+            "clickhouses://",
+            "trino://",
+            "trinos://",
+        )
+    ):
         from kontra.connectors.handle import DatasetHandle
 
         return _materialize_handle(DatasetHandle.from_uri(uri))
@@ -185,6 +195,9 @@ def _materialize_handle(handle: Any) -> pl.DataFrame:
             break
         if key in ("clickhouse", "clickhouses"):
             db_type = "clickhouse"
+            break
+        if key in ("trino", "trinos"):
+            db_type = "trino"
             break
 
     execution_path = "database" if db_type else "file"

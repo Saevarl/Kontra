@@ -300,6 +300,13 @@ class DatasetHandle:
             db_params = resolve_ch_params(uri)
             fmt = "clickhouse"
 
+        # Trino: distributed SQL engine (catalog/schema/table)
+        if scheme in ("trino", "trinos"):
+            from kontra.connectors.trino import resolve_connection_params as resolve_trino_params
+
+            db_params = resolve_trino_params(uri)
+            fmt = "trino"
+
         return DatasetHandle(
             uri=uri, scheme=scheme, path=path, format=fmt, fs_opts=fs_opts, db_params=db_params
         )

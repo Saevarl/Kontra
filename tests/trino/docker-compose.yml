@@ -1,0 +1,14 @@
+services:
+  trino:
+    image: trinodb/trino:483
+    container_name: kontra-trino-test
+    ports:
+      - "8095:8080"
+    volumes:
+      - ./catalog:/etc/trino/catalog:ro
+    healthcheck:
+      test: ["CMD", "trino", "--execute", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
