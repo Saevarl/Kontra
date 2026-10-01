@@ -165,7 +165,7 @@ def preplan_sqlserver(
         is_identity = col_meta.get("is_identity", False)
         has_unique = col_meta.get("has_unique_constraint", False)
 
-        if op == "not_null":
+        if op in ("not_null", "not_null_when"):
             # If column is defined as NOT NULL, it definitely has no nulls
             if not is_nullable:
                 rule_decisions[rule_id] = "pass_meta"

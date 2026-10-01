@@ -170,7 +170,7 @@ def preplan_clickhouse(
     database, table = _db_and_table(handle)
 
     # Only touch metadata for the rule kinds we can resolve.
-    relevant = [p for p in predicates if p[2] in ("not_null", "dtype")]
+    relevant = [p for p in predicates if p[2] in ("not_null", "not_null_when", "dtype")]
     col_types: Dict[str, str] = {}
     if relevant:
         col_types = _fetch_column_types(handle, database, table)
@@ -183,7 +183,7 @@ def preplan_clickhouse(
     for rule_id, column, op, value in predicates:
         ch_type = col_types.get(column)
 
-        if op == "not_null":
+        if op in ("not_null", "not_null_when"):
             if ch_type is None:
                 rule_decisions[rule_id] = "unknown"
             elif not _is_nullable_type(ch_type):
