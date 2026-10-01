@@ -435,6 +435,76 @@ class TestConditionalNotNullRuleIntegration:
         assert result.rules[0].failed_count == 1
 
 
+class TestConditionalNotNullParquetPreplan:
+    """The Parquet preplan must never prove a conditional_not_null FAIL.
+
+    Column null counts say nothing about the rows the `when` condition
+    selects, so the nulls may all sit outside it. Regression: a custom rule
+    id made the preplan treat the rule as plain not_null (false FAIL).
+    """
+
+    @staticmethod
+    def _write(tmp_path, contact):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        status = ["active" if i % 2 == 0 else "inactive" for i in range(len(contact))]
+        path = str(tmp_path / "contacts.parquet")
+        pq.write_table(pa.table({"status": status, "contact": contact}), path)
+        return path
+
+    @staticmethod
+    def _run(path, rule_id, tally=False):
+        import kontra
+        from kontra import rules
+
+        result = kontra.validate(path, rules=[
+            rules.conditional_not_null("contact", when="status == 'active'", id=rule_id, tally=tally),
+        ], save=False)
+        return result.rules[0]
+
+    @pytest.mark.parametrize("rule_id", [None, "contact_required_when_active"])
+    @pytest.mark.parametrize("tally", [False, True])
+    def test_nulls_only_outside_condition_pass(self, tmp_path, rule_id, tally):
+        # Nulls on every inactive row, none on active rows: 0 violations.
+        path = self._write(tmp_path, [None if i % 2 else f"c{i}" for i in range(100)])
+
+        rule = self._run(path, rule_id, tally)
+
+        assert rule.passed is True
+        assert rule.failed_count == 0
+
+    @pytest.mark.parametrize("rule_id", [None, "contact_required_when_active"])
+    def test_null_inside_condition_fails_by_scan(self, tmp_path, rule_id):
+        contact = [None if i % 2 else f"c{i}" for i in range(100)]
+        contact[0] = None  # row 0 is active
+        path = self._write(tmp_path, contact)
+
+        rule = self._run(path, rule_id)
+
+        assert rule.passed is False
+        assert rule.source != "metadata"
+
+    @pytest.mark.parametrize("rule_id", [None, "contact_required_when_active"])
+    def test_no_nulls_proven_by_metadata(self, tmp_path, rule_id):
+        path = self._write(tmp_path, [f"c{i}" for i in range(100)])
+
+        rule = self._run(path, rule_id)
+
+        assert rule.passed is True
+        assert rule.source == "metadata"
+
+    def test_static_predicate_is_pass_only(self):
+        from kontra.rule_defs.factory import RuleFactory
+        from kontra.rule_defs.static_predicates import extract_static_predicates
+        from kontra.config.models import RuleSpec
+
+        spec = RuleSpec(name="conditional_not_null", id="custom", params={"column": "contact", "when": "status == 'active'"})
+        preds = extract_static_predicates(rules=RuleFactory([spec]).build_rules())
+
+        assert preds == [("custom", "contact", "not_null_when", True)]
+
+
 class TestConditionalNotNullSqlUtils:
     """Tests for SQL utility functions for conditional_not_null rule."""
 
