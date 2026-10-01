@@ -495,9 +495,9 @@ class TestConditionalNotNullParquetPreplan:
         assert rule.source == "metadata"
 
     def test_static_predicate_is_pass_only(self):
+        from kontra.config.models import RuleSpec
         from kontra.rule_defs.factory import RuleFactory
         from kontra.rule_defs.static_predicates import extract_static_predicates
-        from kontra.config.models import RuleSpec
 
         spec = RuleSpec(name="conditional_not_null", id="custom", params={"column": "contact", "when": "status == 'active'"})
         preds = extract_static_predicates(rules=RuleFactory([spec]).build_rules())
