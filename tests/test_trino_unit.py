@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -1268,6 +1270,208 @@ class TestProfileAdaptation:
         handle = DatasetHandle.from_query(Query("SELECT 1 AS id", source="trino://u@host/lake/s.t"))
         assert handle.scheme == "query" and handle.dialect == "trino"
         assert handle.sql == "SELECT 1 AS id"
+
+
+class _ProfileConn:
+    """Answers the scout backend's queries by pattern; records each and the concurrency."""
+
+    def __init__(self, answers, delay=0.0):
+        import threading
+
+        self.answers = answers  # [(substring, rows or an exception)]
+        self.delay = delay
+        self.sql: list[str] = []
+        self.in_flight = 0
+        self.peak = 0
+        self._lock = threading.Lock()
+
+    def cursor(self):
+        return _ProfileCursor(self)
+
+
+class _ProfileCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self.rows: list = []
+        self.description = None
+
+    def execute(self, sql):
+        conn = self.conn
+        with conn._lock:
+            conn.sql.append(sql)
+            conn.in_flight += 1
+            conn.peak = max(conn.peak, conn.in_flight)
+        try:
+            time.sleep(conn.delay)
+            for needle, answer in conn.answers:
+                if needle in sql:
+                    if isinstance(answer, Exception):
+                        raise answer
+                    self.rows = list(answer)
+                    break
+            else:
+                raise AssertionError(f"unexpected query: {sql}")
+            names = re.findall(r'AS "([^"]+)"', sql.split(" FROM ")[0])
+            self.description = [(n,) for n in names] or [("_col0",)]
+        finally:
+            with conn._lock:
+                conn.in_flight -= 1
+
+    def fetchall(self):
+        return self.rows
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def close(self):
+        pass
+
+
+def _profile_backend(answers, *, sample_size=None, sequential=False, delay=0.0):
+    from kontra.connectors.handle import DatasetHandle
+    from kontra.scout.backends.trino_backend import TrinoBackend
+
+    backend = TrinoBackend(
+        DatasetHandle.from_uri("trino://u@host/lake/s.t"), sample_size=sample_size
+    )
+    backend._conn = _ProfileConn(answers, delay)
+    backend._sequential = sequential
+    return backend
+
+
+# trino_read.data_files: an Iceberg physical table, then its $files.
+def _iceberg(files, records):
+    return [
+        ("system.metadata.catalogs", [("iceberg",)]),
+        ("information_schema.tables", [("BASE TABLE",)]),
+        ("materialized_views", []),
+        ('"t$files"', [(files, records)]),
+    ]
+
+
+class TestProfilePlan:
+    """The Trino scout backend's plan: scout's aggregate, sampling, concurrent value queries."""
+
+    def test_scout_is_one_aggregate_with_exact_counts_and_estimated_distincts(self):
+        backend = _profile_backend([("approx_distinct", [(10, 2, 7, 0, 10)])])
+        meta = backend.profile_metadata_only([("a", "bigint"), ("b b", "varchar")], 0)
+        (sql,) = backend._conn.sql
+        assert sql == (
+            'SELECT COUNT(*), count_if("a" IS NULL), approx_distinct("a"), '
+            'count_if("b b" IS NULL), approx_distinct("b b") FROM "lake"."s"."t"'
+        )
+        assert "DISTINCT" not in sql.replace("approx_distinct", "")
+        assert meta["a"] == {
+            "null_count": 2,
+            "distinct_count": 7,
+            "null_count_estimated": False,
+            "distinct_count_estimated": True,
+            "exact_row_count": 10,
+        }
+        assert (meta["b b"]["null_count"], meta["b b"]["distinct_count"]) == (0, 10)
+
+    def test_a_sampled_scout_aggregates_the_sample(self):
+        assert _profile_backend([]).supports_metadata_only() is True
+        assert _profile_backend([], sample_size=5).supports_metadata_only() is False
+
+    @pytest.mark.parametrize(
+        ("files", "records", "sample", "percent"),
+        [
+            (99, 100_000, 1_000, None),  # too few files: all or nothing
+            (100, 100_000, 1_000, 10.0),  # at least 10 files of 100
+            (1_000, 1_000_000, 50_000, 5.0),  # the sample's share of rows
+            (1_000, 1_000_000, 100, 1.0),  # at least 10 files of 1,000
+            (100, 1_000, 1_000, None),  # the whole table
+            (200, 0, 10, None),  # no rows
+        ],
+    )
+    def test_system_sampling_by_data_files(self, files, records, sample, percent):
+        backend = _profile_backend(_iceberg(files, records), sample_size=sample)
+        assert backend._sample_percent() == percent
+        assert backend._sample_percent() == percent  # decided once
+        assert sum('"t$files"' in s for s in backend._conn.sql) == 1
+        assert all("content = 0" in s for s in backend._conn.sql if '"t$files"' in s)
+
+    def test_no_system_sampling_off_iceberg(self):
+        backend = _profile_backend([("system.metadata.catalogs", [("memory",)])], sample_size=10)
+        assert backend._sample_percent() is None
+        assert not any("$files" in s for s in backend._conn.sql)
+
+    def test_a_files_error_falls_back_to_the_head_except_in_a_callers_transaction(self):
+        from trino.exceptions import TrinoUserError
+
+        error = TrinoUserError({"message": "boom", "errorName": "X", "errorType": "USER_ERROR"})
+        answers = _iceberg(500, 10_000)[:3] + [('"t$files"', error)]
+        assert _profile_backend(answers, sample_size=10)._sample_percent() is None
+        with pytest.raises(TrinoUserError):
+            _profile_backend(answers, sample_size=10, sequential=True)._sample_percent()
+
+    def test_sampled_stats_use_tablesample_system_and_drop_the_row_count(self):
+        backend = _profile_backend(
+            _iceberg(500, 100_000) + [("TABLESAMPLE SYSTEM (2.0)", [(4, 40)])],
+            sample_size=2_000,
+        )
+        result = backend.execute_stats_query(['COUNT("x") AS "n"'])
+        assert result == {"n": 4}
+        assert backend._conn.sql[-1] == (
+            'SELECT COUNT("x") AS "n", count(*) AS "__kontra_sampled_rows__" FROM '
+            '(SELECT * FROM "lake"."s"."t" TABLESAMPLE SYSTEM (2.0) LIMIT 2000) AS _kontra_sample'
+        )
+
+    def test_an_empty_system_sample_falls_back_to_the_head(self):
+        backend = _profile_backend(
+            _iceberg(500, 100_000)
+            + [("TABLESAMPLE", [(0, 0)]), ("LIMIT 2000) AS _kontra_sample", [(7,)])],
+            sample_size=2_000,
+        )
+        assert backend.execute_stats_query(['COUNT("x") AS "n"']) == {"n": 7}
+        assert backend._conn.sql[-1] == (
+            'SELECT COUNT("x") AS "n" FROM (SELECT * FROM "lake"."s"."t" LIMIT 2000) '
+            "AS _kontra_sample"
+        )
+
+    def test_head_sample_off_iceberg(self):
+        backend = _profile_backend(
+            [("system.metadata.catalogs", [("memory",)]), ("LIMIT 5)", [(3,)])], sample_size=5
+        )
+        assert backend.execute_stats_query(['COUNT("x") AS "n"']) == {"n": 3}
+        assert "TABLESAMPLE" not in backend._conn.sql[-1]
+
+    def test_value_queries_run_concurrently_and_are_read_back(self):
+        backend = _profile_backend(
+            [
+                ('ORDER BY "a"', [("x", 2), ("y", 1)]),
+                ("LIMIT 5", [(1, 9)]),
+            ],
+            delay=0.05,
+        )
+        requests = [("a", None)] + [(f"c{i}", 5) for i in range(7)]
+        backend.prefetch_value_counts(requests)
+        assert len(backend._conn.sql) == 8
+        assert 1 < backend._conn.peak <= backend.value_query_concurrency == 4
+        assert backend.fetch_value_counts("a") == [("x", 2), ("y", 1)]
+        assert backend.fetch_top_values("c3", 5) == [(1, 9)]
+        assert len(backend._conn.sql) == 8  # read back, not run again
+
+    def test_a_failed_value_query_gives_what_the_individual_call_gives(self):
+        from trino.exceptions import TrinoUserError
+
+        error = TrinoUserError({"message": "no", "errorName": "X", "errorType": "USER_ERROR"})
+        backend = _profile_backend([('"m"', error), ('"ok"', [(1, 1)])])
+        backend.prefetch_value_counts([("m", None), ("m", 5), ("ok", 5)])
+        assert backend.fetch_value_counts("m") is None
+        assert backend.fetch_top_values("m", 5) == []
+        assert backend.fetch_top_values("ok", 5) == [(1, 1)]
+        assert len(backend._conn.sql) == 3
+        fresh = _profile_backend([('"m"', error)])
+        assert (fresh.fetch_value_counts("m"), fresh.fetch_top_values("m", 5)) == (None, [])
+
+    def test_a_callers_transaction_gets_no_prefetch(self):
+        backend = _profile_backend([("LIMIT 5", [(1, 1)])], sequential=True)
+        backend.prefetch_value_counts([("a", 5), ("b", 5)])
+        assert backend._conn.sql == []
+        assert backend.fetch_top_values("a", 5) == [(1, 1)]
+        assert backend._conn.peak == 1
 
 
 @pytest.mark.lazy_loading

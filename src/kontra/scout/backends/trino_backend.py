@@ -4,7 +4,27 @@ Trino backend for Scout profiler.
 
 Every statistic is computed by Trino and only scalars come back. Trino has no
 cheap exact metadata (table statistics are estimates), so the row count is an
-exact COUNT(*) and the profile never reports estimates unless sampling is on.
+exact COUNT(*). Distinct counts are estimates in ``scout`` (``approx_distinct``,
+marked as estimated, as the preset promises); everything else is exact unless
+sampling is on.
+
+How each statistic is read:
+
+  - ``scout``: one aggregate with exact row and null counts and
+    ``approx_distinct`` per column. Exact ``COUNT(DISTINCT)`` costs about 17
+    times as much on 11 columns; the null counts are free in the same scan.
+  - ``scan``/``interrogate``: one aggregate of exact statistics. Trino's default
+    distinct strategy is kept: with many columns it beats ``mark_distinct``,
+    which the validation scan sets for its few ``unique`` columns.
+  - Value frequencies (top values, low-cardinality value lists): exact
+    ``GROUP BY`` per column, run concurrently on cursors of the profile's one
+    connection. In a caller's transaction they run one at a time, as before:
+    a failed query there aborts the caller's transaction.
+  - Sampling (``sample=``): ``TABLESAMPLE SYSTEM`` on an Iceberg table with at
+    least 100 data files, sized from ``$files``. It reads whole files, so it
+    saves reading the rest; with fewer files it would read all or nothing. Any
+    other table takes the first rows (``LIMIT``), as before. Both are labelled
+    estimates.
 
 The profiler emits ANSI-style aggregates; a few shapes are rewritten here:
 
@@ -23,6 +43,7 @@ The profiler emits ANSI-style aggregates; a few shapes are rewritten here:
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from kontra.connectors.detection import parse_table_reference
@@ -53,6 +74,9 @@ def _get_db_errors() -> tuple[type, ...]:
 # --------------------------------------------------------------------------- #
 # SQL dialect adaptation
 # --------------------------------------------------------------------------- #
+
+# The sampled-row count added to a SYSTEM-sampled stats query.
+_SAMPLED = '"__kontra_sampled_rows__"'
 
 # A double-quoted identifier, as produced by esc_ident(..., "trino").
 _IDENT = r'"(?:[^"]|"")*"'
@@ -142,11 +166,22 @@ class TrinoBackend:
     - Exact row count (COUNT(*))
     - Single aggregate query for all column stats, computed by Trino
     - Exact percentiles (no approx_percentile)
+    - Value frequencies grouped concurrently
     """
 
     # Counts are exact full-table aggregates (unless sampling), so a column
     # proven unique or constant needs no GROUP BY for its frequencies.
     exact_value_frequency = True
+    # Complete value lists are prefetched only where the profiler lists them.
+    value_counts_batch_limit = 0
+    # Value queries in flight at once, on cursors of the one connection.
+    value_query_concurrency = 4
+    # TABLESAMPLE SYSTEM picks whole data files: below this many it reads
+    # all or nothing.
+    system_sample_min_files = 100
+    # Files a SYSTEM sample aims to pick at least, so an empty sample is
+    # improbable (about e**-10). An empty one still falls back to LIMIT.
+    system_sample_target_files = 10
 
     def __init__(
         self,
@@ -163,6 +198,14 @@ class TrinoBackend:
         self._padded: frozenset[str] = frozenset()
         # COUNT(*) is exact. Read by the profiler for provenance flagging.
         self.row_count_estimated: bool = False
+        # A caller's transaction: run queries one at a time (set on connect).
+        self._sequential = False
+        # Prefetched exact frequencies: complete lists, and top-N by (column, n).
+        self._value_counts: dict[str, list[tuple[Any, int]] | None] = {}
+        self._top_values: dict[tuple[str, int], list[tuple[Any, int]]] = {}
+        # The sampling percentage for TABLESAMPLE SYSTEM, once decided.
+        self._system_percent: float | None = None
+        self._system_decided = False
 
         self._catalog, self._schema_name, self._table = self._resolve_parts(handle)
 
@@ -171,10 +214,12 @@ class TrinoBackend:
     # ------------------------------------------------------------------ #
 
     def connect(self) -> None:
+        from kontra.connectors import trino_read
         from kontra.connectors.db_utils import get_connection_ctx
 
         self._conn_ctx = get_connection_ctx(self.handle, "trino")
         self._conn = self._conn_ctx.__enter__()
+        self._sequential = trino_read.caller_transaction(self.handle)
 
     def close(self) -> None:
         if self._conn is not None:
@@ -225,6 +270,43 @@ class TrinoBackend:
         return None
 
     # ------------------------------------------------------------------ #
+    # scout
+    # ------------------------------------------------------------------ #
+
+    def supports_metadata_only(self) -> bool:
+        """scout's one-aggregate path; a sampled scout aggregates the sample instead."""
+        return self.sample_size is None
+
+    def profile_metadata_only(
+        self, schema: list[tuple[str, str]], row_count: int
+    ) -> dict[str, dict[str, Any]]:
+        """
+        The ``scout`` preset: one aggregate, with exact row and null counts and
+        ``approx_distinct`` for each column's distinct count, flagged as an
+        estimate (Trino's error is about 2.3%). Trino has no exact metadata to
+        answer distinct counts, and an exact ``COUNT(DISTINCT)`` per column
+        costs far more than this preset is for. The null counts come free in
+        the same scan, and are exact.
+        """
+        exprs = ["COUNT(*)"]
+        for name, _ in schema:
+            col = self.esc_ident(name)
+            exprs += [f"count_if({col} IS NULL)", f"approx_distinct({col})"]
+        rows = self._fetchall(f"SELECT {', '.join(exprs)} FROM {self._qualified_table()}")
+        row = rows[0]
+        exact_rows = int(row[0])
+        return {
+            name: {
+                "null_count": int(row[1 + 2 * i]),
+                "distinct_count": int(row[2 + 2 * i]),
+                "null_count_estimated": False,
+                "distinct_count_estimated": True,
+                "exact_row_count": exact_rows,
+            }
+            for i, (name, _) in enumerate(schema)
+        }
+
+    # ------------------------------------------------------------------ #
     # Aggregate profiling
     # ------------------------------------------------------------------ #
 
@@ -234,27 +316,120 @@ class TrinoBackend:
             return {}
 
         select = ", ".join(_adapt_expr(e, self._text_of, self._padded) for e in exprs)
-        if self.sample_size:
-            # A bounded head sample, as for ClickHouse. The profiler flags the
-            # results as estimates.
-            source = (
-                f"(SELECT * FROM {self._qualified_table()} "
-                f"LIMIT {int(self.sample_size)}) AS _kontra_sample"
-            )
-        else:
-            source = self._qualified_table()
+        if not self.sample_size:
+            return self._stats_row(f"SELECT {select} FROM {self._qualified_table()}")
 
+        # The profiler flags aggregates over a sample as estimates.
+        limit = int(self.sample_size)
+        head = f"(SELECT * FROM {self._qualified_table()} LIMIT {limit}) AS _kontra_sample"
+        percent = self._sample_percent()
+        if percent is None:
+            return self._stats_row(f"SELECT {select} FROM {head}")
+        # Whole data files, picked at random; capped at the sample size.
+        system = (
+            f"(SELECT * FROM {self._qualified_table()} TABLESAMPLE SYSTEM ({percent!r}) "
+            f"LIMIT {limit}) AS _kontra_sample"
+        )
+        result = self._stats_row(f"SELECT {select}, count(*) AS {_SAMPLED} FROM {system}")
+        if result.pop(_SAMPLED.strip('"'), None):
+            return result
+        # No file was picked: take the head sample instead.
+        _logger.debug("TABLESAMPLE SYSTEM (%s) picked no rows; sampling the first rows", percent)
+        return self._stats_row(f"SELECT {select} FROM {head}")
+
+    def _stats_row(self, sql: str) -> dict[str, Any]:
         cur = self._conn.cursor()
         try:
-            cur.execute(f"SELECT {select} FROM {source}")
+            cur.execute(sql)
             row = cur.fetchone()
             col_names = [desc[0] for desc in cur.description]
             return dict(zip(col_names, row)) if row else {}
         finally:
             cur.close()
 
+    def _sample_percent(self) -> float | None:
+        """The TABLESAMPLE SYSTEM percentage, or None to sample the first rows.
+
+        Only an Iceberg table with at least ``system_sample_min_files`` data
+        files is sampled by file. The percentage aims at the sample size, and at
+        no fewer than ``system_sample_target_files`` files.
+        """
+        if self._system_decided:
+            return self._system_percent
+        self._system_decided = True
+        from kontra.connectors import trino_read
+
+        try:
+            files = trino_read.data_files(self._conn, self._held_parts())
+        except _get_db_errors() as e:
+            if self._sequential:
+                raise  # the caller's transaction is aborted; don't hide why
+            _logger.debug("Could not read $files for sampling: %s", e)
+            files = None
+        if files is None:
+            return None
+        count, records = files
+        if count < self.system_sample_min_files or records <= 0:
+            return None
+        fraction = max(self.sample_size / records, self.system_sample_target_files / count)
+        if fraction >= 1:
+            return None  # the sample would be the whole table
+        self._system_percent = round(fraction * 100, 6) or None
+        return self._system_percent
+
+    def prefetch_value_counts(self, requests: list[tuple[str, int | None]]) -> None:
+        """Run the profile's value queries concurrently, each an exact GROUP BY.
+
+        ``None`` asks for a column's complete distribution (``fetch_value_counts``),
+        a number for its top N (``fetch_top_values``). Each query and its result,
+        failures included, are what the individual call would give; the calls
+        then read them from here. In a caller's transaction nothing is
+        prefetched: the calls run one at a time, as before.
+        """
+        if self._sequential or len(requests) < 2:
+            return
+
+        def run(request: tuple[str, int | None]) -> None:
+            column, limit = request
+            if limit is None:
+                self._value_counts[column] = self._query_value_counts(column)
+            else:
+                self._top_values[column, int(limit)] = self._query_top_values(column, limit)
+
+        with ThreadPoolExecutor(max_workers=self.value_query_concurrency) as pool:
+            list(pool.map(run, requests))
+
+    def fetch_value_counts(self, column: str) -> list[tuple[Any, int]] | None:
+        """All non-null values and exact frequencies, in database value order.
+
+        Used only where the profiler lists a column's values: one GROUP BY
+        replaces its separate top-value and DISTINCT queries. None when Trino
+        can't order the type (MAP): the profiler then runs those two queries.
+        """
+        if column in self._value_counts:
+            return self._value_counts[column]
+        return self._query_value_counts(column)
+
     def fetch_top_values(self, column: str, limit: int) -> list[tuple[Any, int]]:
         """Top N most frequent non-null values, computed by Trino."""
+        cached = self._top_values.get((column, int(limit)))
+        if cached is not None:
+            return cached
+        return self._query_top_values(column, limit)
+
+    def _query_value_counts(self, column: str) -> list[tuple[Any, int]] | None:
+        col = self.esc_ident(column)
+        try:
+            rows = self._fetchall(
+                f"SELECT {col}, COUNT(*) FROM {self._qualified_table()} "
+                f"WHERE {col} IS NOT NULL GROUP BY {col} ORDER BY {col}"
+            )
+        except _get_db_errors() as e:
+            _logger.debug("Combined value query failed for %s: %s", column, e)
+            return None
+        return [(r[0], int(r[1])) for r in rows]
+
+    def _query_top_values(self, column: str, limit: int) -> list[tuple[Any, int]]:
         col = self.esc_ident(column)
         try:
             rows = self._fetchall(
@@ -313,6 +488,13 @@ class TrinoBackend:
             return cur.fetchall()
         finally:
             cur.close()
+
+    def _held_parts(self) -> tuple[str | None, str, str]:
+        """(catalog, schema, table), with a caller's session catalog filled in."""
+        catalog = self._catalog
+        if catalog is None and self.handle.external_conn is not None:
+            catalog = getattr(self.handle.external_conn, "catalog", None)
+        return catalog, self._schema_name, self._table
 
     def _qualified_table(self) -> str:
         parts = [self._catalog, self._schema_name, self._table]
