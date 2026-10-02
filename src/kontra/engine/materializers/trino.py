@@ -23,6 +23,7 @@ from kontra.engine.sql_ir import esc_ident, lit_str
 
 from .base import BaseMaterializer
 from .registry import register_materializer
+from .trino_decode import FrameDecoder
 
 
 def _ident(name: str) -> str:
@@ -92,57 +93,49 @@ class TrinoMaterializer(BaseMaterializer):
             finally:
                 cur.close()
 
+    # Rows held as Python tuples at once: the frame grows, the chunk doesn't.
+    chunk_rows = 100_000
+
     def to_polars(self, columns: list[str] | None) -> pl.DataFrame:
         """Load table data as a Polars DataFrame with optional projection."""
-        import polars as pl
-
         from kontra.connectors import trino_read
 
         cols_sql = ", ".join(_ident(c) for c in columns) if columns else "*"
         query = (
             f"SELECT {cols_sql} FROM {self._qualified_table}{trino_read.pin_suffix(self.handle)}"
         )
-
-        t0 = time.perf_counter()
-        with self._connection_ctx() as conn:
-            cur = conn.cursor()
-            try:
-                cur.execute(query)
-                rows = cur.fetchall()
-                description = list(cur.description or [])
-            finally:
-                cur.close()
-        t1 = time.perf_counter()
-
-        col_names = [desc[0] for desc in description]
         # The declared types, read once per validation, are the ones preplan's
         # dtype decisions used; outside a held state, the cursor's own types.
         types = {
             name: data_type for name, data_type, _ in trino_read.declared_columns(self.handle) or []
         }
-        declared = {desc[0]: polars_dtype(types.get(desc[0], desc[1])) for desc in description}
-        if rows:
-            # Scan every row for dtype inference, as the SQL Server materializer
-            # does: a column NULL for its first 100 rows would otherwise infer as
-            # Null and fail on its first real value. Then cast to the declared
-            # type: inference makes every integer Int64 and every float Float64.
-            df = pl.DataFrame(rows, schema=col_names, orient="row", infer_schema_length=None)
-            df = df.with_columns(
-                pl.col(name).cast(declared[name])
-                for name, dtype in df.schema.items()
-                if declared.get(name) is not None and dtype != declared[name]
-            )
-        else:
-            df = pl.DataFrame(schema={name: declared[name] or pl.Utf8 for name in col_names})
+
+        t0 = time.perf_counter()
+        with self._connection_ctx() as conn:
+            cur, mode = _raw_cursor(conn)
+            try:
+                cur.execute(query)
+                if mode == "columns":
+                    decoder = self._decoder(cur, types)
+                    while rows := cur.fetchmany(self.chunk_rows):
+                        decoder.add(rows)
+                    df, row_count = decoder.frame(), decoder.rows
+                else:
+                    df = self._rows_frame(cur.fetchall(), list(cur.description or []), types)
+                    row_count = df.height
+            finally:
+                cur.close()
+        t1 = time.perf_counter()
 
         if self._io_debug_enabled:
             self._last_io_debug = {
                 "materializer": "trino",
                 "mode": "byoc_fetch" if self._is_byoc else "trino_fetch",
+                "decode": mode,
                 "table": self._qualified_table,
                 "columns_requested": list(columns or []),
-                "column_count": len(columns or col_names),
-                "row_count": len(rows),
+                "column_count": len(columns or df.columns),
+                "row_count": row_count,
                 "elapsed_ms": int((t1 - t0) * 1000),
             }
         else:
@@ -150,5 +143,49 @@ class TrinoMaterializer(BaseMaterializer):
 
         return df
 
+    @staticmethod
+    def _decoder(cur: Any, types: dict[str, str]) -> FrameDecoder:
+        from trino.mapper import RowMapperFactory
+
+        result_columns = cur._query.columns
+        names = [c["name"] for c in result_columns]
+        cursor_types = [c["type"] for c in result_columns]
+        dtypes = [polars_dtype(types.get(n, t)) for n, t in zip(names, cursor_types)]
+        mappers = RowMapperFactory().create(columns=result_columns, legacy_primitive_types=False)
+        return FrameDecoder(names, cursor_types, dtypes, mappers.columns)
+
+    @staticmethod
+    def _rows_frame(rows: list, description: list, types: dict[str, str]) -> pl.DataFrame:
+        """The client's Python objects, row-wise: for a client without raw values."""
+        import polars as pl
+
+        col_names = [desc[0] for desc in description]
+        declared = {desc[0]: polars_dtype(types.get(desc[0], desc[1])) for desc in description}
+        if not rows:
+            return pl.DataFrame(schema={name: declared[name] or pl.Utf8 for name in col_names})
+        # Scan every row for dtype inference: a column NULL for its first 100
+        # rows would otherwise infer as Null. Then cast to the declared type.
+        df = pl.DataFrame(rows, schema=col_names, orient="row", infer_schema_length=None)
+        return df.with_columns(
+            pl.col(name).cast(declared[name])
+            for name, dtype in df.schema.items()
+            if declared.get(name) is not None and dtype != declared[name]
+        )
+
     def io_debug(self) -> dict[str, Any] | None:
         return self._last_io_debug
+
+
+def _raw_cursor(conn: Any) -> tuple[Any, str]:
+    """A cursor returning Trino's raw values, without changing the connection.
+
+    Returns ``(cursor, "columns")``, or ``(cursor, "rows")`` when the client
+    can't give raw values or the result's type signatures, so the frame is
+    built from its Python objects as before.
+    """
+    try:
+        from trino.mapper import RowMapperFactory  # noqa: F401
+
+        return conn.cursor(legacy_primitive_types=True), "columns"
+    except (ImportError, TypeError):
+        return conn.cursor(), "rows"

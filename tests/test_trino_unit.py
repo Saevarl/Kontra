@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import ClassVar
 
 import polars as pl
@@ -955,6 +957,208 @@ class TestTrinoMaterializerTypes:
         from kontra.connectors.trino_types import polars_dtype
 
         assert polars_dtype(trino_type) == expected
+
+
+def _raw_columns(*specs):
+    """Result columns as the Trino client describes them: (name, rawType, arguments)."""
+    return [
+        {
+            "name": name,
+            "type": data_type,
+            "typeSignature": {"rawType": raw, "arguments": args},
+        }
+        for name, data_type, raw, args in specs
+    ]
+
+
+class _RawCursor:
+    def __init__(self, columns, rows, log):
+        self._query = SimpleNamespace(columns=columns)
+        self.description = [(c["name"], c["type"]) for c in columns]
+        self._rows = list(rows)
+        self._log = log
+
+    def execute(self, sql):
+        self._log.append(("execute", sql))
+
+    def fetchmany(self, size):
+        self._log.append(("fetchmany", size))
+        chunk, self._rows = self._rows[:size], self._rows[size:]
+        return chunk
+
+    def fetchall(self):
+        raise AssertionError("the column decoder fetches in chunks")
+
+    def close(self):
+        pass
+
+
+class TestTrinoFrameDecoder:
+    _COLUMNS = (
+        ("i", "integer", "integer", []),
+        ("d", "double", "double", []),
+        (
+            "m",
+            "decimal(5, 2)",
+            "decimal",
+            [{"kind": "LONG", "value": 5}, {"kind": "LONG", "value": 2}],
+        ),
+        ("t", "timestamp(3)", "timestamp", [{"kind": "LONG", "value": 3}]),
+        ("u", "uuid", "uuid", []),
+    )
+    _ROWS: ClassVar[list] = [
+        [1, 1.5, "1.10", "2026-01-01 00:00:00.123", "12151fd2-7586-11e9-8f9e-2a86e4085a59"],
+        [None, "NaN", None, None, None],
+        [3, -0.0, "-0.05", "2026-01-02 10:00:00.000", None],
+    ]
+
+    def _materialize(self, monkeypatch, rows, columns=_COLUMNS, chunk_rows=2):
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.engine.materializers.trino import TrinoMaterializer
+
+        log: list = []
+        cursor = _RawCursor(_raw_columns(*columns), rows, log)
+
+        class Conn:
+            __module__ = "trino.dbapi"  # detected as a Trino connection
+
+            def cursor(self, legacy_primitive_types=None):
+                log.append(("cursor", legacy_primitive_types))
+                return cursor
+
+        monkeypatch.setattr(TrinoMaterializer, "chunk_rows", chunk_rows)
+        handle = DatasetHandle.from_connection(Conn(), "c.s.t")
+        return TrinoMaterializer(handle).to_polars(None), log
+
+    def test_raw_values_fetched_in_chunks(self, monkeypatch):
+        import datetime as dt
+        import uuid
+        from decimal import Decimal
+
+        frame, log = self._materialize(monkeypatch, self._ROWS)
+        assert log[0] == ("cursor", True)
+        assert [e for e in log if e[0] == "fetchmany"] == [("fetchmany", 2)] * 3
+        assert frame.schema == {
+            "i": pl.Int32,
+            "d": pl.Float64,
+            "m": pl.Decimal(5, 2),
+            "t": pl.Datetime("us"),
+            "u": pl.Object,
+        }
+        assert frame["i"].to_list() == [1, None, 3]
+        d = frame["d"].to_list()
+        assert d[0] == 1.5 and math.isnan(d[1]) and str(d[2]) == "-0.0"
+        assert frame["m"].to_list() == [Decimal("1.10"), None, Decimal("-0.05")]
+        assert frame["t"].to_list() == [
+            dt.datetime.fromisoformat("2026-01-01 00:00:00.123"),
+            None,
+            dt.datetime.fromisoformat("2026-01-02 10:00:00"),
+        ]
+        assert frame["u"].to_list() == [
+            uuid.UUID("12151fd2-7586-11e9-8f9e-2a86e4085a59"),
+            None,
+            None,
+        ]
+
+    def test_empty_result_has_the_declared_schema(self, monkeypatch):
+        frame, _ = self._materialize(monkeypatch, [])
+        assert frame.height == 0
+        assert frame.schema["m"] == pl.Decimal(5, 2)
+        assert frame.schema["u"] == pl.Utf8
+
+    def test_client_without_raw_values_builds_rows_as_before(self, monkeypatch):
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.engine.materializers.trino import TrinoMaterializer
+
+        class Cursor:
+            description = (("i", "integer"), ("d", "double"))
+
+            def execute(self, sql):
+                pass
+
+            def fetchall(self):
+                return [(1, 1.5), (None, None)]
+
+            def close(self):
+                pass
+
+        class Conn:
+            __module__ = "trino.dbapi"
+
+            def cursor(self):  # no legacy_primitive_types argument
+                return Cursor()
+
+        monkeypatch.setenv("KONTRA_IO_DEBUG", "1")
+        mat = TrinoMaterializer(DatasetHandle.from_connection(Conn(), "c.s.t"))
+        frame = mat.to_polars(None)
+        assert mat.io_debug()["decode"] == "rows"
+        assert frame.schema == {"i": pl.Int32, "d": pl.Float64}
+        assert frame["i"].to_list() == [1, None]
+
+    def test_special_floats_decode_as_the_mapper_maps_them(self):
+        from trino.mapper import RowMapperFactory
+
+        from kontra.engine.materializers.trino_decode import FrameDecoder
+
+        columns = _raw_columns(("d", "double", "double", []))
+        mappers = RowMapperFactory().create(columns=columns, legacy_primitive_types=False).columns
+        decoder = FrameDecoder(["d"], ["double"], [pl.Float64], mappers)
+        decoder.add([[1.5], ["NaN"]])
+        decoder.add([["Infinity"], ["-Infinity"], [None]])
+        assert decoder.mapped_chunks == 0
+        # Any other string isn't guessed at: that chunk takes the client's mapper.
+        decoder.add([["1e5"], [2.0]])
+        assert decoder.mapped_chunks == 1
+        d = decoder.frame()["d"].to_list()
+        assert d[0] == 1.5 and math.isnan(d[1])
+        assert d[2:] == [math.inf, -math.inf, None, 100000.0, 2.0]
+
+    def test_values_python_cant_hold_raise_the_clients_error(self):
+        from trino.exceptions import TrinoDataError
+        from trino.mapper import RowMapperFactory
+
+        from kontra.engine.materializers.trino_decode import FrameDecoder
+
+        columns = _raw_columns(("d", "date", "date", []))
+        mappers = RowMapperFactory().create(columns=columns, legacy_primitive_types=False).columns
+        decoder = FrameDecoder(["d"], ["date"], [pl.Date], mappers)
+        with pytest.raises(TrinoDataError, match="Could not convert '-0001-01-01'"):
+            decoder.add([["2026-01-01"], ["-0001-01-01"]])
+
+    @pytest.mark.parametrize(
+        ("trino_type", "fast"),
+        [
+            ("integer", True),
+            ("double", True),
+            ("decimal(38, 10)", True),
+            ("varchar(3)", True),
+            ("char(3)", True),
+            ("date", True),
+            ("timestamp(0)", True),
+            ("timestamp(6)", True),
+            ("timestamp(6) with time zone", True),
+            ("time(3)", True),
+            ("varbinary", True),
+            ("timestamp(9)", False),  # the client rounds to microseconds
+            ("timestamp(9) with time zone", False),
+            ("time(9)", False),
+            ("time(3) with time zone", False),
+            ("uuid", False),
+            ("array(integer)", False),
+            ("interval day to second", False),
+        ],
+    )
+    def test_fast_decoder_per_type(self, trino_type, fast):
+        from kontra.connectors.trino_types import polars_dtype
+        from kontra.engine.materializers.trino_decode import _fast_decoder
+
+        assert (_fast_decoder(trino_type, polars_dtype(trino_type)) is not None) is fast
+
+    def test_no_fast_decoder_when_declared_and_cursor_types_differ(self):
+        from kontra.engine.materializers.trino_decode import _fast_decoder
+
+        assert _fast_decoder("integer", pl.Int64) is None
+        assert _fast_decoder("varchar", None) is None
 
 
 def test_profile_reports_trino_unsupported():
