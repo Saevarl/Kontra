@@ -201,9 +201,15 @@ class _ScanConn:
         self.fail: dict[str, int] = {}  # sql substring -> times to fail
         self.transaction = object()
         self.rollbacks = 0
+        self.started = 0
+        self.outside_transaction = 0  # queries run in autocommit
 
     def cursor(self):
         return _ScanCursor(self)
+
+    def start_transaction(self):
+        self.started += 1
+        self.transaction = object()
 
     def rollback(self):
         self.rollbacks += 1
@@ -221,9 +227,8 @@ class _ScanCursor:
         import time
 
         c = self.conn
-        if c.transaction is None:
-            c.transaction = object()  # the client starts a new transaction
         with c._lock:
+            c.outside_transaction += c.transaction is None
             c.sql.append(sql)
             c.events.append(("start", sql))
             c.in_flight += 1
@@ -415,7 +420,8 @@ class TestTrinoScanRecovery:
         assert by_id["c2"]["passed"]  # rerun alone, answered
         assert not by_id["c1"]["passed"] and "failed: " in by_id["c1"]["message"]
         # One new transaction per retry, and one after the last retry failed.
-        assert conn.rollbacks == 4
+        assert conn.rollbacks == conn.started == 4
+        assert conn.outside_transaction == 0
         assert sum('"__row_count"' in q for q in conn.sql) == 2
 
     def test_a_scan_that_fails_alone_raises(self):

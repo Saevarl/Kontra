@@ -578,9 +578,10 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
 
     @staticmethod
     def _new_transaction(conn) -> None:
-        # The next query on the connection starts a new transaction.
+        # Kontra's own connection is in autocommit outside its explicit transaction.
         if conn.transaction is not None:
             conn.rollback()
+        conn.start_transaction()
 
     def _count_select(
         self, spec: dict[str, Any], fail_fast: bool, types: dict[str, str] | None = None

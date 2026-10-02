@@ -30,7 +30,11 @@ the state depends on the connection and the catalog:
   so a pinned run that pushes user SQL or reads ``$files`` keeps the guard too.
 * **Other catalogs, views and materialized views** have no table state Kontra
   can hold (a view reads its base tables; a materialized view may read its
-  definition when stale), so they run as before.
+  definition when stale), so they run as before, in autocommit.
+
+A URI validation opens one connection for all its queries, in either case, and
+``end`` closes it. A caller's connection is never given a session property, an
+isolation level, a commit or a rollback.
 """
 
 from __future__ import annotations
@@ -292,8 +296,8 @@ def _autocommit(conn: Any) -> bool:
 
 
 def begin(handle: DatasetHandle) -> None:
-    """Choose how this validation reads its table, and read the starting state."""
-    if not is_trino_table(handle) or state_of(handle) is not None:
+    """Choose how this validation reads its table, read the starting state, and own its connection."""
+    if not is_trino_table(handle) or state_of(handle) is not None or handle.owned_conn is not None:
         return
 
     if handle.scheme == "byoc":
@@ -315,17 +319,19 @@ def begin(handle: DatasetHandle) -> None:
         _set_state(handle, _autocommit_state(conn, parts))
         return
 
-    from trino.transaction import IsolationLevel
-
     from kontra.connectors.trino import get_connection
 
     parts = table_parts(handle)
-    # Any level other than AUTOCOMMIT makes the client run every query in one transaction.
-    conn = get_connection(handle.db_params, isolation_level=IsolationLevel.READ_UNCOMMITTED)
+    # An autocommit connection in an explicit transaction: every query runs in
+    # it until it commits, and the connection then serves a table without a
+    # state in autocommit. (The client sends a plain START TRANSACTION for any
+    # isolation level.)
+    conn = get_connection(handle.db_params)
     try:
+        conn.start_transaction()
         if not _iceberg_table(conn, parts):
             conn.commit()
-            conn.close()
+            object.__setattr__(handle, "owned_conn", conn)
             return
         guard = _newest_entry(conn, parts)
         columns = _read_columns(conn, parts)
@@ -392,14 +398,15 @@ def finish(handle: DatasetHandle | None) -> None:
 
 def end(handle: DatasetHandle | None) -> None:
     """Close the validation's own transaction and connection. A caller's is left untouched."""
-    state = state_of(handle)
-    if state is None:
-        return
-    _set_state(handle, None)
-    if state.mode != TRANSACTION or handle.owned_conn is None:
+    if state_of(handle) is not None:
+        _set_state(handle, None)
+    if not is_trino_table(handle) or handle.owned_conn is None:
         return
     conn = handle.owned_conn
     object.__setattr__(handle, "owned_conn", None)
+    if conn.transaction is None:
+        conn.close()
+        return
     try:
         conn.commit()  # nothing was written; this ends the read transaction
     except Exception as e:  # noqa: BLE001 - the results are already read
