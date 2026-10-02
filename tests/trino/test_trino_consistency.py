@@ -560,11 +560,11 @@ def before_files(monkeypatch):
     plan = {"statements": [], "calls": 0}
     read = trino_preplan._read_files
 
-    def patched(handle, columns):
+    def patched(handle, columns, partitions=()):
         plan["calls"] += 1
         if plan["calls"] == 1:
             run_sql(*plan["statements"])
-        return read(handle, columns)
+        return read(handle, columns, partitions)
 
     monkeypatch.setattr(trino_preplan, "_read_files", patched)
     return plan

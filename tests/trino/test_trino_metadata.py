@@ -275,7 +275,7 @@ def files_catalog(request, trino_container):
     )
 
 
-_FILES_TABLES = ("plain", "deleted", "parted", "wide", "nostats")
+_FILES_TABLES = ("plain", "deleted", "parted", "wide", "nostats", "allowed")
 
 
 def _uri_of(fq: str) -> str:
@@ -442,7 +442,7 @@ def test_files_failure_reports_its_cause_in_a_transaction(monkeypatch, trino_con
 
     fq = _make_files_table("iceberg", "plain")
 
-    def broken(handle, columns):
+    def broken(handle, columns, partitions=()):
         with kontra.connectors.db_utils.get_connection_ctx(handle, "trino") as conn:
             cur = conn.cursor()
             cur.execute('SELECT * FROM iceberg.kontra_meta."no_such_table$files"')
@@ -488,3 +488,142 @@ def test_conditional_on_a_missing_column_is_not_settled(files_catalog, declared)
     for kw in ({}, {"preplan": "off"}, {"preplan": "off", "pushdown": "off"}):
         with pytest.raises(trino.exceptions.TrinoUserError, match="COLUMN_NOT_FOUND"):
             kontra.validate(_uri_of(fq), rules=rules, save=False, **kw)
+
+
+# --------------------------------------------------------------------------- #
+# allowed_values from identity-partition values
+# --------------------------------------------------------------------------- #
+
+
+def _allowed_rules() -> list[dict]:
+    def rule(rule_id, column, values):
+        return {
+            "name": "allowed_values",
+            "id": rule_id,
+            "params": {"column": column, "values": values},
+        }
+
+    return [
+        rule("cat:all", "cat", ["a", "b"]),
+        rule("cat:a", "cat", ["a"]),
+        rule("cat:null", "cat", ["a", "b", None]),
+        rule("cat:nonull", "cat", ["a"]),
+        rule("k:all", "k", [1, 2]),
+        rule("k:one", "k", [1]),
+        rule("s:all", "s", ["x", "y"]),  # not a partition column: scan
+        rule("k:float", "k", [1.0, 2.0]),  # floats against integers: scan
+    ]
+
+
+def _make_allowed_table(catalog: str, partitioning: str = "ARRAY['cat', 'k']") -> str:
+    fq = f"{catalog}.kontra_meta.allowed"
+    _query(
+        f"CREATE SCHEMA IF NOT EXISTS {catalog}.kontra_meta",
+        f"DROP TABLE IF EXISTS {fq}",
+        f"CREATE TABLE {fq} (id bigint, cat varchar, k integer, s varchar, ts timestamp(6)) "
+        f"WITH (partitioning = {partitioning})",
+        f"INSERT INTO {fq} VALUES (1, 'a', 1, 'x', TIMESTAMP '2026-01-05 00:00:00'), "
+        "(2, 'b', 2, 'y', TIMESTAMP '2026-02-05 00:00:00'), "
+        "(3, 'a', 2, 'x', TIMESTAMP '2026-02-06 00:00:00')",
+    )
+    return fq
+
+
+def _metadata_ids(meta) -> set[str]:
+    return {rid for rid, r in meta.items() if r.source == "metadata"}
+
+
+@pytest.mark.integration
+def test_allowed_values_from_partition_values(files_catalog):
+    """Identity partitions on a varchar and an integer column settle allowed_values."""
+    fq = _make_allowed_table(files_catalog)
+    meta, scan, polars = _three_ways(_uri_of(fq), _allowed_rules())
+    _assert_same_answers(meta, scan, polars)
+    assert _metadata_ids(meta) == {"cat:all", "cat:a", "cat:null", "cat:nonull", "k:all", "k:one"}
+    assert [meta[r].passed for r in ("cat:all", "cat:a", "k:all", "k:one")] == [
+        True,
+        False,
+        True,
+        False,
+    ]
+
+
+@pytest.mark.integration
+def test_allowed_values_null_partition(files_catalog):
+    """A NULL partition value holds NULL in every row of its file."""
+    fq = _make_allowed_table(files_catalog)
+    _query(f"INSERT INTO {fq} VALUES (4, NULL, 1, 'x', TIMESTAMP '2026-03-01 00:00:00')")
+    meta, scan, polars = _three_ways(_uri_of(fq), _allowed_rules())
+    _assert_same_answers(meta, scan, polars)
+    assert meta["cat:null"].passed and meta["cat:null"].source == "metadata"
+    assert not meta["cat:all"].passed and meta["cat:all"].source == "metadata"
+
+
+@pytest.mark.integration
+def test_allowed_values_with_deletes_takes_only_passes(files_catalog):
+    """
+    A row delete keeps its data file: a value that is gone still shows as a
+    partition, so only PASS proofs hold.
+    """
+    fq = _make_allowed_table(files_catalog, "ARRAY['cat']")
+    _query(f"DELETE FROM {fq} WHERE id = 2")  # the only 'b' row, in a file with no other
+    _query(f"INSERT INTO {fq} VALUES (5, 'b', 1, 'x', TIMESTAMP '2026-03-01 00:00:00')")
+    _query(f"DELETE FROM {fq} WHERE id = 5")
+    deletes = f'SELECT count(*) FROM {files_catalog}.kontra_meta."allowed$files" WHERE content <> 0'
+    if _query(deletes)[0][0] == 0:
+        pytest.skip("the catalog removed whole files instead of writing delete files")
+    meta, scan, polars = _three_ways(_uri_of(fq), _allowed_rules())
+    _assert_same_answers(meta, scan, polars)
+    # 'b' is gone from the data, but its files remain: cat:a passes, by the scan.
+    assert meta["cat:a"].passed and meta["cat:a"].source != "metadata"
+    assert meta["cat:all"].passed and meta["cat:all"].source == "metadata"
+
+
+@pytest.mark.integration
+def test_allowed_values_after_partition_evolution(files_catalog):
+    """
+    Files written after cat leaves the spec read NULL for it. Their null
+    count says they hold values, so their partition value isn't trusted.
+    """
+    fq = _make_allowed_table(files_catalog, "ARRAY['cat']")
+    _query(
+        f"ALTER TABLE {fq} SET PROPERTIES partitioning = ARRAY['month(ts)']",
+        f"INSERT INTO {fq} VALUES (4, 'c', 1, 'x', TIMESTAMP '2026-03-01 00:00:00')",
+    )
+    meta, scan, polars = _three_ways(_uri_of(fq), _allowed_rules())
+    _assert_same_answers(meta, scan, polars)
+    # 'c' sits in a file whose spec has no cat: only the scan sees it.
+    assert not meta["cat:all"].passed and meta["cat:all"].source != "metadata"
+    assert not meta["cat:null"].passed and meta["cat:null"].source != "metadata"
+    # 'b' is in a trusted file, so the FAIL is still proven.
+    assert not meta["cat:a"].passed and meta["cat:a"].source == "metadata"
+
+
+@pytest.mark.integration
+def test_allowed_values_after_renaming_the_partition_column(files_catalog):
+    """The partition field keeps the old name; the renamed column is left to the scan."""
+    fq = _make_allowed_table(files_catalog, "ARRAY['cat']")
+    _query(f"ALTER TABLE {fq} RENAME COLUMN cat TO category")
+    rules = [
+        {
+            "name": "allowed_values",
+            "id": "all",
+            "params": {"column": "category", "values": ["a", "b"]},
+        },
+        {"name": "allowed_values", "id": "a", "params": {"column": "category", "values": ["a"]}},
+    ]
+    meta, scan, polars = _three_ways(_uri_of(fq), rules)
+    _assert_same_answers(meta, scan, polars)
+    assert _metadata_ids(meta) == set()
+    assert [meta["all"].passed, meta["a"].passed] == [True, False]
+
+
+@pytest.mark.integration
+def test_allowed_values_on_an_unpartitioned_table(files_catalog):
+    fq = _make_files_table(files_catalog, "plain")
+    rules = [
+        {"name": "allowed_values", "id": "cat", "params": {"column": "cat", "values": ["a", "b"]}}
+    ]
+    meta, scan, polars = _three_ways(_uri_of(fq), rules)
+    _assert_same_answers(meta, scan, polars)
+    assert meta["cat"].passed and meta["cat"].source != "metadata"

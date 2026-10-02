@@ -32,6 +32,14 @@ FAIL or a row count needs a table without delete files.
 * ``min_rows`` and ``max_rows`` PASS from the data files' row counts when
   there are no delete files. A FAIL reports the shortfall, which the scan
   counts, so it is left to the scan.
+* ``allowed_values`` on an identity-partition column (a varchar column with
+  string values, or an integer column with integer values) PASSes when every
+  non-empty data file's partition value is allowed. It FAILs, without delete
+  files, when a non-empty file's value isn't. A partition field named like a
+  column is that column's identity partition: Iceberg refuses any other spec
+  or column that would share the name. A file written under a spec without
+  the field reads NULL there, so a NULL value counts only when the file's
+  null count equals its row count, and a value only when its null count is 0.
 
 Anything else (floats from bounds, strings, files without metrics) is left
 to the scan. Table statistics (``SHOW STATS``) are estimates and are not used
@@ -145,6 +153,8 @@ class _ColumnFiles:
     max_upper: Any = None
     max_lower: Any = None
     min_upper: Any = None
+    unknown_parts: int = 0  # non-empty data files whose partition value can't be trusted
+    part_values: list[Any] = field(default_factory=list)  # distinct trusted partition values
 
 
 @dataclass
@@ -165,9 +175,11 @@ def _bound_type(data_type: str) -> str | None:
     return None
 
 
-def _files_sql(relation: str, columns: dict[str, str | None]) -> str:
+def _files_sql(
+    relation: str, columns: dict[str, str | None], partitions: tuple[str, ...] = ()
+) -> str:
     """One aggregate over $files: data and delete files, rows, and per-column metrics."""
-    from kontra.engine.sql_ir import lit_str
+    from kontra.engine.sql_ir import esc_ident, lit_str
 
     selects = [
         "count_if(content = 0)",
@@ -193,19 +205,87 @@ def _files_sql(relation: str, columns: dict[str, str | None]) -> str:
             f"max({lo}) FILTER (WHERE {valued})",
             f"min({hi}) FILTER (WHERE {valued})",
         ]
+    for name in partitions:
+        value = f"p.{esc_ident(name, 'trino')}"
+        nulls = f"element_at(m, {lit_str(name, 'trino')}).null_value_count"
+        trusted = (
+            f"coalesce(({value} IS NOT NULL AND {nulls} = 0) "
+            f"OR ({value} IS NULL AND {nulls} = record_count), false)"
+        )
+        non_empty = "content = 0 AND record_count > 0"
+        selects += [
+            f"count_if({non_empty} AND NOT {trusted})",
+            f"array_agg(DISTINCT {value}) FILTER (WHERE {non_empty} AND {trusted})",
+        ]
+    partition = ", partition AS p" if partitions else ""
     return (
         f"SELECT {', '.join(selects)} FROM "
-        f"(SELECT content, record_count, {_METRICS} AS m FROM {relation})"
+        f"(SELECT content, record_count, {_METRICS} AS m{partition} FROM {relation})"
     )
 
 
-def _read_files(handle: DatasetHandle, columns: dict[str, str | None]) -> _Files:
+def _row_fields(row_type: str) -> dict[str, str]:
+    """Field names and types of a ``row(...)`` type as DESCRIBE prints it."""
+    body = row_type.strip()
+    if not (body.lower().startswith("row(") and body.endswith(")")):
+        return {}
+    body = body[4:-1]
+    parts, depth, quoted, start = [], 0, False, 0
+    for i, ch in enumerate(body):
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted and ch == "(":
+            depth += 1
+        elif not quoted and ch == ")":
+            depth -= 1
+        elif not quoted and ch == "," and depth == 0:
+            parts.append(body[start:i])
+            start = i + 1
+    parts.append(body[start:])
+    fields = {}
+    for part in parts:
+        part = part.strip()
+        if part.startswith('"'):
+            end = 1
+            while end < len(part):
+                if part[end] == '"' and part[end + 1 : end + 2] != '"':
+                    break
+                end += 2 if part[end] == '"' else 1
+            name, data_type = part[1:end].replace('""', '"'), part[end + 1 :]
+        else:
+            name, _, data_type = part.partition(" ")
+        fields[name] = data_type.strip()
+    return fields
+
+
+def _partition_fields(handle: DatasetHandle) -> dict[str, str]:
+    """Partition field names and types across all the table's specs ({} if unpartitioned)."""
+    from kontra.connectors import trino_read
+    from kontra.connectors.db_utils import get_connection_ctx
+
+    trino_read.mark_files_read(handle)
+    with get_connection_ctx(handle, "trino") as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(f"DESCRIBE {trino_read.metadata_relation(handle, '$files')}")
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+    for row in rows:
+        if row[0] == "partition":
+            return _row_fields(row[1])
+    return {}
+
+
+def _read_files(
+    handle: DatasetHandle, columns: dict[str, str | None], partitions: tuple[str, ...] = ()
+) -> _Files:
     from kontra.connectors import trino_read
     from kontra.connectors.db_utils import get_connection_ctx
 
     # Trino can't read $files at a snapshot; a pinned run checks its guard instead.
     trino_read.mark_files_read(handle)
-    sql = _files_sql(trino_read.metadata_relation(handle, "$files"), columns)
+    sql = _files_sql(trino_read.metadata_relation(handle, "$files"), columns, partitions)
     with get_connection_ctx(handle, "trino") as conn:
         cur = conn.cursor()
         try:
@@ -223,6 +303,11 @@ def _read_files(handle: DatasetHandle, columns: dict[str, str | None]) -> _Files
             stats.min_lower, stats.max_upper, stats.max_lower, stats.min_upper = row[i + 1 : i + 5]
             i += 5
         files.columns[name] = stats
+    for name in partitions:
+        stats = files.columns[name]
+        stats.unknown_parts = int(row[i])
+        stats.part_values = list(row[i + 1] or [])
+        i += 2
     return files
 
 
@@ -293,6 +378,32 @@ def _row_count_decision(files: _Files, rule: Any) -> Decision:
     return "pass_meta" if files.records <= threshold else "unknown"
 
 
+def _allowed_values_usable(data_type: str, values: Any) -> bool:
+    """Whether partition values compare with the rule's values as the Polars tier does."""
+    from kontra.connectors.trino_types import normalize_type
+
+    if not isinstance(values, (list, tuple, set)) or not values:
+        return False
+    t = normalize_type(data_type)
+    given = [v for v in values if v is not None]
+    if t == "varchar" or t.startswith("varchar("):
+        return all(isinstance(v, str) for v in given)
+    if t in _INTEGER_TYPES:
+        return all(isinstance(v, int) and not isinstance(v, bool) for v in given)
+    return False
+
+
+def _allowed_values_decision(files: _Files, stats: _ColumnFiles, values: Any) -> Decision:
+    """Each trusted partition value holds for every row of its file."""
+    allowed = set(values)
+    outside = [v for v in stats.part_values if v not in allowed]
+    if not outside and stats.unknown_parts == 0:
+        return "pass_meta"
+    if outside and files.delete_files == 0:
+        return "fail_meta"
+    return "unknown"
+
+
 def _conditional_rules(rules: list[Any]) -> dict[str, str | None]:
     """conditional_not_null rules by id, with the column their condition reads.
 
@@ -339,7 +450,32 @@ def _files_rules(
             columns.setdefault(column, None)
         elif rule.name in ("min_rows", "max_rows"):
             wanted.append((rule.name, rule.rule_id, rule))
+        elif (
+            rule.name == "allowed_values"
+            and column in types
+            and _allowed_values_usable(types[column], params.get("values"))
+        ):
+            wanted.append(("allowed_values", rule.rule_id, column, params["values"]))
     return wanted, columns
+
+
+def _identity_partitions(
+    handle: DatasetHandle, wanted: list[tuple[Any, ...]], types: dict[str, str]
+) -> tuple[list[tuple[Any, ...]], tuple[str, ...]]:
+    """Keep allowed_values rules whose column is an identity partition; name those columns."""
+    from kontra.connectors.trino_types import normalize_type
+
+    columns = {w[2] for w in wanted if w[0] == "allowed_values"}
+    if not columns:
+        return wanted, ()
+    fields = _partition_fields(handle)
+    # An identity field has its column's type; a same-named field of another
+    # type isn't one.
+    identity = {
+        c for c in columns if c in fields and normalize_type(fields[c]) == normalize_type(types[c])
+    }
+    kept = [w for w in wanted if w[0] != "allowed_values" or w[2] in identity]
+    return kept, tuple(sorted(identity))
 
 
 def preplan_trino(
@@ -385,7 +521,11 @@ def preplan_trino(
     decided = {rid for rid, d in rule_decisions.items() if d != "unknown"}
     wanted, file_columns = _files_rules(rules, predicates, types, decided) if held else ([], {})
     if wanted:
-        files = _read_files(handle, file_columns)
+        wanted, partitions = _identity_partitions(handle, wanted, types)
+        for column in partitions:
+            file_columns.setdefault(column, None)
+    if wanted:
+        files = _read_files(handle, file_columns, partitions)
         for kind, rule_id, *args in wanted:
             if kind == "not_null":
                 decision = _not_null_decision(files, files.columns[args[0]])
@@ -393,6 +533,8 @@ def preplan_trino(
                 decision = "pass_meta" if _no_nulls(files.columns[args[0]]) else "unknown"
             elif kind == "range":
                 decision = _range_decision(files, files.columns[args[0]], args[1], args[2])
+            elif kind == "allowed_values":
+                decision = _allowed_values_decision(files, files.columns[args[0]], args[1])
             else:
                 decision = _row_count_decision(files, args[0])
             rule_decisions[rule_id] = decision

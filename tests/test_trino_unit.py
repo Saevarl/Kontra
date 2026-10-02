@@ -441,6 +441,73 @@ class TestTrinoFilesDecisions:
             assert _bound_type(data_type) is None
 
 
+class TestTrinoPartitionValues:
+    """allowed_values from identity-partition values."""
+
+    @staticmethod
+    def _files(values, unknown_parts=0, delete_files=0):
+        from kontra.preplan.trino import _ColumnFiles, _Files
+
+        stats = _ColumnFiles(0, 0, unknown_parts=unknown_parts, part_values=values)
+        return _Files(1, delete_files, 10, {"x": stats}), stats
+
+    def test_decisions(self):
+        from kontra.preplan.trino import _allowed_values_decision as decide
+
+        assert decide(*self._files(["a", "b"]), ["a", "b"]) == "pass_meta"
+        assert decide(*self._files(["a", "b"]), ["a"]) == "fail_meta"
+        assert decide(*self._files(["a", None]), ["a"]) == "fail_meta"
+        assert decide(*self._files(["a", None]), ["a", None]) == "pass_meta"
+        assert decide(*self._files([]), ["a"]) == "pass_meta"  # no non-empty files
+        # A file whose value can't be trusted (its spec lacks the field, or it has no null count).
+        assert decide(*self._files(["a"], unknown_parts=1), ["a"]) == "unknown"
+        assert decide(*self._files(["b"], unknown_parts=1), ["a"]) == "fail_meta"
+        # Delete files: the value's rows may be gone.
+        assert decide(*self._files(["b"], delete_files=1), ["a"]) == "unknown"
+        assert decide(*self._files(["a"], delete_files=1), ["a"]) == "pass_meta"
+
+    @pytest.mark.parametrize(
+        ("data_type", "values", "usable"),
+        [
+            ("varchar", ["a", None], True),
+            ("varchar(3)", ["a"], True),
+            ("varchar", ["a", 1], False),
+            ("integer", [1, 2, None], True),
+            ("bigint", [1, True], False),
+            ("integer", [1.0], False),
+            ("integer", ["1"], False),
+            ("date", ["2020-01-01"], False),
+            ("double", [1.0], False),
+            ("varchar", "a", False),
+            ("varchar", [], False),
+        ],
+    )
+    def test_usable_values(self, data_type, values, usable):
+        from kontra.preplan.trino import _allowed_values_usable
+
+        assert _allowed_values_usable(data_type, values) is usable
+
+    def test_row_fields(self):
+        from kontra.preplan.trino import _row_fields
+
+        assert _row_fields('row("cat" varchar, "ts_month" integer, "a""b, c" decimal(12, 2))') == {
+            "cat": "varchar",
+            "ts_month": "integer",
+            'a"b, c': "decimal(12, 2)",
+        }
+        assert _row_fields("row(cat varchar)") == {"cat": "varchar"}
+        assert _row_fields("varchar") == {}
+
+    def test_sql_reads_partition_values_with_a_null_count_check(self):
+        from kontra.preplan.trino import _files_sql
+
+        sql = _files_sql('"c"."s"."t$files"', {"cat": None}, ("cat",))
+        assert "partition AS p" in sql
+        assert 'array_agg(DISTINCT p."cat")' in sql
+        assert "null_value_count = record_count" in sql
+        assert "partition" not in _files_sql('"c"."s"."t$files"', {"cat": None})
+
+
 class TestTrinoMaterializerTypes:
     @pytest.mark.parametrize(
         ("trino_type", "expected"),
