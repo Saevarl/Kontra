@@ -337,7 +337,7 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             ]
             custom = [lambda s=s: self._custom_sql(conn, handle, s) for s in custom_sql_specs]
             mode = getattr(trino_read.state_of(handle), "mode", None)
-            if mode == trino_read.CALLER_TRANSACTION:
+            if trino_read.caller_transaction(handle):
                 # A failed query aborts a Trino transaction, and Kontra can't
                 # roll back the caller's: user SQL runs after the scan, one by one.
                 outputs = self._concurrently(conn, scan, recover=False)

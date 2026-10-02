@@ -129,6 +129,24 @@ def in_transaction(handle: DatasetHandle | None) -> bool:
     return state is not None and state.mode in (TRANSACTION, CALLER_TRANSACTION)
 
 
+def caller_transaction(handle: DatasetHandle | None) -> bool:
+    """
+    The validation runs in the caller's transaction, whatever the relation.
+
+    A non-Iceberg table or a view has no read state, but a caller's
+    transactional connection still aborts its transaction on a failed query.
+    """
+    state = state_of(handle)
+    if state is not None:
+        return state.mode == CALLER_TRANSACTION
+    return (
+        handle is not None
+        and handle.scheme == "byoc"
+        and handle.external_conn is not None
+        and not _autocommit(handle.external_conn)
+    )
+
+
 def mark_files_read(handle: DatasetHandle) -> None:
     """``$files`` is about to be read: a pinned run must still check the guard."""
     state = state_of(handle)

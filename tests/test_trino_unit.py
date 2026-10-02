@@ -451,6 +451,25 @@ class TestTrinoScanRecovery:
         assert conn.rollbacks == 0
         assert not {r["rule_id"]: r for r in out["results"]}["c1"]["passed"]
 
+    @pytest.mark.parametrize(
+        ("level", "expected"), [("READ_UNCOMMITTED", True), ("AUTOCOMMIT", False)]
+    )
+    def test_callers_transaction_without_read_state(self, level, expected):
+        """A non-Iceberg table or a view has no read state; the caller's connection decides."""
+        from types import SimpleNamespace
+
+        from trino.transaction import IsolationLevel
+
+        from kontra.connectors import trino_read
+        from kontra.connectors.handle import DatasetHandle
+
+        handle = DatasetHandle.from_uri("trino://u@host/lake/s.t")
+        assert trino_read.caller_transaction(handle) is False  # Kontra's own connection
+        object.__setattr__(handle, "scheme", "byoc")
+        conn = SimpleNamespace(isolation_level=getattr(IsolationLevel, level))
+        object.__setattr__(handle, "external_conn", conn)
+        assert trino_read.caller_transaction(handle) is expected
+
 
 class TestTrinoExactnessGate:
     def _exact(self, spec, byoc=False):

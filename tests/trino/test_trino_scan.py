@@ -9,6 +9,8 @@ rule, and counts the queries that read the table.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 import kontra
@@ -304,3 +306,65 @@ def test_a_commit_before_the_retry_reruns_the_validation(table, modes, monkeypat
     assert by_id["COL:code:unique"].failed_count == ROWS - 7  # the new row's code is NULL
     assert by_id["good"].failed_count == 2 * 9
     assert by_id["COL:qty:range"].failed_count == 2
+
+
+ABORTING = [
+    {"name": "not_null", "params": {"column": "x"}, "tally": True},
+    {
+        "name": "custom_sql_check",
+        "id": "bad",
+        "params": {"sql": "SELECT * FROM {table} WHERE 1/(x-5)>0"},
+    },
+]
+
+
+@pytest.fixture(params=["memory", "iceberg_view"])
+def stateless(request, trino_container):
+    """A relation with no Iceberg read state: a memory table, or a view on an Iceberg table."""
+    if request.param == "memory":
+        fq, base = "memory.kontra_scan.abort_probe", None
+        run_sql("CREATE SCHEMA IF NOT EXISTS memory.kontra_scan", f"DROP TABLE IF EXISTS {fq}")
+    else:
+        fq, base = f"iceberg.{SCHEMA}.abort_view", f"iceberg.{SCHEMA}.abort_base"
+        run_sql(
+            f"CREATE SCHEMA IF NOT EXISTS iceberg.{SCHEMA}",
+            f"DROP VIEW IF EXISTS {fq}",
+            f"DROP TABLE IF EXISTS {base}",
+        )
+    source = base or fq
+    run_sql(f"CREATE TABLE {source} AS SELECT i AS x FROM UNNEST(sequence(1, 10000)) t(i)")
+    if base:
+        run_sql(f"CREATE VIEW {fq} AS SELECT * FROM {base}")
+    yield fq
+    if base:
+        run_sql(f"DROP VIEW IF EXISTS {fq}")
+    run_sql(f"DROP TABLE IF EXISTS {source}")
+
+
+def test_callers_transaction_without_read_state_runs_custom_sql_after_the_scan(
+    stateless, modes, monkeypatch
+):
+    """
+    A caller's transaction on a relation with no Iceberg read state still aborts
+    on a failed query. Custom SQL must run after the scan, or a failing query
+    takes the scan down with it. The scan is held back so that, run beside it,
+    the custom query would always fail first.
+    """
+    from trino.transaction import IsolationLevel
+
+    run = trino_sql.TrinoSqlExecutor._run
+
+    def slow_scan(conn, sql):
+        if '"__row_count"' in sql:
+            time.sleep(0.3)
+        return run(conn, sql)
+
+    monkeypatch.setattr(trino_sql.TrinoSqlExecutor, "_run", staticmethod(slow_scan))
+    with connect(isolation_level=IsolationLevel.READ_UNCOMMITTED) as conn:
+        result = kontra.validate(
+            conn, table=stateless, rules=ABORTING, tally=True, save=False, preplan="off"
+        )
+    by_id = {r.rule_id: r for r in result.rules}
+    assert modes == [None]
+    assert by_id["COL:x:not_null"].passed and by_id["COL:x:not_null"].failed_count == 0
+    assert not by_id["bad"].passed and "Division by zero" in by_id["bad"].message
