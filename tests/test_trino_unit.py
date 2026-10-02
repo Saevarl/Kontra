@@ -172,8 +172,9 @@ _FAMILIES = {
     "id": "integer",
     "amount": "decimal",
     "name": "varchar",
-    "code": "other",  # char(n)
+    "code": "char",
     "score": "float",
+    "score2": "float",
     "day": "date",
     "ts": "timestamp",
     "tsz": "timestamptz",
@@ -472,10 +473,10 @@ class TestTrinoScanRecovery:
 
 
 class TestTrinoExactnessGate:
-    def _exact(self, spec, byoc=False):
+    def _exact(self, spec):
         from kontra.engine.executors.trino_sql import TrinoSqlExecutor
 
-        return TrinoSqlExecutor()._is_exact(spec, _FAMILIES, byoc)
+        return TrinoSqlExecutor()._is_exact(spec, _FAMILIES)
 
     @pytest.mark.parametrize(
         "spec",
@@ -499,6 +500,19 @@ class TestTrinoExactnessGate:
             },
             {"kind": "freshness", "column": "ts"},
             {"kind": "min_rows"},
+            # Closed fallbacks (floats, char(n)).
+            {"kind": "unique", "column": "score"},
+            {"kind": "range", "column": "score", "min": 0},
+            {"kind": "range", "column": "score", "min": -1.5, "max": 2**53},
+            {"kind": "compare", "left": "score", "right": "score2", "op": "<"},
+            {"kind": "compare", "left": "score", "right": "score", "op": "!="},
+            {"kind": "allowed_values", "column": "code", "values": ["ab", None]},
+            {"kind": "disallowed_values", "column": "code", "values": ["ab"]},
+            {"kind": "length", "column": "code", "min": 1},
+            {"kind": "regex", "column": "code", "pattern": "^a"},
+            {"kind": "contains", "column": "code", "substring": "b"},
+            {"kind": "starts_with", "column": "code", "prefix": "a"},
+            {"kind": "ends_with", "column": "code", "suffix": " "},
         ],
     )
     def test_pushed(self, spec):
@@ -508,12 +522,29 @@ class TestTrinoExactnessGate:
         "spec",
         [
             {"kind": "not_null", "column": "missing"},
-            {"kind": "unique", "column": "score"},
             {"kind": "unique", "column": "code"},
             {"kind": "allowed_values", "column": "id", "values": ["1"]},
-            {"kind": "allowed_values", "column": "code", "values": ["ab"]},
+            {"kind": "allowed_values", "column": "code", "values": [1]},
             {"kind": "allowed_values", "column": "flag", "values": [1]},
-            {"kind": "range", "column": "score", "min": 0},
+            # Floats: equality with a float literal isn't measured; bounds
+            # that don't convert to one float alike; float vs other families.
+            {"kind": "allowed_values", "column": "score", "values": [1.5]},
+            {"kind": "disallowed_values", "column": "score", "values": [1.5]},
+            {"kind": "range", "column": "score", "min": float("nan")},
+            {"kind": "range", "column": "score", "max": float("inf")},
+            {"kind": "range", "column": "score", "max": 2**53 + 1},
+            {"kind": "range", "column": "score", "min": True},
+            {"kind": "range", "column": "score", "min": "0"},
+            {"kind": "compare", "left": "score", "right": "id", "op": "<"},
+            {"kind": "compare", "left": "code", "right": "code", "op": "=="},
+            {
+                "kind": "conditional_range",
+                "column": "score",
+                "when_column": "x",
+                "when_op": "==",
+                "when_value": 1,
+                "min": 0,
+            },
             # Float literals on exact numerics: Trino and Polars compare them differently.
             {"kind": "range", "column": "id", "max": 9007199254740992.0},
             {"kind": "range", "column": "amount", "min": 0.31},
@@ -527,10 +558,8 @@ class TestTrinoExactnessGate:
                 "max": 1.0,
             },
             {"kind": "range", "column": "day", "min": 0},
-            {"kind": "length", "column": "code", "min": 1},
             {"kind": "contains", "column": "id", "substring": "1"},
             {"kind": "compare", "left": "day", "right": "ts", "op": "<"},
-            {"kind": "compare", "left": "score", "right": "score", "op": "<"},
             {
                 "kind": "conditional_range",
                 "column": "id",
@@ -559,10 +588,99 @@ class TestTrinoExactnessGate:
 
         assert _family(data_type) == family
 
-    def test_freshness_on_callers_connection(self):
-        assert self._exact({"kind": "freshness", "column": "tsz"}, byoc=True) is True
-        assert self._exact({"kind": "freshness", "column": "ts"}, byoc=True) is False
-        assert self._exact({"kind": "freshness", "column": "day"}, byoc=True) is False
+    @pytest.mark.parametrize("column", ["tsz", "ts", "day"])
+    def test_freshness_pushes_on_any_connection(self, column):
+        assert self._exact({"kind": "freshness", "column": column}) is True
+
+    @pytest.mark.parametrize(
+        "data_type, length",
+        [("char", 1), ("char(3)", 3), ("CHAR(12)", 12), ("varchar(3)", None), ("char(x)", None)],
+    )
+    def test_char_length(self, data_type, length):
+        from kontra.engine.executors.trino_sql import _char_length, _family
+
+        assert _char_length(data_type) == length
+        assert (_family(data_type) == "char") is (length is not None)
+
+
+_TYPES = {
+    "score": "double",
+    "r": "real",
+    "code": "char(3)",
+    "ts": "timestamp(6)",
+    "tsz": "timestamp(6) with time zone",
+    "day": "date",
+    "name": "varchar",
+}
+
+
+class TestTrinoTypedSql:
+    """The SQL written for floats, char(n) and naive freshness."""
+
+    def _select(self, spec):
+        from kontra.engine.executors.trino_sql import TrinoSqlExecutor
+
+        return TrinoSqlExecutor()._count_select({"rule_id": "r1", **spec}, False, _TYPES)
+
+    def test_float_range_counts_nan_and_casts_bounds(self):
+        sql = self._select({"kind": "range", "column": "score", "min": 0, "max": 0.1})
+        assert sql == (
+            'count_if("score" IS NULL OR is_nan("score") OR "score" < DOUBLE \'0.0\' '
+            'OR "score" > DOUBLE \'0.1\') AS "r1"'
+        )
+
+    def test_real_range_bound_is_a_real(self):
+        sql = self._select({"kind": "range", "column": "r", "min": 0.1})
+        assert "\"r\" < CAST(DOUBLE '0.1' AS real)" in sql
+
+    def test_float_compare_uses_polars_order(self):
+        sql = self._select({"kind": "compare", "left": "score", "right": "r", "op": "<="})
+        assert sql == (
+            'count_if("score" IS NULL OR "r" IS NULL OR NOT (is_nan("r") OR '
+            '(NOT is_nan("score") AND "score" <= "r"))) AS "r1"'
+        )
+
+    @pytest.mark.parametrize(
+        "spec, condition",
+        [
+            (
+                {"kind": "allowed_values", "column": "code", "values": ["ab"]},
+                "{p} IS NULL OR {p} NOT IN ('ab')",
+            ),
+            (
+                {"kind": "allowed_values", "column": "code", "values": ["ab", None]},
+                "{p} IS NOT NULL AND {p} NOT IN ('ab')",
+            ),
+            ({"kind": "disallowed_values", "column": "code", "values": []}, "false"),
+            ({"kind": "length", "column": "code", "max": 2}, "{p} IS NULL OR LENGTH({p}) > 2"),
+            (
+                {"kind": "ends_with", "column": "code", "suffix": "b_"},
+                "{p} IS NULL OR {p} NOT LIKE '%b\\_' ESCAPE '\\'",
+            ),
+            (
+                {"kind": "regex", "column": "code", "pattern": "^a"},
+                "{p} IS NULL OR NOT regexp_like({p}, '^a')",
+            ),
+        ],
+    )
+    def test_char_rules_read_the_padded_value(self, spec, condition):
+        padded = "rpad(CAST(\"code\" AS varchar), 3, ' ')"
+        assert self._select(spec) == f'count_if({condition.format(p=padded)}) AS "r1"'
+
+    def test_varchar_rules_are_unchanged(self):
+        from kontra.engine.executors.trino_sql import TrinoSqlExecutor
+
+        spec = {"rule_id": "r1", "kind": "length", "column": "name", "max": 2}
+        assert self._select(spec) == TrinoSqlExecutor()._count_select(spec, False)
+
+    @pytest.mark.parametrize("column", ["ts", "day"])
+    def test_naive_freshness_compares_with_utc_now(self, column):
+        sql = self._select({"kind": "freshness", "column": column, "max_age_seconds": 60})
+        assert "date_add('second', -60, CAST(current_timestamp AT TIME ZONE 'UTC' AS " in sql
+
+    def test_zoned_freshness_compares_with_current_timestamp(self):
+        sql = self._select({"kind": "freshness", "column": "tsz", "max_age_seconds": 60})
+        assert "date_add('second', -60, current_timestamp)" in sql
 
 
 class TestTrinoPreplan:

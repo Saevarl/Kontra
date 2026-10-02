@@ -84,15 +84,17 @@ class TestTrinoValidation:
     def test_inexact_rules_fall_back_to_polars(self, trino_users_uri):
         """Constructs where Trino and Polars disagree must run in Polars."""
         deferred = [
-            rules.range("score", min=0, max=2),  # double: Polars orders NaN above all
-            rules.allowed_values("code", ["ab"]),  # char(3): Trino pads for comparison
+            rules.allowed_values("score", [1.5]),  # double: float literal equality unmeasured
             rules.allowed_values("age", ["25"]),  # string values on an integer column
             {"name": "regex", "id": "word_rx", "params": {"column": "email", "pattern": r"^\w+@"}},
             {"name": "regex", "id": "flags_rx", "params": {"column": "email", "pattern": "(?i)^A"}},
-            rules.unique("score"),  # double: NaN / -0.0 distinctness
         ]
         kept = [
             {"name": "regex", "id": "end_rx", "params": {"column": "note", "pattern": "^abc$"}},
+            # Written out in SQL (NaN, char padding): tests/trino/test_trino_semantics.py.
+            rules.range("score", min=0, max=2),
+            rules.allowed_values("code", ["ab"]),
+            rules.unique("score"),
         ]
         on = _by_id(kontra.validate(trino_users_uri, rules=deferred + kept, tally=True, save=False))
         off = _by_id(
@@ -105,11 +107,10 @@ class TestTrinoValidation:
                 pushdown="off",
             )
         )
-        for rid in ("COL:score:range", "COL:code:allowed_values", "COL:age:allowed_values"):
+        for rid in ("COL:score:allowed_values", "COL:age:allowed_values", "word_rx", "flags_rx"):
             assert on[rid].source == "polars", rid
-        assert on["word_rx"].source == "polars"
-        assert on["flags_rx"].source == "polars"
-        assert on["COL:score:unique"].source == "polars"
+        for rid in ("COL:score:range", "COL:code:allowed_values", "COL:score:unique"):
+            assert on[rid].source == "sql", rid
         # '$' is pushed as '\z': 'abc\n' must not match, as in Polars.
         assert on["end_rx"].source == "sql"
         assert on["end_rx"].failed_count == off["end_rx"].failed_count == 5
@@ -214,9 +215,8 @@ class TestTrinoSources:
             conn.close()
         assert r["COL:user_id:unique"].failed_count == 1
         assert r["COL:user_id:unique"].source == "sql"
-        # The caller's session time zone is unknown, so naive timestamps run
-        # in Polars (which reads them as UTC); zoned timestamps still push.
-        assert r["COL:created_at:freshness"].source == "polars"
+        # Naive timestamps compare with UTC now, as in Polars, so both push.
+        assert r["COL:created_at:freshness"].source == "sql"
         assert r["COL:updated_at:freshness"].source == "sql"
 
     def test_compare_table_vs_dataframe(self, trino_users_uri):

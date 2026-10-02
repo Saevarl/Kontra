@@ -10,6 +10,18 @@ same answer as the Polars tier for those types. Every other rule is left out
 of the SQL results, so the residual Polars tier measures it and the rule
 reports ``execution_source`` ``polars``. Pushdown is exact or it falls back.
 
+Three of those differences are written out in SQL instead of left to Polars:
+
+* floats: ``range`` counts NaN as out of range and compares with the bounds
+  cast to the column's type; ``compare`` between float columns uses Polars'
+  order (NaN equals NaN and is above every number); ``unique`` already
+  matches (NaN equals NaN, -0.0 equals 0.0);
+* ``char(n)``: the string rules read ``rpad(CAST(c AS varchar), n, ' ')``,
+  the padded value the client hands Polars. Trino's own ``char`` drops the
+  padding in casts, ``regexp_like`` and comparisons, but not in ``LIKE``;
+* ``freshness`` on a naive timestamp or a date compares with the current
+  time in UTC, as Polars does, whatever the session's time zone.
+
 The pushed rules are answered by one scan plan in both modes:
 
 * one fused aggregate over the table: ``count_if(<violation>)`` per rule, the
@@ -26,6 +38,7 @@ The pushed rules are answered by one scan plan in both modes:
 
 from __future__ import annotations
 
+import math
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Any
@@ -35,7 +48,24 @@ from kontra.connectors.db_utils import get_connection_ctx
 from kontra.connectors.detection import parse_table_reference
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.trino import TrinoConnectionParams
-from kontra.engine.sql_ir import lit_str, trino_regex
+from kontra.engine.sql_ir import (
+    And,
+    In,
+    IsNotNull,
+    IsNull,
+    LenOf,
+    Like,
+    Node,
+    Or,
+    RawExpr,
+    RegexNoMatch,
+    bounds,
+    esc_ident,
+    escape_like_pattern,
+    lit_str,
+    renderer_for,
+    trino_regex,
+)
 from kontra.engine.sql_utils import results_from_row
 from kontra.logging import get_logger
 
@@ -54,8 +84,34 @@ _MAX_CONCURRENT = 4
 
 # Type families whose comparisons, equality and ordering agree with Polars.
 # Floating columns are excluded (Polars orders NaN above every number, Trino
-# compares NaN as false), as is CHAR(n) (Trino pads it for comparison).
+# compares NaN as false), as is CHAR(n) (Trino pads it for comparison); the
+# rules that write those differences out are gated one by one.
 _ORDERED = {"integer", "decimal", "varchar", "date", "timestamp", "timestamptz", "boolean"}
+
+# String rules that read a char(n) column through its padded varchar value.
+_CHAR_RULES = {
+    "allowed_values",
+    "disallowed_values",
+    "length",
+    "regex",
+    "contains",
+    "starts_with",
+    "ends_with",
+}
+
+# Integers up to 2^53 convert to double exactly, so both sides round alike.
+_EXACT_DOUBLE_INT = 2**53
+
+# Polars' order for floats as SQL over a non-NULL pair: NaN equals NaN and is
+# above every number. {l}/{r} are the columns, {ln}/{rn} whether each is NaN.
+_FLOAT_ORDER = {
+    "==": "({ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} = {r})",
+    "!=": "NOT (({ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} = {r}))",
+    "<": "(NOT {ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} < {r})",
+    "<=": "{rn} OR (NOT {ln} AND {l} <= {r})",
+    ">": "({ln} AND NOT {rn}) OR (NOT {ln} AND NOT {rn} AND {l} > {r})",
+    ">=": "{ln} OR (NOT {rn} AND {l} >= {r})",
+}
 
 
 def _family(data_type: str | None) -> str | None:
@@ -69,6 +125,8 @@ def _family(data_type: str | None) -> str | None:
         return "decimal"
     if t.startswith("varchar"):
         return "varchar"
+    if _char_length(t) is not None:
+        return "char"
     if t.startswith("timestamp"):
         # The materializer reads timestamps at microsecond precision, so finer
         # values the SQL tier tells apart can collapse into equal ones.
@@ -79,6 +137,32 @@ def _family(data_type: str | None) -> str | None:
     if t in ("date", "boolean", "real", "double"):
         return {"real": "float", "double": "float"}.get(t, t)
     return "other"
+
+
+def _char_length(data_type: str) -> int | None:
+    """n for ``char(n)`` (``char`` alone is ``char(1)``), else None."""
+    t = data_type.lower().strip()
+    if t == "char":
+        return 1
+    if t.startswith("char(") and t.endswith(")") and t[5:-1].strip().isdigit():
+        return int(t[5:-1])
+    return None
+
+
+def _float_bound_fits(value: Any) -> bool:
+    """A range bound that Trino and Polars turn into the same float."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) <= _EXACT_DOUBLE_INT
+    return isinstance(value, float) and math.isfinite(value)
+
+
+def _float_literal(value: Any, data_type: str) -> str:
+    """A bound as a float of the column's type, as Polars casts it."""
+    # repr round-trips the double; double -> real rounds as Polars' cast does.
+    double = f"DOUBLE '{float(value)!r}'"
+    return f"CAST({double} AS real)" if data_type.lower().strip() == "real" else double
 
 
 def _literal_fits(family: str | None, value: Any) -> bool:
@@ -98,6 +182,56 @@ def _bounds_fit(family: str | None, *bounds: Any) -> bool:
     if family not in ("integer", "decimal"):
         return False
     return all(b is None or _literal_fits(family, b) for b in bounds)
+
+
+def _float_range_violation(column: str, data_type: str, spec: dict[str, Any]) -> Node:
+    """NULL, NaN or out of bounds, as the Polars range rule counts a float."""
+    col = RawExpr(esc_ident(column, "trino"))
+    out: list[Node] = [IsNull(col), RawExpr(f"is_nan({col.text})")]
+    for op, key in (("<", "min"), (">", "max")):
+        if spec.get(key) is not None:
+            out.append(RawExpr(f"{col.text} {op} {_float_literal(spec[key], data_type)}"))
+    return Or(*out)
+
+
+def _float_compare_violation(spec: dict[str, Any]) -> Node:
+    """NULL on either side, or the comparison false in Polars' float order."""
+    left, right = (esc_ident(spec[k], "trino") for k in ("left", "right"))
+    holds = _FLOAT_ORDER[spec["op"]].format(
+        l=left, r=right, ln=f"is_nan({left})", rn=f"is_nan({right})"
+    )
+    return Or(IsNull(RawExpr(left)), IsNull(RawExpr(right)), RawExpr(f"NOT ({holds})"))
+
+
+def _char_violation(spec: dict[str, Any], length: int) -> Node:
+    """A string rule's violation over a char(n) column's padded value."""
+    kind = spec["kind"]
+    padded = RawExpr(f"rpad(CAST({esc_ident(spec['column'], 'trino')} AS varchar), {length}, ' ')")
+    if kind == "allowed_values":
+        values = spec.get("values") or []
+        allowed = [v for v in values if v is not None]
+        if not allowed:
+            return IsNotNull(padded)
+        outside = In(padded, allowed, negate=True)
+        return And(IsNotNull(padded), outside) if None in values else Or(IsNull(padded), outside)
+    if kind == "disallowed_values":
+        listed = [v for v in spec.get("values") or [] if v is not None]
+        return And(IsNotNull(padded), In(padded, listed)) if listed else RawExpr("false")
+    if kind == "length":
+        lo, hi = spec.get("min"), spec.get("max")
+        limits = (int(lo) if lo is not None else None, int(hi) if hi is not None else None)
+        return Or(IsNull(padded), *bounds(LenOf(padded), *limits))
+    if kind == "regex":
+        return RegexNoMatch(padded, spec["pattern"])
+    affix = escape_like_pattern(
+        spec[{"contains": "substring", "starts_with": "prefix", "ends_with": "suffix"}[kind]]
+    )
+    pattern = {
+        "contains": f"%{affix}%",
+        "starts_with": f"{affix}%",
+        "ends_with": f"%{affix}",
+    }[kind]
+    return Or(IsNull(padded), Like(padded, pattern, negate=True))
 
 
 @register_executor("trino")
@@ -220,7 +354,7 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
         )
         return [(row[0], row[1]) for row in cursor.fetchall()]
 
-    def _is_exact(self, spec: dict[str, Any], families: dict[str, str], byoc: bool) -> bool:
+    def _is_exact(self, spec: dict[str, Any], families: dict[str, str]) -> bool:
         """Whether Trino's answer for this spec matches the Polars tier."""
         kind = spec.get("kind")
 
@@ -232,19 +366,29 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             return True
         if kind == "not_null":
             return fam("column") is not None
+        if kind in _CHAR_RULES and fam("column") == "char":
+            # Read through the padded value; only string values compare to it.
+            values = [v for v in spec.get("values") or [] if v is not None]
+            return all(isinstance(v, str) for v in values)
         if kind == "unique":
-            return fam("column") in _ORDERED
+            # COUNT(DISTINCT) and GROUP BY treat NaN as one value and -0.0 as 0.0.
+            return fam("column") in _ORDERED | {"float"}
         if kind in ("allowed_values", "disallowed_values"):
             f = fam("column")
             values = [v for v in spec.get("values") or [] if v is not None]
             return f in _ORDERED and all(_literal_fits(f, v) for v in values)
         if kind == "range":
+            if fam("column") == "float":
+                bounds_ = (spec.get("min"), spec.get("max"))
+                return all(b is None or _float_bound_fits(b) for b in bounds_)
             return _bounds_fit(fam("column"), spec.get("min"), spec.get("max"))
         if kind in ("length", "regex", "contains", "starts_with", "ends_with"):
             return fam("column") == "varchar"
         if kind == "compare":
             left, right = fam("left"), fam("right")
             numeric = {"integer", "decimal"}
+            if left == right == "float":
+                return spec.get("op") in _FLOAT_ORDER
             return left in _ORDERED and (left == right or {left, right} <= numeric)
         if kind in ("conditional_not_null", "conditional_range"):
             when = fam("when_column")
@@ -257,10 +401,8 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
                 return fam("column") is not None
             return _bounds_fit(fam("column"), spec.get("min"), spec.get("max"))
         if kind == "freshness":
-            # Polars reads naive timestamps as UTC. Owned connections run in
-            # UTC; a caller's connection may not, so only zoned columns push.
-            f = fam("column")
-            return f == "timestamptz" or (not byoc and f in ("timestamp", "date"))
+            # Naive values compare with UTC now, as in Polars (_freshness_select).
+            return fam("column") in ("timestamptz", "timestamp", "date")
         return False
 
     def execute(
@@ -283,10 +425,10 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             finally:
                 cursor.close()
 
-        families = {name.lower(): _family(data_type) for name, data_type in columns}
-        byoc = handle.scheme == "byoc"
+        types = {name.lower(): data_type for name, data_type in columns}
+        families = {name: _family(data_type) for name, data_type in types.items()}
         supported = compiled_plan.get("supported_specs", [])
-        exact = [s for s in supported if self._is_exact(s, families, byoc)]
+        exact = [s for s in supported if self._is_exact(s, families)]
         if len(exact) != len(supported):
             deferred = [s.get("rule_id") for s in supported if s not in exact]
             _logger.info("Trino pushdown left %d rule(s) to Polars: %s", len(deferred), deferred)
@@ -294,7 +436,7 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
 
         if any(s.get("kind") in ("custom_sql_check", "custom_agg") for s in exact):
             trino_read.mark_user_sql(handle)
-        out = self._scan(handle, compiled_plan)
+        out = self._scan(handle, compiled_plan, types)
         out["available_cols"] = [name for name, _ in columns]
         return out
 
@@ -302,8 +444,18 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
     # Scan plan
     # ------------------------------------------------------------------ #
 
-    def _scan(self, handle: DatasetHandle, compiled_plan: dict[str, Any]) -> dict[str, Any]:
-        """Run the fused scan, the unique GROUP BYs and custom SQL; collect the results."""
+    def _scan(
+        self,
+        handle: DatasetHandle,
+        compiled_plan: dict[str, Any],
+        types: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Run the fused scan, the unique GROUP BYs and custom SQL; collect the results.
+
+        ``types`` maps lowercase column names to their declared Trino types.
+        """
+        types = types or {}
         table = self._get_table_reference(handle)
         # (spec, fail-fast): fail-fast specs report a violation as at least 1.
         specs = [(s, True) for s in compiled_plan.get("exists_specs", [])]
@@ -321,7 +473,7 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
                 if spec.get("kind") == "unique" and not in_scan:
                     grouped.append(spec)
                 else:
-                    selects.append(self._count_select(spec, ff))
+                    selects.append(self._count_select(spec, ff, types))
             if uniques and in_scan and self._owned_transaction(handle):
                 # Faster and leaner than the default strategy for a few distinct
                 # aggregates on a table this size.
@@ -410,15 +562,54 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
         if conn.transaction is not None:
             conn.rollback()
 
-    def _count_select(self, spec: dict[str, Any], fail_fast: bool) -> str:
+    def _count_select(
+        self, spec: dict[str, Any], fail_fast: bool, types: dict[str, str] | None = None
+    ) -> str:
         """The fused scan's column for one rule: its violation count, AS its rule id."""
         rule_id = spec["rule_id"]
-        if spec.get("kind") == "custom_agg" and fail_fast:
+        kind = spec.get("kind")
+        if kind == "custom_agg" and fail_fast:
             # A custom rule's to_sql_exists() condition, the one fail-fast probes.
             condition = spec["sql_exists"][self.DIALECT]
             return f"count_if({condition}) AS {self._esc(rule_id)}"
+        violation = self._typed_violation(spec, types or {})
+        if violation is not None:
+            return f"count_if({violation.sql(renderer_for('trino'))}) AS {self._esc(rule_id)}"
+        if kind == "freshness":
+            return self._freshness_select(spec, types or {})
         # The tally aggregate counts the same violation condition as the probe.
         return self.compile([{**spec, "tally": True}])["aggregate_selects"][0]
+
+    @staticmethod
+    def _typed_violation(spec: dict[str, Any], types: dict[str, str]) -> Node | None:
+        """The violation for a rule whose SQL depends on its column's type, else None."""
+        kind = spec.get("kind")
+
+        def declared(key: str) -> str:
+            col = spec.get(key)
+            return types.get(col.lower(), "") if isinstance(col, str) else ""
+
+        if kind == "range" and _family(declared("column")) == "float":
+            return _float_range_violation(spec["column"], declared("column"), spec)
+        if kind == "compare" and _family(declared("left")) == _family(declared("right")) == "float":
+            return _float_compare_violation(spec)
+        length = _char_length(declared("column")) if kind in _CHAR_RULES else None
+        if length is not None:
+            return _char_violation(spec, length)
+        return None
+
+    def _freshness_select(self, spec: dict[str, Any], types: dict[str, str]) -> str:
+        """0 when the newest value is recent enough, else 1, against UTC now."""
+        column = spec["column"]
+        now = "current_timestamp"
+        if _family(types.get(column.lower(), "")) in ("timestamp", "date"):
+            # Polars reads a naive value as UTC; the session's zone may differ.
+            now = "CAST(current_timestamp AT TIME ZONE 'UTC' AS timestamp(6))"
+        threshold = f"date_add('second', -{int(spec['max_age_seconds'])}, {now})"
+        return (
+            f"CASE WHEN MAX({self._esc(column)}) >= {threshold} THEN 0 ELSE 1 END "
+            f"AS {self._esc(spec['rule_id'])}"
+        )
 
     def _grouped_unique_sql(self, spec: dict[str, Any], table: str) -> str:
         """Duplicates (non-NULL rows beyond one per value), as COUNT(c) - COUNT(DISTINCT c)."""
