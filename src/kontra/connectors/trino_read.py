@@ -26,8 +26,8 @@ the state depends on the connection and the catalog:
   every data query is pinned to it with ``FOR VERSION AS OF``. Otherwise the
   queries run unpinned between two guard reads, rerun once on a change, and
   raise on a second one. User SQL (``custom_sql_check``, a custom rule's SQL)
-  can name the table directly, past the pin, so a pinned run that pushes user
-  SQL keeps the guard too.
+  can name the table directly, past the pin, and Trino can't pin ``$files``,
+  so a pinned run that pushes user SQL or reads ``$files`` keeps the guard too.
 * **Other catalogs, views and materialized views** have no table state Kontra
   can hold (a view reads its base tables; a materialized view may read its
   definition when stale), so they run as before.
@@ -70,6 +70,8 @@ class TrinoReadState:
     guard: str | None = None
     # User SQL ran in Trino; it may read the table past the pin.
     user_sql: bool = False
+    # $files was read; Trino can't pin a metadata table to a snapshot.
+    files_read: bool = False
 
 
 def table_parts(handle: DatasetHandle) -> tuple[str | None, str, str]:
@@ -116,6 +118,32 @@ def mark_user_sql(handle: DatasetHandle) -> None:
     state = state_of(handle)
     if state is not None:
         state.user_sql = True
+
+
+def in_transaction(handle: DatasetHandle | None) -> bool:
+    """The validation's queries run in one Trino transaction (Kontra's or the caller's)."""
+    state = state_of(handle)
+    return state is not None and state.mode in (TRANSACTION, CALLER_TRANSACTION)
+
+
+def mark_files_read(handle: DatasetHandle) -> None:
+    """``$files`` is about to be read: a pinned run must still check the guard."""
+    state = state_of(handle)
+    if state is not None:
+        state.files_read = True
+
+
+def held_parts(handle: DatasetHandle) -> tuple[str | None, str, str]:
+    """(catalog, schema, table), with a caller's session catalog filled in."""
+    catalog, schema, table = table_parts(handle)
+    if catalog is None and handle.scheme == "byoc":
+        catalog = getattr(handle.external_conn, "catalog", None)
+    return catalog, schema, table
+
+
+def metadata_relation(handle: DatasetHandle, suffix: str) -> str:
+    """The quoted name of one of the table's metadata tables, e.g. ``$files``."""
+    return _relation(*held_parts(handle), suffix)
 
 
 def declared_columns(handle: DatasetHandle) -> list[tuple[str, str, bool]] | None:
@@ -311,15 +339,10 @@ def _autocommit_state(conn: Any, parts: tuple[str | None, str, str]) -> TrinoRea
 def finish(handle: DatasetHandle | None) -> None:
     """Read the guard again after the validation's last query; raise TableChanged if it moved."""
     state = state_of(handle)
-    if state is None or (state.mode == PINNED and not state.user_sql):
+    if state is None or (state.mode == PINNED and not (state.user_sql or state.files_read)):
         return
-    if state.mode == TRANSACTION:
-        conn = handle.owned_conn
-    else:
-        conn = handle.external_conn
-    catalog, schema, table = table_parts(handle)
-    catalog = catalog or getattr(conn, "catalog", None)
-    entry = _newest_entry(conn, (catalog, schema, table))
+    conn = handle.owned_conn if state.mode == TRANSACTION else handle.external_conn
+    entry = _newest_entry(conn, held_parts(handle))
     now = entry and entry[0]
     if now == state.guard:
         return

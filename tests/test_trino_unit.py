@@ -365,6 +365,82 @@ class TestTrinoPreplan:
         assert set(pre.rule_decisions.values()) == {"unknown"}
 
 
+class TestTrinoFilesDecisions:
+    """Decisions from $files aggregates, including metrics the container can't write."""
+
+    @staticmethod
+    def _files(delete_files=0, records=10, **column):
+        from kontra.preplan.trino import _ColumnFiles, _Files
+
+        stats = _ColumnFiles(
+            unknown_nulls=column.get("unknown_nulls", 0),
+            nulls=column.get("nulls", 0),
+            unbounded=column.get("unbounded", 0),
+            min_lower=column.get("min_lower", 1),
+            max_upper=column.get("max_upper", 5),
+            max_lower=column.get("max_lower", 3),
+            min_upper=column.get("min_upper", 2),
+        )
+        return _Files(1, delete_files, records, {"x": stats}), stats
+
+    def test_range_needs_bounds_on_every_file_with_values(self):
+        from kontra.preplan.trino import _range_decision
+
+        files, stats = self._files()
+        assert _range_decision(files, stats, 0, 10) == "pass_meta"
+        files, stats = self._files(unbounded=1)  # null counts present, bounds missing
+        assert _range_decision(files, stats, 0, 10) == "unknown"
+
+    def test_range_fail_needs_a_file_wholly_outside_and_no_deletes(self):
+        from kontra.preplan.trino import _range_decision
+
+        files, stats = self._files()
+        assert _range_decision(files, stats, 0, 4) == "unknown"  # straddles
+        assert _range_decision(files, stats, None, 2) == "fail_meta"  # a file starts at 3
+        assert _range_decision(files, stats, 3, None) == "fail_meta"  # a file ends at 2
+        files, stats = self._files(delete_files=1)
+        assert _range_decision(files, stats, None, 2) == "unknown"
+        assert _range_decision(files, stats, 0, 10) == "pass_meta"
+
+    def test_nulls(self):
+        from kontra.preplan.trino import _not_null_decision, _range_decision
+
+        files, stats = self._files(nulls=2)
+        assert _not_null_decision(files, stats) == "fail_meta"
+        assert _range_decision(files, stats, 0, 10) == "fail_meta"
+        files, stats = self._files(nulls=2, delete_files=1)
+        assert _not_null_decision(files, stats) == "unknown"
+        files, stats = self._files(unknown_nulls=1)
+        assert _not_null_decision(files, stats) == "unknown"
+        assert _range_decision(files, stats, 0, 10) == "unknown"
+
+    @pytest.mark.parametrize(
+        ("value", "bound_type", "usable"),
+        [
+            (3, "integer", True),
+            (True, "integer", False),
+            (2.5, "decimal(12,2)", False),
+            (2.0, "bigint", False),
+            ("2020-01-01", "date", True),
+            ("2020-01-01T00:00:00", "date", False),
+            ("not a date", "date", False),
+            (None, "date", True),
+        ],
+    )
+    def test_range_literals(self, value, bound_type, usable):
+        from kontra.preplan.trino import _range_literal
+
+        assert _range_literal(value, bound_type) is usable
+
+    def test_bound_types(self):
+        from kontra.preplan.trino import _bound_type
+
+        assert _bound_type("decimal(12, 2)") == "decimal(12,2)"
+        assert _bound_type("date") == "date"
+        for data_type in ("double", "real", "varchar", "timestamp(6)", "boolean"):
+            assert _bound_type(data_type) is None
+
+
 class TestTrinoMaterializerTypes:
     @pytest.mark.parametrize(
         ("trino_type", "expected"),

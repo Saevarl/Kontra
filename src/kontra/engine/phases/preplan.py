@@ -365,7 +365,7 @@ def _execute_trino_preplan(
     handle: DatasetHandle,
     ctx: CompilationContext,
 ) -> PreplanResult:
-    """Execute preplan for Trino tables via declared column types and nullability (no scan)."""
+    """Execute preplan for Trino tables from declared columns and Iceberg $files (no scan)."""
     from kontra.preplan.trino import can_preplan_trino, preplan_trino
     from kontra.rule_defs.static_predicates import extract_static_predicates
 
@@ -373,12 +373,14 @@ def _execute_trino_preplan(
         return _empty_preplan_result(enabled=True)
 
     t0 = now_ms()
-    static_preds = extract_static_predicates(rules=ctx.rules)
+    # Exact-count rules (tally=True) skip preplan; don't read metadata for them.
+    rules = [r for r in ctx.rules if not ctx.tally_map.get(r.rule_id, False)]
+    static_preds = extract_static_predicates(rules=rules)
     pre = preplan_trino(
         handle=handle,
         required_columns=ctx.compiled_full.required_cols,
         predicates=static_preds,
-        rules=ctx.rules,
+        rules=rules,
     )
     analyze_ms = now_ms() - t0
 
@@ -386,7 +388,7 @@ def _execute_trino_preplan(
         pre=pre,
         tally_map=ctx.tally_map,
         severity_map=ctx.severity_map,
-        execution_source_msg="Trino declared columns",
+        execution_source_msg="Trino metadata",
     )
 
     return PreplanResult(
@@ -496,9 +498,16 @@ def execute_preplan(
     if handle.scheme in ("trino", "trinos") or (
         handle.scheme == "byoc" and handle.dialect == "trino"
     ):
+        from kontra.connectors import trino_read
+
         try:
             return _execute_trino_preplan(handle, ctx)
-        except Exception as e:  # noqa: BLE001 - preplan is optional; pushdown/Polars still run
+        except Exception as e:
+            # Preplan is optional; pushdown and Polars still run. But a failed
+            # query aborts a Trino transaction, so inside one the later queries
+            # would fail too: report the real cause instead.
+            if trino_read.in_transaction(handle):
+                raise
             _logger.info("Trino preplan skipped: %s", e)
             return _empty_preplan_result(enabled=True)
 

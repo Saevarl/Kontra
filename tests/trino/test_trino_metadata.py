@@ -143,3 +143,320 @@ def test_integer_column_is_int32_as_in_its_parquet_file(tmp_path, trino_containe
             assert got == parquet == {"int32": True, "int64": False, "int": True}, kwargs
     finally:
         _query("DROP TABLE IF EXISTS iceberg.kontra.int32")
+
+
+# --------------------------------------------------------------------------- #
+# $files: counts and bounds
+# --------------------------------------------------------------------------- #
+
+FILES_CATALOGS = ["iceberg", "iceberg_jdbc"]
+_LONG = "prefix-common-" + "x" * 20  # longer than Iceberg's 16-character string bounds
+
+# Four inserts, four data files; the last holds two rows (nn 4 and 6).
+# n has one NULL; f has NaN and no NULL.
+_FILES_DDL = (
+    "id bigint, n integer, nn integer, amt decimal(12,2), d date, f double, s varchar, "
+    "cat varchar, ts timestamp(6)"
+)
+_FILES_ROWS = [
+    "(1, 5, 1, DECIMAL '1.50', DATE '2020-01-01', 1.0, '{long}a', 'a', TIMESTAMP '2026-01-05 00:00:00')",
+    (
+        "(2, NULL, 2, DECIMAL '2.00', DATE '2020-02-01', nan(), '{long}b', 'b', "
+        "TIMESTAMP '2026-02-05 00:00:00')"
+    ),
+    (
+        "(3, 30, 3, DECIMAL '-4.00', DATE '2021-01-01', 2.5, '{long}c', 'a', "
+        "TIMESTAMP '2026-03-05 00:00:00')"
+    ),
+    (
+        "(4, 7, 4, DECIMAL '3.00', DATE '2020-06-01', 3.0, '{long}d', 'b', "
+        "TIMESTAMP '2026-04-05 00:00:00'), "
+        "(5, 8, 6, DECIMAL '4.00', DATE '2020-07-01', 3.5, '{long}e', 'a', "
+        "TIMESTAMP '2026-04-06 00:00:00')"
+    ),
+]
+
+
+def _files_rules() -> list[dict]:
+    """Rules $files can settle, and rules it must leave to the scan."""
+    r = []
+
+    def add(rule_id, name, **params):
+        r.append({"name": name, "id": rule_id, "params": params})
+
+    for column in ("id", "n", "nn", "amt", "d", "f", "s"):
+        add(f"not_null:{column}", "not_null", column=column)
+    add("range:nn:in", "range", column="nn", min=1, max=6)
+    add("range:nn:straddle", "range", column="nn", min=1, max=5)  # bounds can't tell
+    add("range:nn:above", "range", column="nn", min=10)  # every file is below 10
+    add("range:id:max", "range", column="id", max=1)  # the files from id 2 lie above
+    add("range:n:nulls", "range", column="n", min=0, max=100)
+    add("range:amt:in", "range", column="amt", min=-10, max=10)
+    add("range:amt:out", "range", column="amt", max=-5)
+    add("range:amt:frac", "range", column="amt", min=-4.5)  # fractional: left to the scan
+    add("range:d:in", "range", column="d", min="2020-01-01", max="2021-12-31")
+    add("range:d:out", "range", column="d", min="2022-01-01")
+    add("range:f", "range", column="f", min=0, max=10)  # floats: never from bounds
+    add("cnn:nn", "conditional_not_null", column="nn", when="cat == 'a'")
+    add("cnn:n", "conditional_not_null", column="n", when="cat == 'a'")  # NULL is at cat 'b'
+    add("min_rows:ok", "min_rows", threshold=5)
+    add("min_rows:short", "min_rows", threshold=6)
+    add("max_rows:ok", "max_rows", threshold=5)
+    add("max_rows:over", "max_rows", threshold=4)
+    add("length:s", "length", column="s", max=40)  # string bounds are truncated
+    return r
+
+
+# rule -> source on a table without deletes. Anything not listed must scan.
+_FROM_METADATA = {
+    "not_null:id",
+    "not_null:n",
+    "not_null:nn",
+    "not_null:amt",
+    "not_null:d",
+    "not_null:f",
+    "not_null:s",
+    "range:nn:in",
+    "range:nn:above",
+    "range:id:max",
+    "range:n:nulls",
+    "range:amt:in",
+    "range:amt:out",
+    "range:d:in",
+    "range:d:out",
+    "cnn:nn",
+    "min_rows:ok",
+    "max_rows:ok",
+}
+
+
+def _make_files_table(catalog: str, name: str, extra: str = "") -> str:
+    fq = f"{catalog}.kontra_meta.{name}"
+    _query(
+        f"CREATE SCHEMA IF NOT EXISTS {catalog}.kontra_meta",
+        f"DROP TABLE IF EXISTS {fq}",
+        f"CREATE TABLE {fq} ({_FILES_DDL}){extra}",
+        *(f"INSERT INTO {fq} VALUES {row.format(long=_LONG)}" for row in _FILES_ROWS),
+    )
+    return fq
+
+
+def _three_ways(uri: str, rules: list[dict], tally: bool = False):
+    """(metadata on, scan without metadata, Polars tier), each by rule id."""
+    runs = (
+        {},
+        {"preplan": "off"},
+        {"preplan": "off", "pushdown": "off"},
+    )
+    return [
+        {
+            r.rule_id: r
+            for r in kontra.validate(uri, rules=rules, tally=tally, save=False, **kw).rules
+        }
+        for kw in runs
+    ]
+
+
+def _assert_same_answers(meta, scan, polars):
+    assert set(meta) == set(scan) == set(polars)
+    for rule_id, rule in meta.items():
+        assert rule.passed == scan[rule_id].passed == polars[rule_id].passed, rule_id
+        if rule.source == "metadata":
+            # A metadata FAIL reports 1, as Kontra's other preplan sources do in
+            # fail-fast mode; the scan may count more (study Q6).
+            assert rule.failed_count == (0 if rule.passed else 1), rule_id
+
+
+@pytest.fixture(params=FILES_CATALOGS)
+def files_catalog(request, trino_container):
+    yield request.param
+    _query(
+        *(f"DROP TABLE IF EXISTS {request.param}.kontra_meta.{t}" for t in _FILES_TABLES),
+    )
+
+
+_FILES_TABLES = ("plain", "deleted", "parted", "wide", "nostats")
+
+
+def _uri_of(fq: str) -> str:
+    catalog, schema, table = fq.split(".")
+    return f"trino://kontra@localhost:8095/{catalog}/{schema}.{table}"
+
+
+@pytest.mark.integration
+def test_files_answers_match_the_scan(files_catalog):
+    """No deletes: counts and bounds settle these rules, with the scan's answers."""
+    fq = _make_files_table(files_catalog, "plain")
+    meta, scan, polars = _three_ways(_uri_of(fq), _files_rules())
+    _assert_same_answers(meta, scan, polars)
+    from_metadata = {rid for rid, r in meta.items() if r.source == "metadata"}
+    assert from_metadata == _FROM_METADATA
+    assert not any(r.source == "metadata" for r in scan.values())
+
+
+@pytest.mark.integration
+def test_deletes_allow_only_pass_proofs(files_catalog):
+    """
+    Data-file statistics keep deleted rows. After deleting n's only NULL and
+    the rows outside some ranges, metadata still sees them: it may prove a
+    PASS but never a FAIL or a row count.
+    """
+    fq = _make_files_table(files_catalog, "deleted")
+    _query(f"DELETE FROM {fq} WHERE id IN (2, 3, 5)")
+    deletes = f'SELECT count(*) FROM {files_catalog}.kontra_meta."deleted$files" WHERE content <> 0'
+    assert _query(deletes)[0][0] > 0
+    meta, scan, polars = _three_ways(_uri_of(fq), _files_rules())
+    _assert_same_answers(meta, scan, polars)
+    from_metadata = {rid for rid, r in meta.items() if r.source == "metadata"}
+    # Only PASS proofs: n's only NULL is deleted, which the statistics still count.
+    assert all(meta[rid].passed for rid in from_metadata)
+    assert "not_null:n" not in from_metadata and meta["not_null:n"].passed
+    assert not any(rid.endswith(("rows:ok", "rows:short", "rows:over")) for rid in from_metadata)
+    for rid in ("not_null:id", "range:nn:in", "range:amt:in", "cnn:nn"):
+        assert rid in from_metadata, rid
+
+
+@pytest.mark.integration
+def test_partitioned_table(files_catalog):
+    fq = _make_files_table(
+        files_catalog, "parted", " WITH (partitioning = ARRAY['cat', 'month(ts)'])"
+    )
+    meta, scan, polars = _three_ways(_uri_of(fq), _files_rules())
+    _assert_same_answers(meta, scan, polars)
+    assert {rid for rid, r in meta.items() if r.source == "metadata"} == _FROM_METADATA | {
+        # Partitioning splits nn 4 and 6 into two files; the file of 6 lies above 5.
+        "range:nn:straddle"
+    }
+
+
+@pytest.mark.integration
+def test_more_than_100_columns(files_catalog):
+    """Iceberg's default keeps full metrics for the first 100 columns only."""
+    fq = f"{files_catalog}.kontra_meta.wide"
+    columns = ", ".join(f"c{i} integer" for i in range(1, 106))
+    _query(
+        f"CREATE SCHEMA IF NOT EXISTS {files_catalog}.kontra_meta",
+        f"DROP TABLE IF EXISTS {fq}",
+        f"CREATE TABLE {fq} ({columns})",
+        f"INSERT INTO {fq} VALUES ({', '.join(str(i) for i in range(1, 106))})",
+        f"INSERT INTO {fq} (c1) VALUES (0)",
+    )
+    rules = [
+        {"name": "not_null", "id": f"nn:c{i}", "params": {"column": f"c{i}"}} for i in (1, 100, 105)
+    ] + [
+        {"name": "range", "id": f"range:c{i}", "params": {"column": f"c{i}", "min": 0, "max": 200}}
+        for i in (1, 100, 105)
+    ]
+    meta, scan, polars = _three_ways(_uri_of(fq), rules)
+    _assert_same_answers(meta, scan, polars)
+    # Trino writes full metrics for every column, so all six are settled.
+    assert all(r.source == "metadata" for r in meta.values())
+
+
+@pytest.mark.integration
+def test_files_without_metrics_leave_rules_to_the_scan(files_catalog, tmp_path):
+    """A data file with no null count and no bounds for a column (written outside Trino)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    fq = f"{files_catalog}.kontra_meta.nostats"
+    _query(
+        f"CREATE SCHEMA IF NOT EXISTS {files_catalog}.kontra_meta",
+        f"DROP TABLE IF EXISTS {fq}",
+        f"CREATE TABLE {fq} (id bigint, v integer)",
+        f"INSERT INTO {fq} VALUES (1, 5)",
+    )
+    # Statistics for id only: Iceberg records no null count or bounds for v.
+    local = tmp_path / "nostats.parquet"
+    pq.write_table(
+        pa.table({"id": pa.array([2, 3], pa.int64()), "v": pa.array([7, 8], pa.int32())}),
+        local,
+        write_statistics=["id"],
+    )
+    folder = f"/ext/{files_catalog}-nostats"
+    subprocess.run(
+        [
+            "docker",
+            "exec",
+            "kontra-trino-test",
+            "sh",
+            "-c",
+            f"rm -rf /tmp{folder} && mkdir -p /tmp{folder}",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["docker", "cp", str(local), f"kontra-trino-test:/tmp{folder}/f.parquet"],
+        check=True,
+        capture_output=True,
+    )
+    _query(
+        f"ALTER TABLE {fq} EXECUTE add_files(location => 'local://{folder}', format => 'PARQUET')"
+    )
+    rules = [
+        {"name": "not_null", "id": "nn:id", "params": {"column": "id"}},
+        {"name": "not_null", "id": "nn:v", "params": {"column": "v"}},
+        {"name": "range", "id": "range:id", "params": {"column": "id", "min": 0, "max": 9}},
+        {"name": "range", "id": "range:v", "params": {"column": "v", "min": 0, "max": 9}},
+        {
+            "name": "conditional_not_null",
+            "id": "cnn:v",
+            "params": {"column": "v", "when": "id == 2"},
+        },
+    ]
+    meta, scan, polars = _three_ways(_uri_of(fq), rules)
+    _assert_same_answers(meta, scan, polars)
+    assert {rid for rid, r in meta.items() if r.source == "metadata"} == {"nn:id", "range:id"}
+
+
+@pytest.mark.integration
+def test_tally_reads_no_files(files_catalog, monkeypatch):
+    """tally=True rules need exact counts and skip preplan; $files isn't read for them."""
+    import kontra.preplan.trino as trino_preplan
+
+    fq = _make_files_table(files_catalog, "plain")
+    reads = []
+    original = trino_preplan._read_files
+    monkeypatch.setattr(
+        trino_preplan, "_read_files", lambda *a, **k: reads.append(1) or original(*a, **k)
+    )
+    rules = [r for r in _files_rules() if not r["name"].endswith("_rows")]
+    meta, scan, polars = _three_ways(_uri_of(fq), rules, tally=True)
+    assert reads == []
+    for rule_id, rule in meta.items():
+        assert rule.source != "metadata", rule_id
+        assert rule.failed_count == scan[rule_id].failed_count == polars[rule_id].failed_count, (
+            rule_id
+        )
+
+
+@pytest.mark.integration
+def test_files_failure_reports_its_cause_in_a_transaction(monkeypatch, trino_container):
+    """
+    A failed query aborts a Trino transaction. In one, a $files failure is
+    raised as itself; outside one (a caller's autocommit connection), preplan
+    is skipped and the scan answers.
+    """
+    import kontra.preplan.trino as trino_preplan
+
+    fq = _make_files_table("iceberg", "plain")
+
+    def broken(handle, columns):
+        with kontra.connectors.db_utils.get_connection_ctx(handle, "trino") as conn:
+            cur = conn.cursor()
+            cur.execute('SELECT * FROM iceberg.kontra_meta."no_such_table$files"')
+            cur.fetchall()
+
+    monkeypatch.setattr(trino_preplan, "_read_files", broken)
+    rules = [{"name": "not_null", "id": "nn", "params": {"column": "n"}}]
+    with pytest.raises(Exception, match="no_such_table") as raised:
+        kontra.validate(_uri_of(fq), rules=rules, save=False)
+    assert "TRANSACTION_ALREADY_ABORTED" not in str(raised.value)
+
+    conn = trino.dbapi.connect(host="localhost", port=8095, user="kontra")
+    try:
+        result = kontra.validate(conn, table=fq, rules=rules, save=False)
+    finally:
+        conn.close()
+    assert [(r.passed, r.source) for r in result.rules] == [(False, "sql")]

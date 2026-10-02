@@ -516,3 +516,101 @@ def test_other_catalogs_run_as_before(trino_users_uri, modes):
     """The memory connector has no snapshots: no transaction, no pin."""
     kontra.validate(trino_users_uri, rules=[rules.not_null("email")], save=False)
     assert modes == [None]
+
+
+# --------------------------------------------------------------------------- #
+# $files in the held state
+# --------------------------------------------------------------------------- #
+
+FILES_CHECKS = [
+    rules.not_null("x"),
+    rules.custom_sql_check("SELECT * FROM {table} WHERE x IS NULL"),
+    rules.range("x", min=0.5),  # a float bound on an integer: the Polars tier
+]
+
+
+def _files_answers(result) -> tuple[bool, bool, bool]:
+    by_id = {r.rule_id: r for r in result.rules}
+    assert by_id["COL:x:not_null"].source == "metadata"
+    assert by_id["COL:x:range"].source == "polars"
+    return (
+        by_id["COL:x:not_null"].passed,
+        by_id["DATASET:custom_sql_check"].passed,
+        by_id["COL:x:range"].passed,
+    )
+
+
+@pytest.fixture
+def no_nulls(catalog):
+    fq = f"{catalog}.{SCHEMA}.nn"
+    run_sql(
+        f"DROP TABLE IF EXISTS {fq}",
+        f"CREATE TABLE {fq} (x integer)",
+        f"INSERT INTO {fq} VALUES (1)",
+    )
+    yield fq
+    run_sql(f"DROP TABLE IF EXISTS {fq}")
+
+
+@pytest.fixture
+def before_files(monkeypatch):
+    """Commit writer statements right before preplan reads $files, on the first attempt."""
+    import kontra.preplan.trino as trino_preplan
+
+    plan = {"statements": [], "calls": 0}
+    read = trino_preplan._read_files
+
+    def patched(handle, columns):
+        plan["calls"] += 1
+        if plan["calls"] == 1:
+            run_sql(*plan["statements"])
+        return read(handle, columns)
+
+    monkeypatch.setattr(trino_preplan, "_read_files", patched)
+    return plan
+
+
+@pytest.mark.parametrize("connection", ["kontra", "caller transaction"])
+def test_files_agree_with_the_scans(catalog, no_nulls, modes, before_files, writer, connection):
+    """
+    In one transaction, $files describes the state the scans read. A NULL
+    committed before $files is read, and another before the scan, change
+    neither: all three rules see x = 1 only.
+    """
+    before_files["statements"] = [f"INSERT INTO {no_nulls} VALUES (NULL)"]
+    writer(before_scan=[f"INSERT INTO {no_nulls} VALUES (NULL)"])
+    if connection == "kontra":
+        result = kontra.validate(_uri(catalog, "nn"), rules=FILES_CHECKS, save=False)
+        expected_mode = trino_read.TRANSACTION
+    else:
+        from trino.transaction import IsolationLevel
+
+        conn = connect_in_transaction(IsolationLevel.READ_UNCOMMITTED)
+        try:
+            result = kontra.validate(conn, table=no_nulls, rules=FILES_CHECKS, save=False)
+            conn.commit()
+        finally:
+            conn.close()
+        expected_mode = trino_read.CALLER_TRANSACTION
+    assert _files_answers(result) == (True, True, True)
+    assert modes == [expected_mode]
+
+
+def test_pinned_run_reading_files_keeps_the_guard(catalog, no_nulls, modes, before_files):
+    """
+    Trino can't pin $files. A NULL committed between the pin and the $files
+    read makes $files see it while the pinned reads don't, so the run checks
+    its guard and reruns, and every rule then sees the NULL.
+    """
+    before_files["statements"] = [f"INSERT INTO {no_nulls} VALUES (NULL)"]
+    conn = connect()
+    try:
+        result = kontra.validate(
+            conn, table=no_nulls, rules=[FILES_CHECKS[0], FILES_CHECKS[2]], save=False
+        )
+    finally:
+        conn.close()
+    by_id = {r.rule_id: r for r in result.rules}
+    assert by_id["COL:x:not_null"].source == "metadata"
+    assert (by_id["COL:x:not_null"].passed, by_id["COL:x:range"].passed) == (False, False)
+    assert modes == [trino_read.PINNED, trino_read.PINNED]
