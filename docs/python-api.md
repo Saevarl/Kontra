@@ -59,6 +59,8 @@ result = kontra.validate(conn, table="public.users", rules=[...])
 ```
 
 Works with common PostgreSQL and SQL Server drivers, plus SQLAlchemy engines.
+For Trino, pass a `trino.dbapi` connection with
+`table="catalog.schema.table"`.
 
 ### Cloud Storage
 

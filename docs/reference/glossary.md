@@ -15,7 +15,7 @@ Common terms used in Kontra documentation and output.
 | Term | Description |
 |------|-------------|
 | **preplan** | Metadata-only resolution. Uses Parquet row-group stats or database statistics. Returns `failed_count: 1` as lower bound. |
-| **pushdown** | SQL execution in the data engine (DuckDB, PostgreSQL, SQL Server, ClickHouse). Avoids loading data into Python memory. |
+| **pushdown** | SQL execution in the data engine (DuckDB, PostgreSQL, SQL Server, ClickHouse, Trino). Avoids loading data into Python memory. |
 | **tally** | `tally=True` counts all violations exactly. `tally=False` stops at first violation (faster, returns ≥1). |
 | **projection** | Load only columns needed for validation. Reduces memory and speeds up execution. |
 | **source** | Which path resolved a rule: `"metadata"` (preplan), `"sql"` (pushdown), or `"polars"` (fallback). |
