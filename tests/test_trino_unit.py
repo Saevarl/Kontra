@@ -1378,9 +1378,11 @@ class TestProfilePlan:
         ("files", "records", "sample", "percent"),
         [
             (99, 100_000, 1_000, None),  # too few files: all or nothing
-            (100, 100_000, 1_000, 10.0),  # at least 10 files of 100
-            (1_000, 1_000_000, 50_000, 5.0),  # the sample's share of rows
+            (100, 100_000, 1_000, 11.0),  # 1 file needed, aiming at 11
+            (1_000, 1_000_000, 50_000, 7.7),  # 50 needed: 77, three deviations more
             (1_000, 1_000_000, 100, 1.0),  # at least 10 files of 1,000
+            (100, 5_000, 500, 25.0),  # 10 needed: 10 + 3 * sqrt(25)
+            (100, 5_000, 4_000, None),  # 80 needed: the margin passes 100 files
             (100, 1_000, 1_000, None),  # the whole table
             (200, 0, 10, None),  # no rows
         ],
@@ -1408,15 +1410,25 @@ class TestProfilePlan:
 
     def test_sampled_stats_use_tablesample_system_and_drop_the_row_count(self):
         backend = _profile_backend(
-            _iceberg(500, 100_000) + [("TABLESAMPLE SYSTEM (2.0)", [(4, 40)])],
+            _iceberg(500, 100_000) + [("TABLESAMPLE SYSTEM (5.0)", [(4, 2_000)])],
             sample_size=2_000,
         )
         result = backend.execute_stats_query(['COUNT("x") AS "n"'])
         assert result == {"n": 4}
         assert backend._conn.sql[-1] == (
             'SELECT COUNT("x") AS "n", count(*) AS "__kontra_sampled_rows__" FROM '
-            '(SELECT * FROM "lake"."s"."t" TABLESAMPLE SYSTEM (2.0) LIMIT 2000) AS _kontra_sample'
+            '(SELECT * FROM "lake"."s"."t" TABLESAMPLE SYSTEM (5.0) LIMIT 2000) AS _kontra_sample'
         )
+
+    def test_a_short_system_sample_falls_back_to_the_head(self):
+        backend = _profile_backend(
+            _iceberg(500, 100_000)
+            + [("TABLESAMPLE", [(4, 1_999)]), ("LIMIT 2000) AS _kontra_sample", [(7,)])],
+            sample_size=2_000,
+        )
+        assert backend.execute_stats_query(['COUNT("x") AS "n"']) == {"n": 7}
+        assert sum("_kontra_sample" in s for s in backend._conn.sql) == 2
+        assert "TABLESAMPLE" not in backend._conn.sql[-1]
 
     def test_an_empty_system_sample_falls_back_to_the_head(self):
         backend = _profile_backend(

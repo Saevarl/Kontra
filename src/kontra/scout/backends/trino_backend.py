@@ -42,6 +42,7 @@ The profiler emits ANSI-style aggregates; a few shapes are rewritten here:
 
 from __future__ import annotations
 
+import math
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -180,8 +181,12 @@ class TrinoBackend:
     # all or nothing.
     system_sample_min_files = 100
     # Files a SYSTEM sample aims to pick at least, so an empty sample is
-    # improbable (about e**-10). An empty one still falls back to LIMIT.
+    # improbable (about e**-10).
     system_sample_target_files = 10
+    # Standard deviations of files picked a SYSTEM sample aims above the
+    # files the sample needs, so a short sample is improbable. A short one
+    # still falls back to LIMIT.
+    system_sample_margin = 3
 
     def __init__(
         self,
@@ -331,10 +336,17 @@ class TrinoBackend:
             f"LIMIT {limit}) AS _kontra_sample"
         )
         result = self._stats_row(f"SELECT {select}, count(*) AS {_SAMPLED} FROM {system}")
-        if result.pop(_SAMPLED.strip('"'), None):
+        sampled = result.pop(_SAMPLED.strip('"'), None)
+        if sampled == limit:
             return result
-        # No file was picked: take the head sample instead.
-        _logger.debug("TABLESAMPLE SYSTEM (%s) picked no rows; sampling the first rows", percent)
+        # The files picked hold fewer rows than the sample size the profile
+        # reports: take the head sample instead.
+        _logger.debug(
+            "TABLESAMPLE SYSTEM (%s) picked %s of %d rows; sampling the first rows",
+            percent,
+            sampled,
+            limit,
+        )
         return self._stats_row(f"SELECT {select} FROM {head}")
 
     def _stats_row(self, sql: str) -> dict[str, Any]:
@@ -351,8 +363,11 @@ class TrinoBackend:
         """The TABLESAMPLE SYSTEM percentage, or None to sample the first rows.
 
         Only an Iceberg table with at least ``system_sample_min_files`` data
-        files is sampled by file. The percentage aims at the sample size, and at
-        no fewer than ``system_sample_target_files`` files.
+        files is sampled by file. Each file is picked with the same chance, so
+        the files picked vary by about the square root of those expected. The
+        percentage aims ``system_sample_margin`` such deviations above the
+        files the sample size needs at the table's mean file size, and at no
+        fewer than ``system_sample_target_files`` files.
         """
         if self._system_decided:
             return self._system_percent
@@ -371,10 +386,14 @@ class TrinoBackend:
         count, records = files
         if count < self.system_sample_min_files or records <= 0:
             return None
-        fraction = max(self.sample_size / records, self.system_sample_target_files / count)
-        if fraction >= 1:
+        needed = self.sample_size * count / records
+        # The least m with m - margin * sqrt(m) >= needed.
+        z = self.system_sample_margin
+        aimed = ((z + math.sqrt(z * z + 4 * needed)) / 2) ** 2
+        files_aimed = max(math.ceil(aimed), self.system_sample_target_files)
+        if files_aimed >= count:
             return None  # the sample would be the whole table
-        self._system_percent = round(fraction * 100, 6) or None
+        self._system_percent = round(files_aimed / count * 100, 6) or None
         return self._system_percent
 
     def prefetch_value_counts(self, requests: list[tuple[str, int | None]]) -> None:
