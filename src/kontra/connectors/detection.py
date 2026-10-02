@@ -22,6 +22,7 @@ from typing import Any, Tuple, Optional
 POSTGRESQL = "postgresql"
 SQLSERVER = "sqlserver"
 CLICKHOUSE = "clickhouse"
+TRINO = "trino"
 
 
 def detect_connection_dialect(conn: Any) -> str:
@@ -63,6 +64,10 @@ def detect_connection_dialect(conn: Any) -> str:
     if module.startswith("pymssql"):
         return SQLSERVER
 
+    # Trino DBAPI (trino-python-client)
+    if module.startswith("trino"):
+        return TRINO
+
     # pyodbc - generic ODBC, need to inspect
     if module == "pyodbc":
         return _detect_pyodbc_dialect(conn)
@@ -78,6 +83,7 @@ def detect_connection_dialect(conn: Any) -> str:
         "  - pg8000 (PostgreSQL)\n"
         "  - pyodbc (SQL Server, PostgreSQL via ODBC)\n"
         "  - pymssql (SQL Server)\n"
+        "  - trino (Trino)\n"
         "  - SQLAlchemy engine or connection"
     )
 
@@ -129,10 +135,12 @@ def _detect_sqlalchemy_dialect(conn: Any) -> str:
             return POSTGRESQL
         if "mssql" in dialect_lower or "sqlserver" in dialect_lower:
             return SQLSERVER
+        if dialect_lower == "trino":
+            return TRINO
 
         raise ValueError(
             f"Unsupported SQLAlchemy dialect: {dialect_name}\n\n"
-            "Supported dialects: postgresql, mssql"
+            "Supported dialects: postgresql, mssql, trino"
         )
 
     raise ValueError(
@@ -205,6 +213,7 @@ def is_database_connection(obj: Any) -> bool:
         "pg8000",
         "pyodbc",
         "pymssql",
+        "trino",
         "sqlalchemy",
     )
 

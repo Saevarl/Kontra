@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Literal, Optional
 
-Dialect = Literal["duckdb", "postgres", "sqlserver", "clickhouse"]
+Dialect = Literal["duckdb", "postgres", "sqlserver", "clickhouse", "trino"]
 
 # SQL comparison operators (Python op -> SQL op)
 SQL_OP_MAP = {
@@ -452,11 +452,196 @@ class ClickHouseRenderer(Renderer):
         return f"{col_sql} IS NULL OR NOT match(toString({col_sql}), '{escaped_pattern}')"
 
 
+# Trino regex subset. Trino evaluates patterns with Java semantics; the Polars
+# tier uses Rust's regex crate. Only constructs both engines read the same way
+# are pushed down: literals, '.', '^', groups, alternation, greedy/lazy
+# quantifiers, simple character classes and a few escapes. Anything else
+# (shorthand classes, flags, backreferences, lookaround, POSIX or nested
+# classes, ...) returns None so the rule runs in Polars instead.
+_TRINO_RX_ESCAPED_PUNCT = set("\\.^$|?*+()[]{}/-")
+_TRINO_RX_ESCAPED_CHAR = {"t": "\\t", "n": "\\n", "r": "\\r", "A": "\\A", "z": "\\z"}
+_HEX = set("0123456789abcdefABCDEF")
+
+
+def _trino_rx_escape(pattern: str, i: int, in_class: bool) -> tuple[str, int] | None:
+    """Read the escape at pattern[i] (a backslash). Returns (text, next_i) or None."""
+    if i + 1 >= len(pattern):
+        return None
+    c = pattern[i + 1]
+    if c in _TRINO_RX_ESCAPED_PUNCT:
+        return pattern[i : i + 2], i + 2
+    if c == "x" and pattern[i + 2 : i + 4] and set(pattern[i + 2 : i + 4]) <= _HEX:
+        if len(pattern[i + 2 : i + 4]) == 2:
+            return pattern[i : i + 4], i + 4
+        return None
+    if c in "tnr":
+        return _TRINO_RX_ESCAPED_CHAR[c], i + 2
+    if c in "Az" and not in_class:
+        return _TRINO_RX_ESCAPED_CHAR[c], i + 2
+    return None
+
+
+def trino_regex(pattern: str) -> str | None:
+    """
+    Translate a Polars (Rust) regex into an equivalent Trino (Java) regex.
+
+    Returns None when the pattern uses a construct outside the shared subset;
+    the caller must then leave the rule to the Polars tier. The one rewrite is
+    '$' -> '\\z': without multi-line mode, Rust's '$' matches only at the end
+    of the text, while Java's also matches before a final line terminator.
+    """
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    can_repeat = False  # whether a quantifier may follow the previous token
+    depth = 0
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            esc = _trino_rx_escape(pattern, i, in_class=False)
+            if esc is None:
+                return None
+            out.append(esc[0])
+            i = esc[1]
+            can_repeat = esc[0] not in ("\\A", "\\z")
+        elif c == "[":
+            j = i + 1
+            cls = ["["]
+            if pattern[j : j + 1] == "^":
+                cls.append("^")
+                j += 1
+            if pattern[j : j + 1] in ("]", ""):
+                return None  # leading ']' is literal in Rust, an error in Java
+            start = j
+            # A '-' is a literal at either end of the class. Anywhere else it
+            # must join two plain characters into one range: Rust and Java
+            # disagree on '[a-z-A-Z]' and on ranges with escaped endpoints.
+            prev = ""  # the previous item when it can start a range
+            while j < n and pattern[j] != "]":
+                if pattern[j] == "\\":
+                    esc = _trino_rx_escape(pattern, j, in_class=True)
+                    if esc is None:
+                        return None
+                    cls.append(esc[0])
+                    j = esc[1]
+                    prev = ""
+                    continue
+                if pattern[j] == "[" or pattern[j : j + 2] in ("&&", "--", "~~"):
+                    return None  # nested/POSIX classes and set operations differ
+                if pattern[j] == "-" and j != start and pattern[j + 1 : j + 2] != "]":
+                    hi = pattern[j + 1 : j + 2]
+                    if not prev or hi in ("", "\\", "[", "-") or hi < prev:
+                        return None
+                    cls.append("-" + hi)
+                    j += 2
+                    prev = ""
+                    continue
+                prev = "" if pattern[j] == "-" else pattern[j]
+                cls.append(pattern[j])
+                j += 1
+            if j >= n:
+                return None
+            cls.append("]")
+            out.append("".join(cls))
+            i = j + 1
+            can_repeat = True
+        elif c in "*+?":
+            if not can_repeat:
+                return None
+            out.append(c)
+            i += 1
+            if pattern[i : i + 1] == "?":
+                out.append("?")
+                i += 1
+            elif pattern[i : i + 1] == "+":
+                return None  # possessive quantifiers: Java only
+            can_repeat = False
+        elif c == "{":
+            j = pattern.find("}", i)
+            body = pattern[i + 1 : j] if j > 0 else ""
+            lo, _, hi = body.partition(",")
+            if not can_repeat or not lo.isdigit() or not (hi == "" or hi.isdigit()):
+                return None
+            out.append(pattern[i : j + 1])
+            i = j + 1
+            if pattern[i : i + 1] == "?":
+                out.append("?")
+                i += 1
+            elif pattern[i : i + 1] == "+":
+                return None
+            can_repeat = False
+        elif c == "(":
+            if pattern[i + 1 : i + 2] == "?":
+                if pattern[i + 2 : i + 3] != ":":
+                    return None  # flags, named groups, lookaround
+                out.append("(?:")
+                i += 3
+            else:
+                out.append("(")
+                i += 1
+            depth += 1
+            can_repeat = False
+        elif c == ")":
+            if depth == 0:
+                return None
+            depth -= 1
+            out.append(")")
+            i += 1
+            can_repeat = True
+        elif c == "|":
+            out.append("|")
+            i += 1
+            can_repeat = False
+        elif c == "^":
+            out.append("^")
+            i += 1
+            can_repeat = False
+        elif c == "$":
+            out.append("\\z")
+            i += 1
+            can_repeat = False
+        elif c in "]}":
+            return None  # literal in Java, not always in Rust
+        else:
+            out.append(c)
+            i += 1
+            can_repeat = True
+    if depth != 0:
+        return None
+    return "".join(out)
+
+
+class TrinoRenderer(Renderer):
+    dialect: Dialect = "trino"
+
+    def regex_no_match(self, col_sql: str, pattern: str) -> str:
+        # Only patterns in the shared Rust/Java subset reach here; the Trino
+        # executor leaves the rest to Polars. Trino string literals take no
+        # backslash escapes, so only quotes need doubling.
+        translated = trino_regex(pattern)
+        if translated is None:
+            raise ValueError(f"Regex is outside the Trino pushdown subset: {pattern!r}")
+        escaped_pattern = translated.replace("'", "''")
+        return f"{col_sql} IS NULL OR NOT regexp_like({col_sql}, '{escaped_pattern}')"
+
+    def sum_case(self, conditions: list[str], rule_id: str) -> str:
+        # count_if counts the rows where the condition is true, as CASE WHEN does
+        # (NULL is not true), and returns 0 instead of NULL on an empty table.
+        condition = " OR ".join(f"({c})" for c in conditions)
+        return f"count_if({condition}) AS {self.ident(rule_id)}"
+
+    def freshness(self, col_sql: str, secs: int, rule_id: str) -> str:
+        # date_add takes a bigint; an INTERVAL ... SECOND literal is capped at
+        # 2^31-1 seconds (~68 years), which would fail the whole batch.
+        threshold = f"date_add('second', -{secs}, current_timestamp)"
+        return f"CASE WHEN MAX({col_sql}) >= {threshold} THEN 0 ELSE 1 END AS {self.ident(rule_id)}"
+
+
 _RENDERERS = {
     "duckdb": DuckDBRenderer(),
     "postgres": PostgresRenderer(),
     "sqlserver": SqlServerRenderer(),
     "clickhouse": ClickHouseRenderer(),
+    "trino": TrinoRenderer(),
 }
 
 

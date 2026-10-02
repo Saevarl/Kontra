@@ -165,6 +165,7 @@ def validate_sql(
         "mssql": "tsql",
         "tsql": "tsql",
         "duckdb": "duckdb",
+        "trino": "trino",
     }
     sqlglot_dialect = dialect_map.get(dialect.lower(), "postgres")
 
@@ -404,6 +405,7 @@ def transpile_sql(
         "mssql": "tsql",
         "tsql": "tsql",
         "duckdb": "duckdb",
+        "trino": "trino",
     }
 
     src = dialect_map.get(from_dialect.lower(), from_dialect)
@@ -442,6 +444,9 @@ def format_table_reference(
     elif dialect in ("sqlserver", "mssql", "tsql"):
         # SQL Server: [schema].[table]
         return f"[{schema}].[{table}]"
+    elif dialect == "trino":
+        # Trino: "catalog"."schema"."table" (schema may carry the catalog)
+        return ".".join(f'"{part}"' for part in [*schema.split("."), table])
     # Default: schema.table
     return f"{schema}.{table}"
 
@@ -503,6 +508,7 @@ def to_count_query(sql: str, dialect: str = "postgres") -> Tuple[bool, str]:
         "mssql": "tsql",
         "tsql": "tsql",
         "duckdb": "duckdb",
+        "trino": "trino",
     }
     sqlglot_dialect = dialect_map.get(dialect.lower(), "postgres")
 

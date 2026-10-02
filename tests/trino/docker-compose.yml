@@ -1,0 +1,34 @@
+services:
+  trino:
+    image: trinodb/trino:483
+    container_name: kontra-trino-test
+    ports:
+      - "8095:8080"
+    volumes:
+      - ./catalog:/etc/trino/catalog:ro
+    depends_on:
+      iceberg-jdbc-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "trino", "--execute", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  # Backs the iceberg_jdbc catalog: Iceberg's JDBC catalog type, so the
+  # consistency tests run on two catalog implementations.
+  iceberg-jdbc-db:
+    image: postgres:16-alpine
+    container_name: kontra-trino-iceberg-jdbc-db
+    environment:
+      POSTGRES_USER: kontra
+      POSTGRES_PASSWORD: kontra_test
+      POSTGRES_DB: iceberg
+    volumes:
+      - ./iceberg-jdbc-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kontra", "-d", "iceberg"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
