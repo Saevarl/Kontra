@@ -277,6 +277,8 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             _logger.info("Trino pushdown left %d rule(s) to Polars: %s", len(deferred), deferred)
             compiled_plan = self.compile(exact)
 
+        if any(s.get("kind") in ("custom_sql_check", "custom_agg") for s in exact):
+            trino_read.mark_user_sql(handle)
         out = super().execute(handle, compiled_plan, **kwargs)
         out["available_cols"] = [name for name, _ in columns]
         return out

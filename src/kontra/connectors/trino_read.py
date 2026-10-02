@@ -25,8 +25,12 @@ the state depends on the connection and the catalog:
   own data commit and that snapshot reads with the current columns and types,
   every data query is pinned to it with ``FOR VERSION AS OF``. Otherwise the
   queries run unpinned between two guard reads, rerun once on a change, and
-  raise on a second one.
-* **Other catalogs** have no snapshots to pin, so they run as before.
+  raise on a second one. User SQL (``custom_sql_check``, a custom rule's SQL)
+  can name the table directly, past the pin, so a pinned run that pushes user
+  SQL keeps the guard too.
+* **Other catalogs, views and materialized views** have no table state Kontra
+  can hold (a view reads its base tables; a materialized view may read its
+  definition when stale), so they run as before.
 """
 
 from __future__ import annotations
@@ -64,6 +68,8 @@ class TrinoReadState:
     columns: list[tuple[str, str, bool]]
     snapshot_id: int | None = None
     guard: str | None = None
+    # User SQL ran in Trino; it may read the table past the pin.
+    user_sql: bool = False
 
 
 def table_parts(handle: DatasetHandle) -> tuple[str | None, str, str]:
@@ -103,6 +109,13 @@ def pin_suffix(handle: DatasetHandle) -> str:
     if state is not None and state.mode == PINNED:
         return f" FOR VERSION AS OF {state.snapshot_id}"
     return ""
+
+
+def mark_user_sql(handle: DatasetHandle) -> None:
+    """User SQL is about to run in Trino: a pinned run must still check the guard."""
+    state = state_of(handle)
+    if state is not None:
+        state.user_sql = True
 
 
 def declared_columns(handle: DatasetHandle) -> list[tuple[str, str, bool]] | None:
@@ -193,14 +206,32 @@ def _pinned_columns(conn: Any, parts: tuple[str | None, str, str], snapshot_id: 
         cur.close()
 
 
-def _connector(conn: Any, catalog: str | None) -> str | None:
+def _iceberg_table(conn: Any, parts: tuple[str | None, str, str]) -> bool:
+    """An Iceberg catalog's physical table: not a view, not a materialized view."""
+    catalog, schema, table = parts
     if not catalog:
-        return None
+        return False
     rows = _fetch(
         conn,
         f"SELECT connector_name FROM system.metadata.catalogs WHERE catalog_name = {_lit(catalog)}",
     )
-    return rows[0][0] if rows else None
+    if not rows or rows[0][0] != "iceberg":
+        return False
+    rows = _fetch(
+        conn,
+        f"SELECT table_type FROM {_esc(catalog)}.information_schema.tables "
+        f"WHERE table_schema = {_lit(schema)} AND table_name = {_lit(table)}",
+    )
+    if not rows or rows[0][0] != "BASE TABLE":
+        return False
+    # information_schema lists a materialized view as a BASE TABLE.
+    rows = _fetch(
+        conn,
+        "SELECT 1 FROM system.metadata.materialized_views "
+        f"WHERE catalog_name = {_lit(catalog)} AND schema_name = {_lit(schema)} "
+        f"AND name = {_lit(table)}",
+    )
+    return not rows
 
 
 def _autocommit(conn: Any) -> bool:
@@ -225,9 +256,9 @@ def begin(handle: DatasetHandle) -> None:
         conn = handle.external_conn
         catalog, schema, table = table_parts(handle)
         catalog = catalog or getattr(conn, "catalog", None)
-        if _connector(conn, catalog) != "iceberg":
-            return
         parts = (catalog, schema, table)
+        if not _iceberg_table(conn, parts):
+            return
         if not _autocommit(conn):
             guard = _newest_entry(conn, parts)
             _set_state(
@@ -248,7 +279,7 @@ def begin(handle: DatasetHandle) -> None:
     # Any level other than AUTOCOMMIT makes the client run every query in one transaction.
     conn = get_connection(handle.db_params, isolation_level=IsolationLevel.READ_UNCOMMITTED)
     try:
-        if _connector(conn, parts[0]) != "iceberg":
+        if not _iceberg_table(conn, parts):
             conn.commit()
             conn.close()
             return
@@ -285,7 +316,7 @@ def _autocommit_state(conn: Any, parts: tuple[str | None, str, str]) -> TrinoRea
 def finish(handle: DatasetHandle | None) -> None:
     """Read the guard again after the validation's last query; raise TableChanged if it moved."""
     state = state_of(handle)
-    if state is None or state.mode == PINNED:
+    if state is None or (state.mode == PINNED and not state.user_sql):
         return
     if state.mode == TRANSACTION:
         conn = handle.owned_conn
@@ -310,7 +341,7 @@ def finish(handle: DatasetHandle | None) -> None:
     advice = (
         " Pass a connection opened with an isolation level, so Kontra reads one "
         "table state in a transaction."
-        if state.mode == BRACKETED
+        if state.mode in (BRACKETED, PINNED)
         else ""
     )
     raise TableChanged(

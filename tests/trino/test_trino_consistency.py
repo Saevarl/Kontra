@@ -259,6 +259,30 @@ class TestOneTransaction:
         assert modes == [trino_read.TRANSACTION, trino_read.TRANSACTION]
 
 
+@pytest.fixture
+def custom_agg():
+    """A custom rule that pushes ``agg`` to Trino as a custom_agg spec."""
+    from kontra.rule_defs.base import BaseRule
+    from kontra.rule_defs.registry import RULE_REGISTRY, register_rule
+
+    name = "consistency_custom_agg"
+
+    @register_rule(name)
+    class _Rule(BaseRule):
+        def validate(self, df):  # pragma: no cover - the rule pushes down
+            raise AssertionError("expected SQL pushdown")
+
+        def to_sql_spec(self):
+            return {
+                "kind": "custom_agg",
+                "rule_id": self.rule_id,
+                "sql_agg": {"trino": self.params["agg"]},
+            }
+
+    yield lambda agg: {"name": name, "params": {"agg": agg}}
+    RULE_REGISTRY.pop(name, None)
+
+
 def connect_in_transaction(level):
     conn = connect(isolation_level=level)
     cur = conn.cursor()  # opens the caller's transaction
@@ -304,14 +328,69 @@ class TestAutocommitCaller:
         assert modes == [trino_read.BRACKETED, trino_read.PINNED]
 
     def test_pinned_ignores_a_commit_mid_run(self, catalog, table, modes, writer):
+        """Without user SQL every read is pinned, so a commit mid-run changes nothing."""
         fq, _ = table
         run_sql(f"INSERT INTO {fq} (x, y) VALUES (5, 5)")  # newest file is a data commit again
-        writer(
-            before_scan=[f"INSERT INTO {fq} (x) VALUES (NULL)"],
-            before_custom_sql=[f"ALTER TABLE {fq} ADD COLUMN z integer"],
-        )
-        assert _null_counts(self._validate(fq)) == (1, 1, 1)
+        writer(before_scan=[f"INSERT INTO {fq} (x) VALUES (NULL)"])
+        by_id = {r.rule_id: r for r in self._validate(fq, [CHECKS[0], CHECKS[2]]).rules}
+        assert by_id["COL:x:not_null"].failed_count == 1
+        assert by_id["COL:x:range"].failed_count == 1
+        assert by_id["COL:x:range"].source == "polars"
         assert modes == [trino_read.PINNED]
+
+    def test_pinned_custom_sql_naming_the_table_reruns(self, catalog, modes, writer):
+        """
+        Custom SQL can name the table directly, past the pin, so a pinned run
+        that pushes custom SQL keeps the guard.
+
+        (id=1, x=10), then (id=2, x=10) commits before custom SQL. Unguarded,
+        unique(x) reads 0 at the pin and the self-subquery 1 across states.
+        """
+        fq = f"{catalog}.{SCHEMA}.dup"
+        run_sql(
+            f"DROP TABLE IF EXISTS {fq}",
+            f"CREATE TABLE {fq} (id integer, x integer)",
+            f"INSERT INTO {fq} VALUES (1, 10)",
+        )
+        writer(before_custom_sql=[f"INSERT INTO {fq} VALUES (2, 10)"])
+        checks = [
+            rules.unique("x"),
+            rules.custom_sql_check(
+                f"SELECT * FROM {{table}} a WHERE EXISTS "
+                f"(SELECT 1 FROM {fq} b WHERE b.x = a.x AND b.id <> a.id)"
+            ),
+        ]
+        try:
+            by_id = {r.rule_id: r for r in self._validate(fq, checks).rules}
+        finally:
+            run_sql(f"DROP TABLE IF EXISTS {fq}")
+        # The rerun is pinned to the insert, and both rules read it.
+        assert by_id["COL:x:unique"].failed_count == 1
+        assert by_id["DATASET:custom_sql_check"].failed_count == 2
+        assert modes == [trino_read.PINNED, trino_read.PINNED]
+
+    def test_pinned_custom_agg_naming_the_table_reruns(self, catalog, modes, writer, custom_agg):
+        """A custom rule's SQL aggregate can name the table too, past the pin."""
+        fq = f"{catalog}.{SCHEMA}.dup"
+        run_sql(
+            f"DROP TABLE IF EXISTS {fq}",
+            f"CREATE TABLE {fq} (id integer, x integer)",
+            f"INSERT INTO {fq} VALUES (1, 10)",
+        )
+        writer(before_scan=[f"INSERT INTO {fq} VALUES (2, 10)"])
+        agg = (
+            f"SUM(CASE WHEN x IN (SELECT x FROM {fq} GROUP BY x HAVING count(*) > 1) "
+            "THEN 1 ELSE 0 END)"
+        )
+        try:
+            by_id = {r.rule_id: r for r in self._validate(fq, [custom_agg(agg)]).rules}
+        finally:
+            run_sql(f"DROP TABLE IF EXISTS {fq}")
+        (result,) = by_id.values()
+        assert result.source == "sql"
+        # Unguarded: 1 (the pinned row, against the current duplicates).
+        assert result.failed_count == 2
+        assert modes == [trino_read.PINNED, trino_read.PINNED]
 
     # Schema-only changes. Each must match the current table (the schema the
     # caller sees), and pin only when the snapshot reads under that schema.
@@ -396,6 +475,41 @@ class TestAutocommitCaller:
             run_sql(f"DROP TABLE IF EXISTS {fq}")
         assert by_id["COL:amount:not_null"].failed_count == 1
         assert modes == [trino_read.PINNED]
+
+
+@pytest.mark.parametrize("connection", ["owned", "caller transaction", "caller autocommit"])
+@pytest.mark.parametrize("kind", ["view", "materialized view"])
+def test_views_run_as_before(catalog, table, modes, connection, kind):
+    """A view reads its base tables, and a stale materialized view its definition: no held state."""
+    from trino.transaction import IsolationLevel
+
+    if kind == "materialized view" and catalog == "iceberg_jdbc":
+        pytest.skip("Iceberg JDBC catalogs have no materialized views")
+    fq, _ = table
+    view = f"{catalog}.{SCHEMA}.v"
+    create = "CREATE MATERIALIZED VIEW" if kind == "materialized view" else "CREATE VIEW"
+    drop = "DROP MATERIALIZED VIEW" if kind == "materialized view" else "DROP VIEW"
+    run_sql(f"{create} {view} AS SELECT * FROM {fq}")
+    try:
+        if connection == "owned":
+            result = kontra.validate(_uri(catalog, "v"), rules=CHECKS, tally=True, save=False)
+        else:
+            level = (
+                IsolationLevel.READ_UNCOMMITTED
+                if connection == "caller transaction"
+                else IsolationLevel.AUTOCOMMIT
+            )
+            conn = connect(isolation_level=level)
+            try:
+                result = kontra.validate(conn, table=view, rules=CHECKS, tally=True, save=False)
+                if conn.transaction is not None:
+                    conn.commit()
+            finally:
+                conn.close()
+    finally:
+        run_sql(f"{drop} IF EXISTS {view}")
+    assert _null_counts(result) == (1, 1, 1)
+    assert modes == [None]
 
 
 def test_other_catalogs_run_as_before(trino_users_uri, modes):
