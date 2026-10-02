@@ -445,34 +445,93 @@ conn = trino.dbapi.connect(host="localhost", port=8080, user="kontra")
 kontra.validate(conn, table="iceberg.sales.orders", rules=[rules.not_null("id")])
 ```
 
-Connections Kontra opens use a UTC session time zone, so naive timestamps
-compare the same way the Polars tier reads them. On your own connection the
-session time zone is unknown, so `freshness` on a naive `timestamp` or `date`
-column runs in Polars.
+Kontra never changes your connection: it sets no session property or isolation
+level, and never commits or rolls back. A validation through a URI or a named
+datasource opens one connection for all its queries and closes it at the end,
+also when the validation fails. Connections Kontra opens use a UTC session time
+zone. `freshness` on a naive `timestamp` or `date` column compares with the
+current time in UTC on any connection, as the Polars tier does.
+
+**One table state per validation.** Every query of a validation (column types,
+metadata, pushed-down rules, custom SQL and the Polars-tier fetch) describes the
+same state of an Iceberg table, even when a writer commits in between:
+
+- On Kontra's own connection, the validation runs in one Trino transaction. A
+  check reads the table's newest metadata file at the start and after the last
+  query. If a commit landed, the validation runs once more in a new
+  transaction. If the table changes again, it raises `kontra.errors.DataError`
+  instead of returning a result that no single table state explains.
+- On your connection with an isolation level, the validation runs inside your
+  transaction, which Kontra leaves open. A detected change raises at once,
+  because a rerun would read the same transaction.
+- On your autocommit connection, Kontra can't open a transaction. If the current
+  snapshot is the table's latest commit and reads with the current columns, the
+  table's queries are pinned to it with `FOR VERSION AS OF`. Otherwise it runs with the same check, one rerun, and then
+  `DataError`. Custom SQL can name the table past the pin, and the file
+  metadata can't be pinned, so validations that use either keep the check.
+- Views, materialized views and tables in other catalogs have no state Kontra
+  can hold, so Kontra doesn't hold them to one.
 
 **Performance notes:**
 
-- A column declared `NOT NULL` cannot contain NULL, so `not_null` on it is
-  proven from `information_schema.columns` with zero rows read. Trino's table
-  statistics are estimates and never decide a rule.
-- Other rules run as one batched Trino aggregate, but only when Trino's answer
-  matches the Polars tier for the column's type. Trino's semantics differ in a
-  few places (NaN compares as false, `CHAR(n)` is padded, regex is Java, strings
-  don't cast to dates implicitly). These rules run in Polars instead, and report
+- Some rules are settled from metadata with zero rows read:
+    - `not_null` on a column declared `NOT NULL` in `information_schema.columns`
+    - `dtype`, from the declared type, through the same type map the Polars tier
+      loads with (`integer` is `Int32`, as in Parquet)
+    - on an Iceberg table, from the data files' statistics in `$files`:
+      `not_null`, `conditional_not_null`, `range` on integer, decimal and date
+      columns with integer or date bounds, `min_rows` / `max_rows`, and
+      `allowed_values` on an identity-partition column. Per-file counts are
+      exact; bounds are only bounds, so a rule passes only when every file
+      proves it. Delete files leave the statistics counting deleted rows, so
+      with delete files present only a PASS is taken from them.
+
+  Trino's table statistics (`SHOW STATS`) are estimates and never decide a rule.
+- The other rules run in one aggregate over the table, in fail-fast mode too: on
+  Trino a passing `EXISTS` probe reads the whole table, so one shared scan is
+  cheaper than a probe per rule. Fail-fast still reports a violation as at
+  least 1. `unique` joins that scan on tables with fewer than 1M rows; on larger
+  tables, or when the size is unknown, each `unique` column gets its own
+  `GROUP BY ... HAVING count(*) > 1` query, which needs little memory. Those
+  queries and custom SQL run beside the scan, up to four at a time. Inside your
+  transaction, custom SQL runs after the scan, one query at a time, because a
+  failed query aborts the transaction.
+- A rule is pushed to Trino only when Trino's answer matches the Polars tier for
+  the column's type. Where Trino's semantics differ (NaN compares as false,
+  `CHAR(n)` drops its padding, regex is Java), the SQL writes Polars' meaning
+  out: `range` on `real`/`double` counts NaN as out of range, `compare`
+  between two of them uses Polars' NaN order, string rules on `CHAR(n)` read the padded value, and `unique` treats NaN as
+  one value. These rules run in Polars instead, and report
   `execution_source: polars`:
-    - `range`, `unique`, value lists and `compare` on `real`/`double` columns
-    - value lists and string rules on `CHAR(n)` columns
+    - value lists on `real`/`double` columns, and `range` bounds that don't
+      convert to the same float on both sides (NaN, infinities, integers beyond
+      2^53)
+    - `unique` and `compare` on `CHAR(n)` columns, and value lists on them with
+      non-string values
     - value lists whose literal type doesn't match the column
-    - float literals against integer or decimal columns
-    - timestamps finer than microseconds (`timestamp(7)` and up), which load
-      at microsecond precision
+    - `range` on any column but an integer, decimal or float column, and float
+      literals against integer or decimal columns
+    - `compare` between columns of different types, other than integer with
+      decimal
+    - every rule but `not_null` on other types (`uuid`, `time`, arrays, maps,
+      rows), and on timestamps finer than microseconds (`timestamp(7)` and
+      up), which load at microsecond precision
     - regex outside the subset that Rust and Java read the same way: shorthand
       classes (`\w`, `\d`, `\s`, `\b`), inline flags, lookaround,
       backreferences, nested classes, and a `-` inside a class anywhere other
       than at either end or between two plain characters
-- `kontra.profile()` computes every statistic in Trino with an exact
-  `COUNT(*)`. Exact percentiles hold a column's values in memory, so use
-  `sample` on very large tables.
+- The Polars-tier fetch decodes Trino's values column by column, in chunks of
+  100,000 rows. A `timestamp with time zone` column holding several zones loads
+  as UTC instants.
+- `kontra.profile()` computes every statistic in Trino. The row count is an
+  exact `COUNT(*)`. `scout` runs one aggregate with exact null counts and
+  `approx_distinct` distinct counts, which are labelled estimated. `scan` and
+  `interrogate` count distinct values exactly. Exact percentiles hold a
+  column's values in memory, so use `sample` on very large tables. With
+  `sample`, an Iceberg table with at least 100 data files is sampled with
+  `TABLESAMPLE SYSTEM`, which reads only the files it picks. If that sample has
+  fewer rows than requested, the profile uses the first rows instead, as it
+  does for every other table.
 
 ---
 
