@@ -62,8 +62,10 @@ Zero-scan validation using file/database metadata.
 **SQL Server:** Reads `sys.dm_db_stats_histogram` (more limited).
 
 **Trino:** Proves `not_null` from columns declared `NOT NULL` in
-`information_schema.columns`. Table statistics (`SHOW STATS`) are estimates and
-never decide a rule.
+`information_schema.columns`, and `dtype` from declared types. On an Iceberg
+table read in one state, one `$files` aggregate adds each data file's exact
+null and row counts, bounds and identity-partition values. Table statistics
+(`SHOW STATS`) are estimates and never decide a rule.
 
 **Execution source:** `metadata`
 
@@ -159,7 +161,7 @@ src/kontra/
 │   ├── postgres.py       # pg_stats analysis
 │   ├── sqlserver.py      # sys.columns analysis
 │   ├── clickhouse.py     # ClickHouse metadata analysis
-│   └── trino.py          # Trino declared-nullability analysis
+│   └── trino.py          # Trino declared types and Iceberg $files analysis
 ├── rule_defs/            # Rule definitions
 │   ├── base.py           # BaseRule abstract class
 │   ├── factory.py        # Rule instantiation

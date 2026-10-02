@@ -199,8 +199,10 @@ The footer is parsed with a built-in reader, so a validation fully resolved by p
 
 **SQL Server:** Reads `sys.dm_db_stats_histogram` (more limited).
 
-**Trino:** Proves `not_null` from declared `NOT NULL` columns only. Trino's
-table statistics are estimates, so they never decide a rule.
+**Trino:** Proves `not_null` from declared `NOT NULL` columns and `dtype` from
+declared types. On an Iceberg table it also reads the data files' exact counts
+and bounds from `$files` (see [Configuration](../reference/config.md#trino)).
+Trino's table statistics are estimates, so they never decide a rule.
 
 ---
 
@@ -268,8 +270,8 @@ scan: the row count (PostgreSQL `pg_class.reltuples`, SQL Server
 `sys.dm_db_partition_stats`), and `distinct_count` / `null_count` in the `scout`
 and `scan` presets (`pg_stats`, SQL Server histograms). These are estimates that
 can lag the live table. Trino has no exact catalog statistics, so Trino profiles
-use an exact `COUNT(*)` and live queries in every preset, and report no
-estimates unless `sample` is set.
+use an exact `COUNT(*)` and live queries in every preset. Their only estimates
+are `scout`'s distinct counts (`approx_distinct`) and anything sampled.
 
 Estimated values are labelled, never presented as exact:
 
