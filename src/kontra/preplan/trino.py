@@ -293,14 +293,34 @@ def _row_count_decision(files: _Files, rule: Any) -> Decision:
     return "pass_meta" if files.records <= threshold else "unknown"
 
 
+def _conditional_rules(rules: list[Any]) -> dict[str, str | None]:
+    """conditional_not_null rules by id, with the column their condition reads.
+
+    Static predicates give these rules the generic ``not_null`` predicate. That
+    proof ignores the condition, so a condition naming a missing column would
+    PASS here while the scan raises. Only this map's path may decide them.
+    """
+    return {
+        rule.rule_id: getattr(rule, "_when_column", None)
+        for rule in rules
+        if rule.name == "conditional_not_null"
+    }
+
+
 def _files_rules(
     rules: list[Any], predicates: list[Predicate], types: dict[str, str], decided: set[str]
 ) -> tuple[list[tuple[Any, ...]], dict[str, str | None]]:
     """The rules $files can settle, and the columns (with bound types) they need."""
     wanted: list[tuple[Any, ...]] = []
     columns: dict[str, str | None] = {}
+    conditional = _conditional_rules(rules)
     for rule_id, column, op, _value in predicates:
-        if op == "not_null" and rule_id not in decided and column in types:
+        if (
+            op == "not_null"
+            and rule_id not in decided
+            and rule_id not in conditional
+            and column in types
+        ):
             wanted.append(("not_null", rule_id, column))
             columns.setdefault(column, None)
     for rule in rules:
@@ -314,11 +334,9 @@ def _files_rules(
             if bound_type and _range_literal(low, bound_type) and _range_literal(high, bound_type):
                 wanted.append(("range", rule.rule_id, column, low, high))
                 columns[column] = bound_type
-        elif rule.name == "conditional_not_null" and column in types:
-            when_column = getattr(rule, "_when_column", None)
-            if when_column in types:
-                wanted.append(("conditional_not_null", rule.rule_id, column))
-                columns.setdefault(column, None)
+        elif rule.rule_id in conditional and column in types and conditional[rule.rule_id] in types:
+            wanted.append(("conditional_not_null", rule.rule_id, column))
+            columns.setdefault(column, None)
         elif rule.name in ("min_rows", "max_rows"):
             wanted.append((rule.name, rule.rule_id, rule))
     return wanted, columns
@@ -346,8 +364,13 @@ def preplan_trino(
 
     rule_decisions: dict[str, Decision] = {}
     fail_details: dict[str, dict[str, Any]] = {}
+    conditional = _conditional_rules(rules)
     for rule_id, column, op, value in predicates:
-        if op == "not_null" and nullable.get(column.lower()) is False:
+        if rule_id in conditional:
+            # Declared NOT NULL proves it only if the condition's column exists.
+            proven = nullable.get(column.lower()) is False and conditional[rule_id] in types
+            rule_decisions[rule_id] = "pass_meta" if proven else "unknown"
+        elif op == "not_null" and nullable.get(column.lower()) is False:
             # Declared NOT NULL: the column cannot contain NULL — proven pass.
             rule_decisions[rule_id] = "pass_meta"
         elif op == "dtype" and rule_id in strict_dtype and column in types:

@@ -460,3 +460,31 @@ def test_files_failure_reports_its_cause_in_a_transaction(monkeypatch, trino_con
     finally:
         conn.close()
     assert [(r.passed, r.source) for r in result.rules] == [(False, "sql")]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("declared", ["", " NOT NULL"])
+def test_conditional_on_a_missing_column_is_not_settled(files_catalog, declared):
+    """
+    A conditional_not_null whose condition names a missing column gets the
+    generic not_null predicate too. Neither that proof nor a declared NOT NULL
+    may settle it: like the scan and the Polars tier, it reports the missing
+    column.
+    """
+    fq = f"{files_catalog}.kontra_meta.plain"
+    _query(
+        f"CREATE SCHEMA IF NOT EXISTS {files_catalog}.kontra_meta",
+        f"DROP TABLE IF EXISTS {fq}",
+        f"CREATE TABLE {fq} (x integer{declared})",
+        f"INSERT INTO {fq} VALUES 10",
+    )
+    rules = [
+        {
+            "name": "conditional_not_null",
+            "id": "cnn",
+            "params": {"column": "x", "when": "missing == 1"},
+        }
+    ]
+    for kw in ({}, {"preplan": "off"}, {"preplan": "off", "pushdown": "off"}):
+        with pytest.raises(trino.exceptions.TrinoUserError, match="COLUMN_NOT_FOUND"):
+            kontra.validate(_uri_of(fq), rules=rules, save=False, **kw)
