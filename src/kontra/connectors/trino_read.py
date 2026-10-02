@@ -35,11 +35,11 @@ the state depends on the connection and the catalog:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from kontra.connectors.handle import DatasetHandle
+from kontra.connectors.trino_types import normalize_type as _normalize_type
 from kontra.logging import get_logger
 
 _logger = get_logger(__name__)
@@ -189,11 +189,6 @@ def _read_columns(conn: Any, parts: tuple[str | None, str, str]) -> list[tuple[s
 def _newest_entry(conn: Any, parts: tuple[str | None, str, str]) -> tuple | None:
     rows = _fetch(conn, _newest_entry_sql(*parts))
     return tuple(rows[0]) if rows else None
-
-
-def _normalize_type(data_type: str) -> str:
-    # The client describes decimal(12, 2); information_schema says decimal(12,2).
-    return re.sub(r",\s+", ",", data_type.strip().lower())
 
 
 def _pinned_columns(conn: Any, parts: tuple[str | None, str, str], snapshot_id: int) -> list:

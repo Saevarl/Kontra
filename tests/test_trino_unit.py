@@ -288,7 +288,9 @@ class TestTrinoPreplan:
         from kontra.connectors.handle import DatasetHandle
 
         monkeypatch.setattr(
-            trino_preplan, "_fetch_nullability", lambda handle: {"id": False, "email": True}
+            trino_preplan,
+            "_fetch_columns",
+            lambda handle: [("id", "bigint", False), ("email", "varchar", True)],
         )
         handle = DatasetHandle.from_uri("trino://u@host/lake/s.t")
         pre = trino_preplan.preplan_trino(
@@ -302,18 +304,81 @@ class TestTrinoPreplan:
         )
         assert pre.rule_decisions == {"r1": "pass_meta", "r2": "unknown", "r3": "unknown"}
 
+    @staticmethod
+    def _dtype_plan(monkeypatch, rules):
+        import kontra.preplan.trino as trino_preplan
+        from kontra.config.models import RuleSpec
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.engine.phases.compilation import _ensure_builtin_rules_registered
+        from kontra.rule_defs.factory import RuleFactory
+        from kontra.rule_defs.static_predicates import extract_static_predicates
+
+        monkeypatch.setattr(
+            trino_preplan,
+            "_fetch_columns",
+            lambda handle: [
+                ("n", "integer", True),
+                ("d", "decimal(12,2)", True),
+                ("u", "uuid", True),
+            ],
+        )
+        _ensure_builtin_rules_registered()
+        built = RuleFactory([RuleSpec(**r) for r in rules]).build_rules()
+        handle = DatasetHandle.from_uri("trino://u@host/lake/s.t")
+        return trino_preplan.preplan_trino(
+            handle, [], extract_static_predicates(rules=built), rules=built
+        )
+
+    def test_dtype_is_decided_from_the_declared_type(self, monkeypatch):
+        pre = self._dtype_plan(
+            monkeypatch,
+            [
+                {"name": "dtype", "id": "int32", "params": {"column": "n", "type": "int32"}},
+                {"name": "dtype", "id": "int", "params": {"column": "n", "type": "int"}},
+                {"name": "dtype", "id": "int64", "params": {"column": "n", "type": "int64"}},
+                {"name": "dtype", "id": "dec", "params": {"column": "d", "type": "numeric"}},
+            ],
+        )
+        assert pre.rule_decisions == {
+            "int32": "pass_meta",
+            "int": "pass_meta",
+            "int64": "fail_meta",
+            "dec": "fail_meta",
+        }
+        assert pre.fail_details["int64"] == {"expected": "int64", "actual": "Int32"}
+
+    def test_dtype_falls_back_without_a_fixed_mapping(self, monkeypatch):
+        """Unmapped types, other cases of the name, missing columns and non-strict modes."""
+        pre = self._dtype_plan(
+            monkeypatch,
+            [
+                {"name": "dtype", "id": "uuid", "params": {"column": "u", "type": "string"}},
+                {"name": "dtype", "id": "case", "params": {"column": "N", "type": "int32"}},
+                {"name": "dtype", "id": "gone", "params": {"column": "x", "type": "int32"}},
+                {
+                    "name": "dtype",
+                    "id": "mode",
+                    "params": {"column": "n", "type": "int32", "mode": "relaxed"},
+                },
+            ],
+        )
+        assert set(pre.rule_decisions.values()) == {"unknown"}
+
 
 class TestTrinoMaterializerTypes:
     @pytest.mark.parametrize(
         ("trino_type", "expected"),
         [
             ("boolean", pl.Boolean),
-            ("tinyint", pl.Int64),
+            ("tinyint", pl.Int8),
+            ("smallint", pl.Int16),
+            ("integer", pl.Int32),
             ("bigint", pl.Int64),
-            ("real", pl.Float64),
+            ("real", pl.Float32),
             ("double", pl.Float64),
-            ("decimal(10, 2)", pl.Decimal(38, 2)),
+            ("decimal(10, 2)", pl.Decimal(10, 2)),
             ("decimal(38,0)", pl.Decimal(38, 0)),
+            ("decimal(5)", pl.Decimal(5, 0)),
             ("varchar(12)", pl.Utf8),
             ("char(3)", pl.Utf8),
             ("json", pl.Utf8),
@@ -321,6 +386,7 @@ class TestTrinoMaterializerTypes:
             ("timestamp(3)", pl.Datetime("us")),
             ("timestamp(6) with time zone", pl.Datetime("us", "UTC")),
             ("time(0)", pl.Time),
+            ("time(3) with time zone", None),
             ("varbinary", pl.Binary),
             ("uuid", None),
             ("array(integer)", None),
@@ -328,9 +394,9 @@ class TestTrinoMaterializerTypes:
         ],
     )
     def test_declared_dtype(self, trino_type, expected):
-        from kontra.engine.materializers.trino import _polars_dtype
+        from kontra.connectors.trino_types import polars_dtype
 
-        assert _polars_dtype(trino_type) == expected
+        assert polars_dtype(trino_type) == expected
 
 
 def test_profile_reports_trino_unsupported():

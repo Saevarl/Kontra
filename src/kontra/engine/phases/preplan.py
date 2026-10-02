@@ -365,7 +365,7 @@ def _execute_trino_preplan(
     handle: DatasetHandle,
     ctx: CompilationContext,
 ) -> PreplanResult:
-    """Execute preplan for Trino tables via declared column nullability (no scan)."""
+    """Execute preplan for Trino tables via declared column types and nullability (no scan)."""
     from kontra.preplan.trino import can_preplan_trino, preplan_trino
     from kontra.rule_defs.static_predicates import extract_static_predicates
 
@@ -378,6 +378,7 @@ def _execute_trino_preplan(
         handle=handle,
         required_columns=ctx.compiled_full.required_cols,
         predicates=static_preds,
+        rules=ctx.rules,
     )
     analyze_ms = now_ms() - t0
 
@@ -385,7 +386,7 @@ def _execute_trino_preplan(
         pre=pre,
         tally_map=ctx.tally_map,
         severity_map=ctx.severity_map,
-        execution_source_msg="Trino column nullability",
+        execution_source_msg="Trino declared columns",
     )
 
     return PreplanResult(

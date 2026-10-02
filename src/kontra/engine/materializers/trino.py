@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from kontra.connectors.detection import parse_table_reference
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.trino import TrinoConnectionParams
+from kontra.connectors.trino_types import polars_dtype
 from kontra.engine.sql_ir import esc_ident, lit_str
 
 from .base import BaseMaterializer
@@ -26,41 +27,6 @@ from .registry import register_materializer
 
 def _ident(name: str) -> str:
     return esc_ident(name, "trino")
-
-
-_INTEGER_TYPES = {"tinyint", "smallint", "integer", "bigint"}
-
-
-def _polars_dtype(trino_type: str | None) -> Any:
-    """Polars dtype that row inference yields for a non-NULL value of a Trino type.
-
-    Used where inference has nothing to go on: columns that are NULL in every
-    row, and empty results. Returns None for types without a fixed mapping.
-    """
-    import polars as pl
-
-    t = (trino_type or "").lower()
-    base = t.split("(", 1)[0].strip()
-    if base == "boolean":
-        return pl.Boolean
-    if base in _INTEGER_TYPES:
-        return pl.Int64
-    if base in {"real", "double"}:
-        return pl.Float64
-    if base == "decimal":
-        scale = t.rsplit(",", 1)[-1].rstrip(") ") if "," in t else "0"
-        return pl.Decimal(38, int(scale))
-    if base in {"varchar", "char", "json"}:
-        return pl.Utf8
-    if base == "date":
-        return pl.Date
-    if base == "timestamp":
-        return pl.Datetime("us", "UTC" if "with time zone" in t else None)
-    if base == "time" and "with time zone" not in t:
-        return pl.Time
-    if base == "varbinary":
-        return pl.Binary
-    return None
 
 
 @register_materializer("trino")
@@ -149,16 +115,22 @@ class TrinoMaterializer(BaseMaterializer):
         t1 = time.perf_counter()
 
         col_names = [desc[0] for desc in description]
-        declared = {desc[0]: _polars_dtype(desc[1]) for desc in description}
+        # The declared types, read once per validation, are the ones preplan's
+        # dtype decisions used; outside a held state, the cursor's own types.
+        types = {
+            name: data_type for name, data_type, _ in trino_read.declared_columns(self.handle) or []
+        }
+        declared = {desc[0]: polars_dtype(types.get(desc[0], desc[1])) for desc in description}
         if rows:
             # Scan every row for dtype inference, as the SQL Server materializer
             # does: a column NULL for its first 100 rows would otherwise infer as
-            # Null and fail on its first real value.
+            # Null and fail on its first real value. Then cast to the declared
+            # type: inference makes every integer Int64 and every float Float64.
             df = pl.DataFrame(rows, schema=col_names, orient="row", infer_schema_length=None)
             df = df.with_columns(
                 pl.col(name).cast(declared[name])
                 for name, dtype in df.schema.items()
-                if dtype == pl.Null and declared.get(name) is not None
+                if declared.get(name) is not None and dtype != declared[name]
             )
         else:
             df = pl.DataFrame(schema={name: declared[name] or pl.Utf8 for name in col_names})
