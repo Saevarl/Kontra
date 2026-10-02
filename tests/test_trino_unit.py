@@ -682,6 +682,20 @@ class TestTrinoTypedSql:
         sql = self._select({"kind": "freshness", "column": "tsz", "max_age_seconds": 60})
         assert "date_add('second', -60, current_timestamp)" in sql
 
+    @pytest.mark.parametrize("column", ["ts", "day", "tsz"])
+    def test_freshness_marks_a_column_without_timestamps(self, column):
+        sql = self._select({"kind": "freshness", "column": column, "max_age_seconds": 60})
+        assert sql.startswith(f'CASE WHEN MAX("{column}") IS NULL THEN -1 WHEN ')
+
+    @pytest.mark.parametrize("rows", [2, 0])
+    def test_no_timestamps_fails_with_the_row_count(self, rows):
+        from kontra.engine.executors.trino_sql import _no_timestamps
+
+        result = _no_timestamps("r1", "ts", rows)
+        assert result["passed"] is False
+        assert result["failed_count"] == rows
+        assert result["message"] == "Column 'ts' has no non-null timestamps"
+
 
 class TestTrinoPreplan:
     def test_declared_not_null_is_proven(self, monkeypatch):

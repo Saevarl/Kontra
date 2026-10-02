@@ -69,7 +69,8 @@ def _assert_pushed_and_equal(source, rules, tally, **kwargs):
         if tally:
             assert on[rid].failed_count == off[rid].failed_count, rid
         elif not on[rid].passed:
-            assert on[rid].failed_count >= 1, rid
+            # At least 1, or 0 where the Polars tier fails with 0 (no rows).
+            assert on[rid].failed_count >= min(1, off[rid].failed_count), rid
     return on
 
 
@@ -264,3 +265,44 @@ def test_naive_freshness_on_callers_connection(naive_table, zone):
         "day_fresh": True,
         "day_stale": False,
     }
+
+
+@pytest.fixture(params=[2, 0], ids=["all_null", "empty"])
+def no_timestamps_table(request, trino_container):
+    """A naive timestamp and a date column with no non-NULL value."""
+    fq = f"memory.{SCHEMA}.no_timestamps"
+    statements = [
+        f"CREATE SCHEMA IF NOT EXISTS memory.{SCHEMA}",
+        f"DROP TABLE IF EXISTS {fq}",
+        f"CREATE TABLE {fq} (ts timestamp(6), d date)",
+    ]
+    if request.param:
+        values = ", ".join(["(NULL, NULL)"] * request.param)
+        statements.append(f"INSERT INTO {fq} VALUES {values}")
+    run_sql(*statements)
+    yield fq, request.param
+    run_sql(f"DROP TABLE IF EXISTS {fq}")
+
+
+@pytest.mark.parametrize("tally", [True, False], ids=["tally", "fail_fast"])
+@pytest.mark.parametrize("zone", ["UTC", "America/Los_Angeles", None], ids=["utc", "la", "own"])
+def test_freshness_without_timestamps(no_timestamps_table, zone, tally):
+    """No timestamps: FAIL counting every row, from SQL, as the Polars tier says."""
+    fq, rows = no_timestamps_table
+    rules = [
+        {"name": "freshness", "id": "ts_2h", "params": {"column": "ts", "max_age": "2h"}},
+        {"name": "freshness", "id": "d_2h", "params": {"column": "d", "max_age": "2h"}},
+    ]
+    conn = None if zone is None else connect(timezone=zone)
+    try:
+        if conn is None:
+            on = _assert_pushed_and_equal(_uri(fq), rules, tally)
+        else:
+            on = _assert_pushed_and_equal(conn, rules, tally, table=fq)
+    finally:
+        if conn is not None:
+            conn.close()
+    for rid, column in (("ts_2h", "ts"), ("d_2h", "d")):
+        assert on[rid].passed is False, rid
+        assert on[rid].failed_count == rows, rid
+        assert on[rid].message == f"Column '{column}' has no non-null timestamps", rid

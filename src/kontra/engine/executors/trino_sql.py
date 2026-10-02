@@ -81,6 +81,8 @@ _INTEGER = {"tinyint", "smallint", "integer", "bigint"}
 _UNIQUE_IN_SCAN_BELOW = 1_000_000
 # Queries of one validation in flight at once.
 _MAX_CONCURRENT = 4
+# A freshness cell's value when the column holds no timestamps (MAX is NULL).
+_NO_TIMESTAMPS = -1
 
 # Type families whose comparisons, equality and ordering agree with Polars.
 # Floating columns are excluded (Polars orders NaN above every number, Trino
@@ -112,6 +114,20 @@ _FLOAT_ORDER = {
     ">": "({ln} AND NOT {rn}) OR (NOT {ln} AND NOT {rn} AND {l} > {r})",
     ">=": "{ln} OR (NOT {rn} AND {l} >= {r})",
 }
+
+
+def _no_timestamps(rule_id: str, column: str, row_count: int) -> dict[str, Any]:
+    """Freshness with no non-NULL value: a failure counting every row, as in Polars."""
+    return {
+        "rule_id": rule_id,
+        "passed": False,
+        "failed_count": row_count,
+        "tally": False,
+        "message": f"Column '{column}' has no non-null timestamps",
+        "severity": "ERROR",
+        "actions_executed": [],
+        "execution_source": "sql",
+    }
 
 
 def _family(data_type: str | None) -> str | None:
@@ -505,7 +521,11 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
         for spec, (_, row) in zip(grouped, outputs[1 : 1 + len(grouped)]):
             cells.append((spec["rule_id"], row[0]))
         results: list[dict[str, Any]] = []
+        columns_of = {s["rule_id"]: s.get("column") for s, _ in specs}
         for rule_id, value in cells:
+            if kinds.get(rule_id) == "freshness" and value == _NO_TIMESTAMPS:
+                results.append(_no_timestamps(rule_id, columns_of[rule_id], row_count))
+                continue
             results += results_from_row(
                 [rule_id], (value,), is_exists=rule_id in fail_fast, rule_kinds=kinds
             )
@@ -606,8 +626,10 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             # Polars reads a naive value as UTC; the session's zone may differ.
             now = "CAST(current_timestamp AT TIME ZONE 'UTC' AS timestamp(6))"
         threshold = f"date_add('second', -{int(spec['max_age_seconds'])}, {now})"
+        c = self._esc(column)
         return (
-            f"CASE WHEN MAX({self._esc(column)}) >= {threshold} THEN 0 ELSE 1 END "
+            f"CASE WHEN MAX({c}) IS NULL THEN {_NO_TIMESTAMPS} "
+            f"WHEN MAX({c}) >= {threshold} THEN 0 ELSE 1 END "
             f"AS {self._esc(spec['rule_id'])}"
         )
 
