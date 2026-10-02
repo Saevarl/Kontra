@@ -526,6 +526,7 @@ def preplan_trino(
             file_columns.setdefault(column, None)
     if wanted:
         files = _read_files(handle, file_columns, partitions)
+        trino_read.state_of(handle).data_rows = files.records
         for kind, rule_id, *args in wanted:
             if kind == "not_null":
                 decision = _not_null_decision(files, files.columns[args[0]])

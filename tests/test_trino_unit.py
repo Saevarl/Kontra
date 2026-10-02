@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from typing import ClassVar
 
 import polars as pl
 import pytest
@@ -148,13 +149,6 @@ class TestTrinoRegexSubset:
 
 
 class TestTrinoRendering:
-    def test_statements_have_no_trailing_semicolon(self):
-        from kontra.engine.executors.trino_sql import TrinoSqlExecutor
-
-        ex = TrinoSqlExecutor()
-        assert not ex._assemble_single_row(["COUNT(*) AS n"], '"c"."s"."t"').endswith(";")
-        assert not ex._assemble_exists_query(["EXISTS (SELECT 1) AS x"]).endswith(";")
-
     def test_freshness_uses_bigint_date_add(self):
         from kontra.engine.sql_utils import agg_freshness
 
@@ -186,6 +180,276 @@ _FAMILIES = {
     "flag": "boolean",
     "x": "integer",
 }
+
+
+class _ScanConn:
+    """A fake Trino connection for the scan plan: records statements and concurrency."""
+
+    def __init__(self, files_rows=10, delay=0.0):
+        import threading
+
+        self.sql: list[str] = []
+        self.files_rows = files_rows
+        self.delay = delay
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self._lock = threading.Lock()
+        self.events: list[tuple[str, str]] = []  # ("start" | "end", sql)
+        self.fail: dict[str, int] = {}  # sql substring -> times to fail
+        self.transaction = object()
+        self.rollbacks = 0
+
+    def cursor(self):
+        return _ScanCursor(self)
+
+    def rollback(self):
+        self.rollbacks += 1
+        self.transaction = None
+
+
+class _ScanCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self.description = None
+        self._rows = []
+
+    def execute(self, sql):
+        import re
+        import time
+
+        c = self.conn
+        if c.transaction is None:
+            c.transaction = object()  # the client starts a new transaction
+        with c._lock:
+            c.sql.append(sql)
+            c.events.append(("start", sql))
+            c.in_flight += 1
+            c.max_in_flight = max(c.max_in_flight, c.in_flight)
+        time.sleep(c.delay)
+        with c._lock:
+            c.in_flight -= 1
+            c.events.append(("end", sql))
+            failing = [k for k, n in c.fail.items() if k in sql and n > 0]
+            for k in failing:
+                c.fail[k] -= 1
+        if failing:
+            raise RuntimeError(f"failed: {sql}")
+        if sql.startswith("SET SESSION"):
+            self._rows, self.description = [], None
+        elif "information_schema.columns" in sql:
+            self._rows = [["a", "integer"], ["b", "varchar"]]
+            self.description = [("column_name",), ("data_type",)]
+        elif "$files" in sql:
+            self._rows, self.description = [[c.files_rows]], [("_col0",)]
+        elif sql.startswith("SELECT coalesce(sum(n - 1), 0)"):
+            alias = re.search(r'AS "([^"]+)" FROM', sql).group(1)
+            self._rows, self.description = [[2]], [(alias,)]
+        elif sql.startswith(("SELECT COUNT(*) FROM", "SELECT COUNT(*) AS")):
+            self._rows, self.description = [[0]], [("_col0",)]
+        else:  # the fused scan: 3 violations per rule, 10 rows
+            head = sql[: sql.rindex(" FROM ")]
+            aliases = re.findall(r'AS "([^"]+)"', head)
+            self._rows = [[10 if a == "__row_count" else 3 for a in aliases]]
+            self.description = [(a,) for a in aliases]
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def close(self):
+        pass
+
+
+class TestTrinoScanPlan:
+    """One fused scan in both modes, unique by table size, concurrent side queries."""
+
+    SPECS: ClassVar[list[dict]] = [
+        {"kind": "not_null", "column": "a", "rule_id": "nn", "tally": False},
+        {"kind": "range", "column": "a", "min": 0, "rule_id": "rg", "tally": True},
+        {"kind": "unique", "column": "b", "rule_id": "uq", "tally": False},
+        {"kind": "min_rows", "threshold": 5, "rule_id": "mr", "tally": False},
+        {
+            "kind": "custom_agg",
+            "rule_id": "ca",
+            "tally": False,
+            "sql_agg": {"trino": 'count_if("a" > 100)'},
+            "sql_exists": {"trino": '"a" < 0'},
+        },
+        {"kind": "custom_sql_check", "sql": "SELECT * FROM {table} WHERE a < 0", "rule_id": "cs"},
+    ]
+
+    @staticmethod
+    def _run(conn, mode="transaction", data_rows=None, specs=None, held=True):
+        from kontra.connectors import trino_read
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.engine.executors.trino_sql import TrinoSqlExecutor
+
+        handle = DatasetHandle.from_uri("trino://u@host/lake/s.t")
+        object.__setattr__(handle, "owned_conn", conn)
+        if held:
+            state = trino_read.TrinoReadState(
+                mode, [("a", "integer", True), ("b", "varchar", True)], data_rows=data_rows
+            )
+            trino_read._set_state(handle, state)
+        ex = TrinoSqlExecutor()
+        out = ex.execute(handle, ex.compile(specs or TestTrinoScanPlan.SPECS))
+        return out, handle
+
+    @staticmethod
+    def _table_reads(conn):
+        return [q for q in conn.sql if 'FROM "lake"."s"."t"' in q]
+
+    def test_one_fused_scan_in_fail_fast(self):
+        conn = _ScanConn()
+        out, _ = self._run(conn, data_rows=10)
+        assert not any("EXISTS" in q for q in conn.sql)
+        assert not any(q.rstrip().endswith(";") for q in conn.sql)
+        fused = [q for q in conn.sql if '"__row_count"' in q]
+        assert len(fused) == 1 and "count_if(" in fused[0] and "SUM(CASE" not in fused[0]
+        by_id = {r["rule_id"]: r for r in out["results"]}
+        # Fail-fast rules report a violation as at least 1, as the probe did;
+        # tally rules and dataset rules keep their counts.
+        assert by_id["nn"]["failed_count"] == 1 and by_id["uq"]["failed_count"] == 1
+        assert by_id["ca"]["failed_count"] == 1
+        assert by_id["rg"]["failed_count"] == 3 and by_id["mr"]["failed_count"] == 3
+        assert out["row_count"] == 10
+        # The fail-fast custom rule counts its to_sql_exists() condition.
+        assert 'count_if("a" < 0) AS "ca"' in fused[0]
+
+    def test_small_table_unique_in_scan_with_mark_distinct(self):
+        conn = _ScanConn()
+        self._run(conn, data_rows=999_999)
+        sets = [i for i, q in enumerate(conn.sql) if q.startswith("SET SESSION")]
+        fused = [i for i, q in enumerate(conn.sql) if '"__row_count"' in q]
+        assert len(sets) == 1 and "mark_distinct" in conn.sql[sets[0]] and sets[0] < fused[0]
+        assert 'COUNT(DISTINCT "b")' in conn.sql[fused[0]]
+        assert not any("GROUP BY" in q for q in conn.sql)
+        assert not any("$files" in q for q in conn.sql)
+
+    @pytest.mark.parametrize("mode", ["caller_transaction", "pinned", "bracketed"])
+    def test_callers_session_is_not_changed(self, mode):
+        conn = _ScanConn()
+        self._run(conn, mode=mode, data_rows=10)
+        assert not any(q.startswith("SET SESSION") for q in conn.sql)
+        assert any('COUNT(DISTINCT "b")' in q for q in conn.sql)
+
+    def test_large_table_unique_gets_its_own_group_by(self):
+        conn = _ScanConn()
+        out, _ = self._run(conn, data_rows=1_000_000)
+        grouped = [q for q in conn.sql if "GROUP BY" in q]
+        assert len(grouped) == 1 and "HAVING count(*) > 1" in grouped[0]
+        assert not any("COUNT(DISTINCT" in q for q in conn.sql)
+        assert not any(q.startswith("SET SESSION") for q in conn.sql)
+        # One fused scan, one GROUP BY, one custom SQL query read the table.
+        assert len(self._table_reads(conn)) == 3
+        by_id = {r["rule_id"]: r for r in out["results"]}
+        assert by_id["uq"]["failed_count"] == 1  # fail-fast
+
+    def test_tally_unique_from_group_by_keeps_its_count(self):
+        conn = _ScanConn()
+        spec = {"kind": "unique", "column": "b", "rule_id": "uq", "tally": True}
+        out, _ = self._run(conn, data_rows=5_000_000, specs=[spec])
+        assert out["results"][0]["failed_count"] == 2
+
+    def test_size_read_from_files_when_preplan_did_not(self):
+        conn = _ScanConn(files_rows=20)
+        _, handle = self._run(conn, data_rows=None)
+        from kontra.connectors import trino_read
+
+        files = [q for q in conn.sql if "$files" in q]
+        assert len(files) == 1 and "record_count" in files[0]
+        state = trino_read.state_of(handle)
+        assert state.files_read and state.data_rows == 20
+        assert any('COUNT(DISTINCT "b")' in q for q in conn.sql)
+
+    def test_no_size_query_without_unique_rules(self):
+        conn = _ScanConn()
+        self._run(conn, data_rows=None, specs=self.SPECS[:2])
+        assert not any("$files" in q for q in conn.sql)
+
+    def test_unknown_size_counts_as_large(self):
+        conn = _ScanConn()
+        self._run(conn, held=False)
+        assert not any("$files" in q for q in conn.sql)
+        assert any("GROUP BY" in q for q in conn.sql)
+        assert not any(q.startswith("SET SESSION") for q in conn.sql)
+
+    def test_side_queries_run_concurrently_at_most_four(self):
+        conn = _ScanConn(delay=0.1)
+        specs = [
+            {"kind": "unique", "column": "b", "rule_id": f"u{i}", "tally": True} for i in range(3)
+        ] + [
+            {
+                "kind": "custom_sql_check",
+                "sql": f"SELECT * FROM {{table}} WHERE a < {i}",
+                "rule_id": f"c{i}",
+            }
+            for i in range(4)
+        ]
+        out, _ = self._run(conn, data_rows=2_000_000, specs=specs)
+        assert conn.max_in_flight == 4
+        assert {r["rule_id"] for r in out["results"]} == {s["rule_id"] for s in specs}
+        assert all(r["passed"] for r in out["results"] if r["rule_id"].startswith("c"))
+
+
+class TestTrinoScanRecovery:
+    """A failed query aborts a Trino transaction; Kontra's own recovers, a caller's is left alone."""
+
+    CUSTOM: ClassVar[list[dict]] = [
+        {"kind": "not_null", "column": "a", "rule_id": "nn", "tally": True},
+        {"kind": "custom_sql_check", "sql": "SELECT * FROM {table} WHERE a = 1", "rule_id": "c1"},
+        {"kind": "custom_sql_check", "sql": "SELECT * FROM {table} WHERE a = 2", "rule_id": "c2"},
+    ]
+
+    def test_failed_queries_rerun_alone_in_new_transactions(self):
+        conn = _ScanConn(delay=0.05)
+        conn.fail = {"a = 1": 99, '"__row_count"': 1, "a = 2": 1}  # c1 always; the others once
+        out, _ = TestTrinoScanPlan._run(conn, specs=self.CUSTOM)
+        by_id = {r["rule_id"]: r for r in out["results"]}
+        assert by_id["nn"]["failed_count"] == 3  # the scan, rerun
+        assert by_id["c2"]["passed"]  # rerun alone, answered
+        assert not by_id["c1"]["passed"] and "failed: " in by_id["c1"]["message"]
+        # One new transaction per retry, and one after the last retry failed.
+        assert conn.rollbacks == 4
+        assert sum('"__row_count"' in q for q in conn.sql) == 2
+
+    def test_a_scan_that_fails_alone_raises(self):
+        conn = _ScanConn()
+        conn.fail = {'"__row_count"': 2}
+        with pytest.raises(RuntimeError, match="failed: SELECT count_if"):
+            TestTrinoScanPlan._run(conn, specs=self.CUSTOM)
+
+    @pytest.mark.parametrize("mode", ["pinned", "bracketed"])
+    def test_autocommit_failures_are_not_retried(self, mode):
+        conn = _ScanConn()
+        conn.fail = {"a = 1": 1}
+        out, _ = TestTrinoScanPlan._run(conn, mode=mode, specs=self.CUSTOM)
+        assert conn.rollbacks == 0
+        assert not {r["rule_id"]: r for r in out["results"]}["c1"]["passed"]
+
+    def test_callers_transaction_runs_user_sql_after_the_scan_one_by_one(self):
+        conn = _ScanConn(delay=0.05)
+        specs = self.CUSTOM + [
+            {"kind": "unique", "column": "b", "rule_id": "uq", "tally": True},
+        ]
+        TestTrinoScanPlan._run(conn, mode="caller_transaction", data_rows=5_000_000, specs=specs)
+        assert conn.rollbacks == 0
+        custom = [i for i, (_, q) in enumerate(conn.events) if "WHERE a =" in q]
+        scan_ends = [
+            i for i, (e, q) in enumerate(conn.events) if e == "end" and "WHERE a =" not in q
+        ]
+        # The fused scan and the GROUP BY ran together, then each custom query alone.
+        assert max(scan_ends) < min(custom)
+        assert [e for e, q in conn.events if "WHERE a =" in q] == ["start", "end", "start", "end"]
+
+    def test_callers_transaction_is_never_rolled_back(self):
+        conn = _ScanConn()
+        conn.fail = {"a = 1": 1}
+        out, _ = TestTrinoScanPlan._run(conn, mode="caller_transaction", specs=self.CUSTOM)
+        assert conn.rollbacks == 0
+        assert not {r["rule_id"]: r for r in out["results"]}["c1"]["passed"]
 
 
 class TestTrinoExactnessGate:

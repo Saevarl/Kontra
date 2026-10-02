@@ -72,6 +72,9 @@ class TrinoReadState:
     user_sql: bool = False
     # $files was read; Trino can't pin a metadata table to a snapshot.
     files_read: bool = False
+    # Records in the data files ($files), when read: the row count before
+    # deletes. It sizes the scan plan, never an answer.
+    data_rows: int | None = None
 
 
 def table_parts(handle: DatasetHandle) -> tuple[str | None, str, str]:

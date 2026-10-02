@@ -623,6 +623,12 @@ class TrinoRenderer(Renderer):
         escaped_pattern = translated.replace("'", "''")
         return f"{col_sql} IS NULL OR NOT regexp_like({col_sql}, '{escaped_pattern}')"
 
+    def sum_case(self, conditions: list[str], rule_id: str) -> str:
+        # count_if counts the rows where the condition is true, as CASE WHEN does
+        # (NULL is not true), and returns 0 instead of NULL on an empty table.
+        condition = " OR ".join(f"({c})" for c in conditions)
+        return f"count_if({condition}) AS {self.ident(rule_id)}"
+
     def freshness(self, col_sql: str, secs: int, rule_id: str) -> str:
         # date_add takes a bigint; an INTERVAL ... SECOND literal is capped at
         # 2^31-1 seconds (~68 years), which would fail the whole batch.
