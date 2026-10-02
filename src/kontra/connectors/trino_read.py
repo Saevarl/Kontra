@@ -282,6 +282,22 @@ def _iceberg_table(conn: Any, parts: tuple[str | None, str, str]) -> bool:
     return not rows
 
 
+def data_files(conn: Any, parts: tuple[str | None, str, str]) -> tuple[int, int] | None:
+    """
+    (data files, records in them) of an Iceberg physical table, or None for any
+    other relation. Records count rows before deletes, so this sizes work and
+    never answers a count.
+    """
+    if not _iceberg_table(conn, parts):
+        return None
+    rows = _fetch(
+        conn,
+        "SELECT count(*), coalesce(sum(record_count), 0) "
+        f"FROM {_relation(*parts, '$files')} WHERE content = 0",
+    )
+    return (int(rows[0][0]), int(rows[0][1])) if rows else None
+
+
 def _autocommit(conn: Any) -> bool:
     try:
         from trino.transaction import IsolationLevel
