@@ -305,24 +305,104 @@ def test_row_columns_raise_as_before(catalog, trino_container, monkeypatch):
         _run(f"DROP TABLE IF EXISTS {table}")
 
 
-def test_values_python_cant_hold_raise_as_before(trino_container, monkeypatch):
-    """A date before year 1 fails in the client's mapper, with the client's message."""
+@pytest.mark.parametrize(
+    "data_type, value",
+    [
+        ("date", "DATE '-0001-01-01'"),
+        ("date", "DATE '0000-01-01'"),
+        ("timestamp(6)", "TIMESTAMP '0000-01-01 00:00:00'"),
+        ("timestamp(6) with time zone", "TIMESTAMP '0000-01-01 00:00:00 UTC'"),
+    ],
+)
+def test_values_python_cant_hold_raise_as_before(data_type, value, trino_container, monkeypatch):
+    """A year Python can't hold (0000 too) fails in the client's mapper, with its message."""
     from trino.exceptions import TrinoDataError
+
+    import kontra
+    from kontra import rules
 
     table = "memory.kontra.old_dates"
     _run(
         "CREATE SCHEMA IF NOT EXISTS memory.kontra",
         f"DROP TABLE IF EXISTS {table}",
-        f"CREATE TABLE {table} (id integer, d date)",
-        f"INSERT INTO {table} VALUES (0, DATE '2026-01-01'), (1, DATE '-0001-01-01')",
+        f"CREATE TABLE {table} (id integer, d {data_type})",
+        f"INSERT INTO {table} VALUES (0, NULL), (1, {value})",
     )
     try:
         with _connect() as conn:
             with pytest.raises(TrinoDataError) as before:
                 _reference(conn, table, ["id", "d"])
-            with pytest.raises(TrinoDataError) as after:
-                _materialize(conn, table, ["id", "d"], 100_000, monkeypatch)
-        assert str(after.value) == str(before.value)
+            for chunk_rows in (100_000, 1):
+                with pytest.raises(TrinoDataError) as after:
+                    _materialize(conn, table, ["id", "d"], chunk_rows, monkeypatch)
+                assert str(after.value) == str(before.value)
+            with pytest.raises(TrinoDataError) as validated:
+                kontra.validate(
+                    conn,
+                    table=table,
+                    rules=[rules.not_null("d")],
+                    preplan="off",
+                    pushdown="off",
+                    tally=True,
+                    save=False,
+                )
+            assert str(validated.value) == str(before.value)
+    finally:
+        _run(f"DROP TABLE IF EXISTS {table}")
+
+
+_BOUNDARY_INSTANTS = {
+    # Each is a valid Trino value whose UTC instant lies outside Python's years.
+    "TIMESTAMP '9999-12-31 23:59:59 -05:00'": "+10000-01-01 04:59:59",
+    "TIMESTAMP '0001-01-01 00:00:00 +05:30'": "0000-12-31 18:30:00",
+}
+
+
+@pytest.mark.parametrize("value", list(_BOUNDARY_INSTANTS))
+def test_zoned_instants_beyond_pythons_years_load_as_before(value, trino_container, monkeypatch):
+    """A zoned timestamp whose UTC instant crosses year 1 or 9999 loads, as before.
+
+    Alone in its zone the column equals the previous decoder's frame; beside a
+    UTC value it still loads, in every chunking. Validation reads it too.
+    """
+    import kontra
+    from kontra import rules
+
+    table = "memory.kontra.zone_bounds"
+    _run(
+        "CREATE SCHEMA IF NOT EXISTS memory.kontra",
+        f"DROP TABLE IF EXISTS {table}",
+        f"CREATE TABLE {table} (id integer, t timestamp(6) with time zone, "
+        "m timestamp(6) with time zone)",
+        f"INSERT INTO {table} VALUES (0, {value}, {value}), "
+        "(1, NULL, TIMESTAMP '2026-01-01 00:00:00 UTC'), (2, NULL, NULL)",
+    )
+    expected_m = pl.Series(
+        "m", [_BOUNDARY_INSTANTS[value], "2026-01-01 00:00:00", None]
+    ).str.to_datetime("%Y-%m-%d %H:%M:%S", time_unit="us", time_zone="UTC")
+    try:
+        with _connect() as conn:
+            expected = _reference(conn, table, ["id", "t"])
+            assert (
+                expected.sort("id")["t"].dt.to_string("%Y-%m-%d %H:%M:%S")[0]
+                == (_BOUNDARY_INSTANTS[value])
+            )
+            for chunk_rows in (100_000, 2, 1):
+                actual = _materialize(conn, table, ["id", "t"], chunk_rows, monkeypatch)
+                _assert_same(expected, actual, chunk_rows)
+                mixed = _materialize(conn, table, ["id", "m"], chunk_rows, monkeypatch)
+                assert_frame_equal(mixed.sort("id").select("m"), expected_m.to_frame())
+            result = kontra.validate(
+                conn,
+                table=table,
+                rules=[rules.not_null("t"), rules.not_null("m")],
+                preplan="off",
+                pushdown="off",
+                tally=True,
+                save=False,
+            )
+            counts = [(r.passed, r.failed_count) for r in result.rules]
+            assert counts == [(False, 2), (False, 1)]
     finally:
         _run(f"DROP TABLE IF EXISTS {table}")
 

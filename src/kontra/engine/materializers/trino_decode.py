@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from datetime import timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -27,9 +26,9 @@ if TYPE_CHECKING:
 
 from kontra.connectors.trino_types import normalize_type, polars_dtype
 
-# Four-digit years only. Python's datetime, which the client builds, can't
-# hold others, so those values keep the client's error.
-_DATE = r"^\d{4}-\d{2}-\d{2}"
+# Years 0001 to 9999 only. Python's datetime, which the client builds, can't
+# hold others (0000 included), so those values keep the client's error.
+_DATE = r"^(000[1-9]|00[1-9]\d|0[1-9]\d{2}|[1-9]\d{3})-\d{2}-\d{2}"
 _SPECIAL_FLOATS = {"NaN": float("nan"), "Infinity": float("inf"), "-Infinity": float("-inf")}
 
 
@@ -82,7 +81,7 @@ def _fast_decoder(trino_type: str, dtype: Any) -> Callable[[list], pl.Series] | 
         def date(values: list) -> pl.Series:
             s = text(values)
             if not s.str.contains(f"{_DATE}$").all():
-                raise ValueError("date outside 0000-9999")
+                raise ValueError("date outside 0001-9999")
             return s.str.to_date("%Y-%m-%d", strict=True)
 
         return date
@@ -170,8 +169,14 @@ class FrameDecoder:
         if isinstance(dtype, pl.Datetime) and dtype.time_zone == "UTC":
             # Values in several zones have no common Polars dtype; the same
             # instants in UTC do. One chunk's zones mustn't decide whether
-            # the fetch raises.
-            objects = [v if v is None else v.astimezone(timezone.utc) for v in objects]
+            # the fetch raises. The offset is subtracted in Polars, not with
+            # Python's astimezone, so an instant beyond year 1 or 9999 in UTC
+            # ('9999-12-31 23:59:59 -05:00') loads, as it did before.
+            offsets = [None if v is None else v.utcoffset() for v in objects]
+            if all(o is not None for v, o in zip(objects, offsets) if v is not None):
+                wall = pl.Series([v if v is None else v.replace(tzinfo=None) for v in objects])
+                s = wall.cast(pl.Datetime("us")) - pl.Series(offsets, dtype=pl.Duration("us"))
+                return s.dt.replace_time_zone("UTC").cast(dtype).alias(name)
         s = pl.DataFrame(
             [(v,) for v in objects], schema=[name], orient="row", infer_schema_length=None
         ).to_series()

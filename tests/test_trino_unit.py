@@ -1124,6 +1124,46 @@ class TestTrinoFrameDecoder:
         decoder = FrameDecoder(["d"], ["date"], [pl.Date], mappers)
         with pytest.raises(TrinoDataError, match="Could not convert '-0001-01-01'"):
             decoder.add([["2026-01-01"], ["-0001-01-01"]])
+        # Year 0000 has four digits, but Python can't hold it either.
+        for trino_type, dtype, value in [
+            ("date", pl.Date, "0000-01-01"),
+            ("timestamp(6)", pl.Datetime("us"), "0000-01-01 00:00:00.000000"),
+            (
+                "timestamp(6) with time zone",
+                pl.Datetime("us", "UTC"),
+                "0000-01-01 00:00:00.000000 UTC",
+            ),
+        ]:
+            raw = trino_type.replace("(6)", "")
+            args = [] if raw == "date" else [{"kind": "LONG", "value": 6}]
+            columns = _raw_columns(("d", trino_type, raw, args))
+            mappers = (
+                RowMapperFactory().create(columns=columns, legacy_primitive_types=False).columns
+            )
+            decoder = FrameDecoder(["d"], [trino_type], [dtype], mappers)
+            with pytest.raises(TrinoDataError, match=f"Could not convert '{value}'"):
+                decoder.add([[value]])
+
+    def test_zoned_instants_beyond_pythons_years_normalize_in_polars(self):
+        from trino.mapper import RowMapperFactory
+
+        from kontra.engine.materializers.trino_decode import FrameDecoder
+
+        t = "timestamp(6) with time zone"
+        columns = _raw_columns(("t", t, "timestamp with time zone", [{"kind": "LONG", "value": 6}]))
+        mappers = RowMapperFactory().create(columns=columns, legacy_primitive_types=False).columns
+        decoder = FrameDecoder(["t"], [t], [pl.Datetime("us", "UTC")], mappers)
+        decoder.add([["9999-12-31 23:59:59.000000 -05:00"], ["0001-01-01 00:00:00.000000 +05:30"]])
+        decoder.add([["2026-01-01 00:00:00.000000 America/Los_Angeles"], [None]])
+        assert decoder.mapped_chunks == 2
+        t_ = decoder.frame()["t"]
+        assert t_.dtype == pl.Datetime("us", "UTC")
+        assert t_.dt.to_string("%Y-%m-%d %H:%M:%S").to_list() == [
+            "+10000-01-01 04:59:59",
+            "0000-12-31 18:30:00",
+            "2026-01-01 08:00:00",
+            None,
+        ]
 
     @pytest.mark.parametrize(
         ("trino_type", "fast"),
