@@ -16,6 +16,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any
 
+from kontra.connectors import trino_read
 from kontra.connectors.db_utils import get_connection_ctx
 from kontra.connectors.detection import parse_table_reference
 from kontra.connectors.handle import DatasetHandle
@@ -152,7 +153,19 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
     def _get_table_reference(self, handle: DatasetHandle) -> str:
         catalog, schema, table = self._parts(handle)
         parts = [catalog, schema, table] if catalog else [schema, table]
-        return ".".join(self._esc(p) for p in parts)
+        # Pinned to one snapshot when the validation reads a caller's autocommit
+        # connection (trino_read); empty otherwise.
+        return ".".join(self._esc(p) for p in parts) + trino_read.pin_suffix(handle)
+
+    def _execute_custom_sql_queries(self, cursor, handle, custom_sql_specs):
+        # A pinned validation pins custom SQL too: {table} becomes the pinned relation.
+        if trino_read.pin_suffix(handle):
+            table = self._get_table_reference(handle)
+            custom_sql_specs = [
+                {**spec, "sql": spec.get("sql", "").replace("{table}", table)}
+                for spec in custom_sql_specs
+            ]
+        return super()._execute_custom_sql_queries(cursor, handle, custom_sql_specs)
 
     def _get_schema_and_table(self, handle: DatasetHandle) -> tuple[str, str]:
         # custom_sql_check {table}: the catalog travels with the schema part.
@@ -175,6 +188,9 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
 
     def _column_types(self, cursor, handle: DatasetHandle) -> list[tuple[str, str]]:
         """[(column_name, data_type)] in ordinal order, from information_schema."""
+        declared = trino_read.declared_columns(handle)
+        if declared is not None:
+            return [(name, data_type) for name, data_type, _ in declared]
         catalog, schema, table = self._parts(handle)
         source = (
             f"{self._esc(catalog)}.information_schema.columns"

@@ -101,9 +101,12 @@ def resolve_connection_params(uri: str) -> TrinoConnectionParams:
     )
 
 
-def get_connection(params: TrinoConnectionParams) -> Any:
+def get_connection(params: TrinoConnectionParams, isolation_level: Any = None) -> Any:
     """
     Create a Trino DBAPI connection from resolved parameters.
+
+    With an ``isolation_level`` (a ``trino.transaction.IsolationLevel`` other
+    than ``AUTOCOMMIT``), every query on the connection runs in one transaction.
 
     Returns:
         trino.dbapi.Connection (usable as a context manager)
@@ -118,4 +121,6 @@ def get_connection(params: TrinoConnectionParams) -> Any:
     kwargs = params.connect_kwargs()
     if params.password:
         kwargs["auth"] = trino.auth.BasicAuthentication(params.user, params.password)
+    if isolation_level is not None:
+        kwargs["isolation_level"] = isolation_level
     return trino.dbapi.connect(**kwargs)

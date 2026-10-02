@@ -326,8 +326,11 @@ def get_connection_ctx(handle: "DatasetHandle", dialect: str):
             yield handle.owned_conn
         finally:
             # Kontra's validation queries are read-only. Reset the transaction
-            # between phases so a prior query cannot affect the next one.
-            handle.owned_conn.rollback()
+            # between phases so a prior query cannot affect the next one. A
+            # Trino run instead keeps one transaction for the whole validation,
+            # so every phase reads the same table state (trino_read).
+            if dialect not in ("trino", "trinos"):
+                handle.owned_conn.rollback()
     elif handle.db_params:
         # URI-based: use our connection manager
         if dialect == "postgres":

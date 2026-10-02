@@ -103,6 +103,11 @@ class TrinoMaterializer(BaseMaterializer):
 
     def schema(self) -> list[str]:
         """Return column names without loading data."""
+        from kontra.connectors import trino_read
+
+        declared = trino_read.declared_columns(self.handle)
+        if declared is not None:
+            return [name for name, _, _ in declared]
         source = (
             f"{_ident(self._catalog)}.information_schema.columns"
             if self._catalog
@@ -125,8 +130,12 @@ class TrinoMaterializer(BaseMaterializer):
         """Load table data as a Polars DataFrame with optional projection."""
         import polars as pl
 
+        from kontra.connectors import trino_read
+
         cols_sql = ", ".join(_ident(c) for c in columns) if columns else "*"
-        query = f"SELECT {cols_sql} FROM {self._qualified_table}"
+        query = (
+            f"SELECT {cols_sql} FROM {self._qualified_table}{trino_read.pin_suffix(self.handle)}"
+        )
 
         t0 = time.perf_counter()
         with self._connection_ctx() as conn:

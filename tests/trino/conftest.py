@@ -5,7 +5,7 @@ Pytest fixtures for Trino integration tests.
 Usage:
     pytest tests/trino/ -v
 
-Requires the Trino container (memory and Iceberg catalogs):
+Requires the Trino container (memory, Iceberg, and Iceberg on a JDBC catalog):
     cd tests/trino && docker compose up -d
 
 The fixture starts it if Docker is available and skips the directory if Trino

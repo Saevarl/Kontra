@@ -24,7 +24,7 @@ BYOC (Bring Your Own Connection) support:
   - `owned`:         If True, Kontra closes the connection. If False (BYOC), user closes it.
 
 This object is intentionally tiny.  `owned_conn` is transient engine state used
-only while a URI-based PostgreSQL validation run is active; it is distinct from
+only while a URI-based PostgreSQL or Trino validation run is active; it is distinct from
 the caller-owned `external_conn` used for BYOC.
 """
 
@@ -67,6 +67,9 @@ class DatasetHandle:
     # URI-based connection owned by one ValidationEngine run.  It must never
     # be used for BYOC, whose external_conn remains caller-owned.
     owned_conn: Optional[Any] = field(default=None, repr=False, compare=False)
+    # How one Trino validation reads its table (kontra.connectors.trino_read).
+    # Transient engine state, like owned_conn.
+    trino_read: Any = field(default=None, repr=False, compare=False)
 
     # Query source: when set, this handle is a read-only SELECT to run on the
     # resolved engine (via external_conn / db_params) instead of a table read.

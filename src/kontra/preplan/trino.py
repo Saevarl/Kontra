@@ -43,6 +43,11 @@ def _parts(handle: DatasetHandle) -> tuple[str | None, str, str]:
 
 def _fetch_nullability(handle: DatasetHandle) -> dict[str, bool]:
     """lowercased column name -> declared nullable, from information_schema."""
+    from kontra.connectors import trino_read
+
+    declared = trino_read.declared_columns(handle)
+    if declared is not None:
+        return {name.lower(): nullable for name, _, nullable in declared}
     from kontra.connectors.db_utils import get_connection_ctx
     from kontra.engine.sql_ir import esc_ident, lit_str
 
