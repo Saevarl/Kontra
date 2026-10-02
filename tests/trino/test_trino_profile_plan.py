@@ -210,7 +210,10 @@ def test_value_queries_give_the_sequential_answers(table, monkeypatch):
 
 @pytest.fixture(params=[(catalog, buckets) for catalog in CATALOGS[1:] for buckets in (99, 100)])
 def files_table(request, trino_container):
-    """An Iceberg table with exactly 99 or 100 data files (one per bucket)."""
+    """An Iceberg table with exactly 99 or 100 data files (one per bucket).
+
+    ``n`` is always NULL, so a sample's null count of ``n`` is the rows it used.
+    """
     catalog, buckets = request.param
     fq = f"{catalog}.{SCHEMA}.files_{buckets}"
     run_sql(
@@ -218,7 +221,8 @@ def files_table(request, trino_container):
         f"DROP TABLE IF EXISTS {fq}",
         f"CREATE TABLE {fq} WITH (partitioning = ARRAY['bucket(id, {buckets})']) AS "
         "SELECT CAST(i AS bigint) AS id, "
-        "CASE WHEN i % 10 = 0 THEN NULL ELSE i % 37 END AS v "
+        "CASE WHEN i % 10 = 0 THEN NULL ELSE i % 37 END AS v, "
+        "CAST(NULL AS bigint) AS n "
         f"FROM UNNEST(sequence(1, {ROWS})) AS t(i)",
     )
     _, schema, name = fq.split(".")
@@ -236,12 +240,16 @@ def test_system_sampling_needs_100_data_files(files_table, statements):
     assert (profile.row_count, profile.row_count_estimated) == (ROWS, False)
     for col in profile.columns:
         assert col.null_count_estimated and col.distinct_count_estimated
+    # The sample used as many rows as the profile reports.
+    assert _by_name(profile)["n"].null_count == 500
 
-    (stats,) = [s for s in _reads(statements, fq) if "_kontra_sample" in s]
+    sampled = [s for s in _reads(statements, fq) if "_kontra_sample" in s]
     if files >= 100:
-        # 10% at least: ten files of 100.
-        assert "TABLESAMPLE SYSTEM (10.0) LIMIT 500" in stats
+        # 25 files of 100: the 10 the sample needs, and three deviations more.
+        assert "TABLESAMPLE SYSTEM (25.0) LIMIT 500" in sampled[0]
+        assert len(sampled) in (1, 2)  # a short sample falls back to the head
     else:
+        (stats,) = sampled
         assert "TABLESAMPLE" not in stats and "LIMIT 500) AS _kontra_sample" in stats
     assert sum("$files" in s for s in statements) == 1
 
@@ -259,6 +267,24 @@ def test_an_empty_system_sample_falls_back_to_the_head(files_table, monkeypatch,
     # The head sample's answers: some of its 500 rows (a tenth of the table's v is NULL).
     v = _by_name(profile)["v"]
     assert 0 < v.null_count < 500 and v.null_count_estimated
+    assert _by_name(profile)["n"].null_count == profile.sample_size == 500
+    assert profile.row_count == ROWS
+
+
+def test_a_short_system_sample_falls_back_to_the_head(files_table, monkeypatch, statements):
+    fq, _ = files_table
+    # SYSTEM (50) picks about 2,500 of 5,000 rows: never 4,000.
+    monkeypatch.setattr(TrinoBackend, "_sample_percent", lambda self: 50.0)
+    profile = kontra.profile(uri(fq), preset="scout", sample=4000, save=False)
+
+    sampled = [s for s in statements if "_kontra_sample" in s]
+    assert len(sampled) == 2
+    assert "TABLESAMPLE SYSTEM (50.0) LIMIT 4000" in sampled[0]
+    assert "TABLESAMPLE" not in sampled[1] and "LIMIT 4000) AS _kontra_sample" in sampled[1]
+    # The rows used are the rows reported, in the profile and its LLM text.
+    assert profile.sampled and profile.sample_size == 4000
+    assert _by_name(profile)["n"].null_count == 4000
+    assert "(sampled: 4,000 rows)" in profile.to_llm()
     assert profile.row_count == ROWS
 
 
