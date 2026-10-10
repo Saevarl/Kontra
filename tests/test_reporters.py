@@ -2,9 +2,9 @@
 """Tests for Kontra reporters."""
 
 import json
+import re
 from datetime import datetime
 
-import pytest
 
 from kontra.reporters.json_reporter import (
     build_payload,
@@ -229,27 +229,23 @@ class TestJSONReporter:
         assert len(payload["engine_version"]) > 0
 
     def test_schema_version_constant(self):
-        """SCHEMA_VERSION is defined."""
-        assert SCHEMA_VERSION is not None
-        assert len(SCHEMA_VERSION) > 0
+        """SCHEMA_VERSION is a semantic version string."""
+        assert re.fullmatch(r"\d+\.\d+", SCHEMA_VERSION), SCHEMA_VERSION
 
 
 class TestRichReporter:
     """Tests for Rich reporter (placeholder for future tests)."""
 
-    def test_import(self):
-        """Rich reporter can be imported."""
+    def test_module_exposes_render_functions(self):
+        """Rich reporter module exposes its reporting entry points."""
         from kontra.reporters import rich_reporter
-        assert rich_reporter is not None
+        assert callable(rich_reporter.report_success)
+        assert callable(rich_reporter.report_failure)
+        assert callable(rich_reporter.report_line)
 
 
 class TestScoutReporters:
     """Tests for Scout profile reporters."""
-
-    def test_json_reporter_import(self):
-        """Scout JSON reporter can be imported."""
-        from kontra.scout.reporters import json_reporter
-        assert json_reporter is not None
 
     def test_render_profile_function(self):
         """render_profile function exists."""

@@ -360,19 +360,18 @@ class TestValidationResult:
     """Tests for ValidationResult class."""
 
     def test_result_properties(self, sample_df):
-        """ValidationResult has correct properties."""
+        """ValidationResult properties carry the correct values."""
         result = kontra.validate(sample_df, rules=[
             rules.not_null("id"),
             rules.unique("id"),
         ], save=False)
 
-        assert hasattr(result, "passed")
-        assert hasattr(result, "dataset")
-        assert hasattr(result, "total_rules")
-        assert hasattr(result, "passed_count")
-        assert hasattr(result, "failed_count")
-        assert hasattr(result, "warning_count")
-        assert hasattr(result, "rules")
+        assert result.passed is True
+        assert result.total_rules == 2
+        assert result.passed_count == 2
+        assert result.failed_count == 0
+        assert result.warning_count == 0
+        assert len(result.rules) == 2
 
     def test_result_blocking_failures(self, df_with_nulls):
         """blocking_failures returns failed blocking rules."""
@@ -733,20 +732,11 @@ class TestImports:
         from kontra import rules
         assert hasattr(rules, "not_null")
 
-    def test_import_result_types(self):
-        """Can import result types."""
-        from kontra import ValidationResult, RuleResult, Suggestions
-        assert ValidationResult is not None
-
-    def test_import_profile_types(self):
-        """Can import profile types."""
-        from kontra import DatasetProfile, ColumnProfile
-        assert DatasetProfile is not None
-
     def test_import_diff(self):
-        """Can import Diff."""
+        """Diff exposes the documented attributes."""
         from kontra import Diff
-        assert Diff is not None
+        # Importing is checked by collection; verify the surface we rely on.
+        assert hasattr(Diff, "from_state_diff")
 
     def test_import_config_functions(self):
         """Can import config functions."""
@@ -883,16 +873,15 @@ rules:
         # Now diff should return a Diff object
         diff = kontra.diff(str(contract_path))
 
-        # Should return a Diff (not None)
-        assert diff is not None
+        # Should return a Diff with the right shape for identical runs
         assert isinstance(diff, Diff)
-
-        # Should have expected attributes
-        assert hasattr(diff, "has_changes")
-        assert hasattr(diff, "regressed")
+        assert diff.has_changes is False
+        assert diff.regressed is False
 
     def test_diff_to_llm(self, sample_df, tmp_path, monkeypatch):
         """diff().to_llm() returns token-optimized string."""
+        from kontra import Diff
+
         # Set up temp directory as cwd for state storage
         monkeypatch.chdir(tmp_path)
 
@@ -912,14 +901,15 @@ rules:
 
         # Get diff
         diff = kontra.diff(str(contract_path))
-        assert diff is not None
+        assert isinstance(diff, Diff)
 
         # to_llm should return a string
         llm_output = diff.to_llm()
         assert isinstance(llm_output, str)
         assert len(llm_output) > 0
-        # Should contain some expected content
-        assert "Diff" in llm_output or "diff" in llm_output.lower()
+        # Header identifies the contract and diff status
+        assert "Diff" in llm_output
+        assert "test_diff_llm_contract" in llm_output
 
 
 # =============================================================================
@@ -972,11 +962,10 @@ environments:
         cfg_prod = kontra.config(env="production")
         assert cfg_prod.preplan == "on"
 
-    def test_list_datasources_empty(self):
-        """list_datasources returns empty when no config."""
-        result = kontra.list_datasources()
-        # May return empty dict or None depending on config state
-        assert result is None or isinstance(result, dict)
+    def test_list_datasources_empty(self, tmp_path, monkeypatch):
+        """list_datasources returns an empty dict with no configured datasources."""
+        monkeypatch.chdir(tmp_path)  # no .kontra/ config here
+        assert kontra.list_datasources() == {}
 
 
 # =============================================================================
@@ -1518,8 +1507,9 @@ class TestEdgeCases:
             stats="summary",
             save=False,
         )
-        # Stats should be included in result
-        assert result.stats is not None or result.passed  # Just verify it runs
+        # Stats should be included in result with the dataset row count
+        assert result.stats is not None
+        assert result.stats["dataset"]["nrows"] == len(sample_df)
 
     def test_scout_with_sample(self, sample_df):
         """scout with sample parameter."""

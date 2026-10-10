@@ -94,9 +94,9 @@ def test_csv_projection_independence(write_contract, small_mixed_users_csv, run_
     # Independence invariants
     assert c1["required_count"] == 9
     assert c3["required_count"] == 9
-    # Projection off should load >= available (i.e., all columns)
-    assert c2["loaded_count"] >= c2["available_count"] or c2["loaded_count"] == c2["available_count"]
-    assert c4["loaded_count"] >= c4["available_count"] or c4["loaded_count"] == c4["available_count"]
+    # Projection off should load all columns (no pruning)
+    assert c2["loaded_count"] == c2["available_count"]
+    assert c4["loaded_count"] == c4["available_count"]
     # Projection on should load <= available
     assert c1["loaded_count"] <= c1["available_count"]
     assert c3["loaded_count"] <= c3["available_count"]

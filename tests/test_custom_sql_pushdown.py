@@ -300,35 +300,62 @@ class TestToCountQuery:
         # Should not have the original columns
         assert ", B," not in result.upper()
 
+    def _exec(self, sql: str) -> int:
+        """Run a wrapped count query against a real DuckDB table."""
+        import duckdb
+        con = duckdb.connect()
+        con.execute(
+            "CREATE TABLE users AS "
+            "SELECT CASE WHEN i % 4 = 0 THEN 'east' WHEN i % 4 = 1 THEN 'west' "
+            "WHEN i % 4 = 2 THEN 'east' ELSE 'north' END AS region, i AS id, "
+            "-1 AS x FROM range(200) t(i)"
+        )
+        # region: east=100, west=50, north=50; groups with >1 rows: all 3;
+        # x < 0 for all 200 rows.
+        try:
+            return con.execute(sql).fetchone()[0]
+        finally:
+            con.close()
+
     def test_distinct_is_wrapped(self):
-        """SELECT DISTINCT is wrapped, not rewritten."""
+        """SELECT DISTINCT is wrapped, not rewritten — and the wrapped query
+        counts distinct values, not rows."""
         success, result = to_count_query("SELECT DISTINCT region FROM users")
         assert success is True
         assert "COUNT(*)" in result.upper()
         # Should be wrapped (subquery)
-        assert "_V" in result.upper() or "_v" in result
+        assert "_v" in result.lower()
+        # Semantic check: 3 distinct regions among 200 rows
+        assert self._exec(result) == 3
 
     def test_group_by_is_wrapped(self):
-        """GROUP BY query is wrapped."""
+        """GROUP BY query is wrapped — and the wrapped query counts groups
+        passing HAVING, not rows."""
         success, result = to_count_query(
             "SELECT region FROM users GROUP BY region HAVING COUNT(*) > 1"
         )
         assert success is True
         assert "COUNT(*)" in result.upper()
         # Should be wrapped
-        assert "_V" in result.upper() or "_v" in result
+        assert "_v" in result.lower()
         # Original GROUP BY should be in subquery
         assert "GROUP BY" in result.upper()
+        # Semantic check: all 3 groups have >1 member
+        assert self._exec(result) == 3
 
     def test_limit_is_wrapped(self):
-        """LIMIT query is wrapped to preserve limit semantics."""
+        """LIMIT query is wrapped so the count reflects the LIMIT — the LIMIT
+        must stay inside the subquery, not outside it."""
         success, result = to_count_query("SELECT * FROM users WHERE x < 0 LIMIT 100")
         assert success is True
         assert "COUNT(*)" in result.upper()
         # Should be wrapped
-        assert "_V" in result.upper() or "_v" in result
+        assert "_v" in result.lower()
         # LIMIT should be preserved in subquery
-        assert "LIMIT" in result.upper() or "100" in result
+        assert "LIMIT" in result.upper()
+        # Semantic check: exactly 100 rows are counted, not all 200. A LIMIT
+        # placed outside the subquery would still return 200 here.
+        assert self._exec(result) == 100
 
     def test_postgres_dialect(self):
         """PostgreSQL dialect is handled."""

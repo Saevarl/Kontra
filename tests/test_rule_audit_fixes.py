@@ -97,12 +97,15 @@ class TestRangeNaNViolation:
         """is_nan gating on dtype avoids the not_null-style crash on non-float.
 
         is_float() is False for Utf8, so is_nan() is never called on a string
-        column. The rule must run without raising InvalidOperationError.
+        column. The rule must run cleanly — not surface an internal
+        "Rule execution failed" error result — and must pass (no numeric
+        range violation is meaningful on strings).
         """
         df = pl.DataFrame({"v": ["a", "b", "c"]})
-        # Should not raise (regression guard for the is_nan gating).
         result = kontra.validate(df, rules=[rules.range("v", min=0)])
-        assert result is not None
+        assert result.passed is True
+        assert result.rules[0].failed_count == 0
+        assert "execution failed" not in result.rules[0].message.lower()
 
     def test_compile_predicate_min_only_returns_none(self):
         """Min-only routes to validate() (dtype-safe NaN handling)."""
@@ -204,13 +207,18 @@ class TestMaxRowsNegativeThreshold:
         with pytest.raises(RuleParameterError):
             MaxRowsRule("max_rows", {"threshold": -1})
 
-    def test_zero_is_allowed(self):
-        rule = MaxRowsRule("max_rows", {"value": 0})
-        assert rule is not None
-
-    def test_positive_is_allowed(self):
-        rule = MaxRowsRule("max_rows", {"value": 100})
-        assert rule is not None
+    @pytest.mark.parametrize("threshold,n_rows,expected_passed", [
+        (0, 0, True),    # empty frame satisfies max_rows=0
+        (0, 3, False),   # 3 rows exceeds max_rows=0
+        (100, 3, True),  # 3 rows is within max_rows=100
+    ])
+    def test_max_rows_threshold_outcomes(self, threshold, n_rows, expected_passed):
+        """max_rows thresholds are accepted at construction and produce the
+        right validation outcome (0 is a legal boundary)."""
+        rule = MaxRowsRule("max_rows", {"value": threshold})  # must not raise
+        df = pl.DataFrame({"id": range(n_rows)})
+        result = kontra.validate(df, rules=[rules.max_rows(threshold)], save=False)
+        assert result.passed is expected_passed
 
     def test_parity_with_min_rows(self):
         """max_rows now mirrors min_rows negative-threshold rejection."""

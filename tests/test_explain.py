@@ -242,15 +242,17 @@ class TestExplainEdgeCases:
         assert isinstance(result, ExplainResult)
         assert result.total_rules == 2
 
-    def test_explain_does_not_execute(self, sample_df, multi_rule_contract):
-        """Explain mode should not modify data or save state."""
-        # Just verify it returns without error and is an ExplainResult
-        result = kontra.validate(
-            sample_df, multi_rule_contract, explain=True,
-        )
+    def test_explain_does_not_execute(self, sample_df, multi_rule_contract, monkeypatch):
+        """Explain mode must plan only: the engine must never run validation."""
+        from unittest.mock import patch
+        from kontra.engine.engine import ValidationEngine
+
+        with patch.object(ValidationEngine, "run", side_effect=AssertionError("explain executed validation")) as run:
+            result = kontra.validate(
+                sample_df, multi_rule_contract, explain=True,
+            )
+        run.assert_not_called()
         assert isinstance(result, ExplainResult)
-        # ExplainResult should NOT have validation result attributes
-        assert not hasattr(result, "passed") or not isinstance(getattr(result, "passed", None), bool)
 
     def test_explain_empty_rules(self, sample_df, tmp_path):
         """Explain with no rules should return empty result."""

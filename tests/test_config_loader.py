@@ -369,28 +369,12 @@ class TestFromUri:
 
     def test_from_uri_s3_without_s3fs(self, monkeypatch):
         """from_uri raises helpful error when s3fs not installed."""
-        # This test may actually work if s3fs is installed,
-        # so we test the S3 path detection instead
-        uri = "s3://bucket/contract.yml"
-
-        # Verify it routes to from_s3
-        # We can't easily test the import error, but we can verify
-        # from_uri detects S3 URIs correctly
+        # Hide fsspec (and thus s3fs, which imports it) from the import cache;
+        # setitem(None) makes any subsequent `import fsspec` raise ImportError.
         import sys
-        original_modules = sys.modules.copy()
-
-        try:
-            # Mock s3fs not being available
-            if 'fsspec' in sys.modules:
-                del sys.modules['fsspec']
-            # This should raise when trying to load from S3
-            with pytest.raises((RuntimeError, ImportError)):
-                ContractLoader.from_s3(uri)
-        except:
-            # s3fs might be installed, which is also fine
-            pass
-        finally:
-            sys.modules.update(original_modules)
+        monkeypatch.setitem(sys.modules, "fsspec", None)
+        with pytest.raises((RuntimeError, ImportError), match="s3fs"):
+            ContractLoader.from_s3("s3://bucket/contract.yml")
 
     def test_from_uri_case_insensitive_s3(self, tmp_path):
         """from_uri is case insensitive for S3 prefix."""

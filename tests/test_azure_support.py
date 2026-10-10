@@ -318,12 +318,17 @@ class TestAzureUriToPath:
 class TestPyArrowAzureSasToken:
     """Test SAS token handling for PyArrow AzureFileSystem."""
 
-    def test_sas_token_with_leading_question_mark_preserved(self):
-        """PyArrow requires SAS token WITH leading '?' - ensure it's preserved."""
-        from kontra.scout.backends.duckdb_backend import DuckDBBackend
+    def _sas_token_as_seen_by_pyarrow(self, sas_token: str) -> str:
+        """Run _get_parquet_metadata with AzureFileSystem patched out and return
+        the sas_token kwarg PyArrow would have received."""
+        from unittest.mock import patch
+        import importlib
+        # NOTE: `kontra.scout` is shadowed by a kontra.scout() function, so the
+        # submodule must be reached via importlib, not `import ... as`.
+        db = importlib.import_module("kontra.scout.backends.duckdb_backend")
+        DuckDBBackend = db.DuckDBBackend
         from kontra.connectors.handle import DatasetHandle
 
-        # SAS token without leading ?
         handle = DatasetHandle(
             uri="abfss://container@account.dfs.core.windows.net/data.parquet",
             scheme="abfss",
@@ -331,36 +336,27 @@ class TestPyArrowAzureSasToken:
             format="parquet",
             fs_opts={
                 "azure_account_name": "testaccount",
-                "azure_sas_token": "sv=2021-06-08&ss=b&srt=co",  # No leading ?
+                "azure_sas_token": sas_token,
             },
         )
-
-        # The backend should add the leading ? when preparing for PyArrow
         backend = DuckDBBackend(handle)
+        with patch.object(db.pafs, "AzureFileSystem", side_effect=OSError("stop")) as m:
+            try:
+                backend._get_parquet_metadata()
+            except OSError:
+                pass  # expected — the mock refuses the connection
+            assert m.called, "AzureFileSystem was never constructed with the SAS token"
+            return m.call_args.kwargs["sas_token"]
 
-        # We can't fully test without Azure, but we can verify the code path exists
-        # by checking the method exists and handles the token
-        assert hasattr(backend, "_get_parquet_metadata")
+    def test_sas_token_with_leading_question_mark_preserved(self):
+        """PyArrow requires SAS token WITH leading '?' - backend adds it."""
+        got = self._sas_token_as_seen_by_pyarrow("sv=2021-06-08&ss=b&srt=co")
+        assert got == "?sv=2021-06-08&ss=b&srt=co"
 
     def test_sas_token_already_has_question_mark(self):
-        """SAS token already with '?' should not get double '?'."""
-        from kontra.scout.backends.duckdb_backend import DuckDBBackend
-        from kontra.connectors.handle import DatasetHandle
-
-        # SAS token with leading ?
-        handle = DatasetHandle(
-            uri="abfss://container@account.dfs.core.windows.net/data.parquet",
-            scheme="abfss",
-            path="abfss://container@account.dfs.core.windows.net/data.parquet",
-            format="parquet",
-            fs_opts={
-                "azure_account_name": "testaccount",
-                "azure_sas_token": "?sv=2021-06-08&ss=b&srt=co",  # Has leading ?
-            },
-        )
-
-        backend = DuckDBBackend(handle)
-        assert hasattr(backend, "_get_parquet_metadata")
+        """SAS token already with '?' should not get a double '?'."""
+        got = self._sas_token_as_seen_by_pyarrow("?sv=2021-06-08&ss=b&srt=co")
+        assert got == "?sv=2021-06-08&ss=b&srt=co"
 
 
 class TestAzurePreplanHelpers:

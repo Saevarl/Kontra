@@ -2,8 +2,6 @@
 """Tests for Kontra CLI commands."""
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -22,9 +20,9 @@ runner = CliRunner()
 
 
 @pytest.fixture
-def tmp_project(tmp_path):
-    """Create a temporary project directory."""
-    os.chdir(tmp_path)
+def tmp_project(tmp_path, monkeypatch):
+    """Create a temporary project directory and chdir into it (restored after)."""
+    monkeypatch.chdir(tmp_path)
     return tmp_path
 
 
@@ -159,16 +157,19 @@ class TestValidate:
         result = runner.invoke(app, ["validate", str(sample_contract), "-o", "json"])
         assert result.exit_code == 0
 
-        # Should be valid JSON
+        # Must be parseable JSON with the core payload keys
         output = json.loads(result.output)
-        # Check for expected keys (could be "summary" or "validation")
-        assert "results" in output or "rules" in output or "dataset_name" in output
+        assert "dataset_name" in output
+        assert "passed" in output
+        assert "results" in output
 
     def test_validate_with_stats(self, sample_contract):
         """Validate with stats output."""
         result = runner.invoke(app, ["validate", str(sample_contract), "--stats", "summary"])
         assert result.exit_code == 0
-        assert "Stats" in result.output or "rows=" in result.output
+        # The stats line reports the dataset shape: 'rows=5  cols=5'
+        assert "Stats" in result.output
+        assert "rows=5" in result.output
 
     def test_validate_dry_run(self, sample_contract):
         """Validate --dry-run checks contract without running."""
@@ -253,8 +254,10 @@ class TestProfile:
         """Profile profiles a dataset."""
         result = runner.invoke(app, ["profile", str(sample_parquet)])
         assert result.exit_code == 0
-        # Should show column info
-        assert "id" in result.output or "name" in result.output
+        # Header reports the dataset shape for a 5-row, 5-column file
+        assert "Rows: 5 | Columns: 5" in result.output
+        # Every column is listed
+        assert "id" in result.output and "name" in result.output
 
     def test_profile_scout_preset(self, sample_parquet):
         """Profile with scout preset (quick recon)."""
@@ -327,9 +330,9 @@ class TestProfile:
         assert result.exit_code == 0
 
     def test_profile_file_not_found(self):
-        """Profile returns non-zero exit code for missing file."""
+        """Profile returns exit code 3 (runtime error) for missing file."""
         result = runner.invoke(app, ["profile", "nonexistent.parquet"])
-        assert result.exit_code != 0  # Could be 2 (config error) or 3 (runtime error)
+        assert result.exit_code == 3
 
 
 # =============================================================================
@@ -376,8 +379,10 @@ class TestConfig:
             output = json.loads(json_str)
             assert "preplan" in output
         else:
-            # Output might not be pure JSON, just check it's not empty
-            assert len(result.output) > 0
+            pytest.fail(
+                "config show -o json emitted no JSON object — "
+                "output was: %r" % result.output[:200]
+            )
 
     def test_config_path_exists(self, tmp_project):
         """Config path shows existing config."""
@@ -410,8 +415,8 @@ class TestDiff:
 
         result = runner.invoke(app, ["diff"])
         assert result.exit_code == 0
-        # Should have some diff output
-        assert "Diff" in result.output or "No validation" in result.output or "Only one" in result.output
+        # Diff header names the contract
+        assert "Diff: test_contract" in result.output
 
     def test_diff_json_output(self, tmp_project, sample_contract):
         """Diff with JSON output."""
@@ -420,8 +425,10 @@ class TestDiff:
         runner.invoke(app, ["validate", str(sample_contract)])
 
         result = runner.invoke(app, ["diff", "-o", "json"])
-        # Should produce output (may be JSON or message)
-        assert len(result.output) > 0
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["contract_name"] == "test_contract"
+        assert "has_regressions" in payload
 
     def test_diff_llm_output(self, tmp_project, sample_contract):
         """Diff with LLM output format."""
@@ -429,7 +436,9 @@ class TestDiff:
         runner.invoke(app, ["validate", str(sample_contract)])
 
         result = runner.invoke(app, ["diff", "-o", "llm"])
-        assert len(result.output) > 0
+        assert result.exit_code == 0
+        assert result.output.startswith("# Diff: test_contract")
+        assert "No changes detected." in result.output
 
 
 # =============================================================================
@@ -441,19 +450,22 @@ class TestErrorHandling:
     """Tests for CLI error handling."""
 
     def test_invalid_yaml_contract(self, tmp_path):
-        """Invalid YAML returns non-zero exit code."""
+        """Invalid YAML returns exit code 2 (config error)."""
         invalid = tmp_path / "invalid.yml"
         invalid.write_text("{{invalid yaml")
 
         result = runner.invoke(app, ["validate", str(invalid)])
-        assert result.exit_code != 0  # Could be 2 or 3
+        assert result.exit_code == 2
 
     def test_verbose_errors(self, tmp_path):
-        """--verbose shows detailed errors."""
+        """--verbose shows the full traceback; without it only a hint."""
         invalid = tmp_path / "invalid.yml"
         invalid.write_text("{{invalid yaml")
 
+        plain = runner.invoke(app, ["validate", str(invalid)])
+        assert plain.exit_code == 2
+        assert "Traceback" not in plain.output
+
         result = runner.invoke(app, ["validate", str(invalid), "--verbose"])
-        assert result.exit_code != 0
-        # Should have error message
-        assert "Error" in result.output or "error" in result.output.lower()
+        assert result.exit_code == 2
+        assert "Traceback" in result.output

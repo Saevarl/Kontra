@@ -175,7 +175,6 @@ class TestValidateWithStorageOptions:
                 "summary": {"passed": True, "failed_count": 0, "total_rules": 1},
                 "results": [],
             }):
-                # This will fail because mock doesn't fully work, but we can check the call
                 try:
                     kontra.validate(
                         "s3://bucket/test.parquet",
@@ -183,13 +182,16 @@ class TestValidateWithStorageOptions:
                         storage_options={"aws_region": "us-west-2"},
                         save=False,
                     )
-                except Exception:
+                # The mock's patched __init__ leaves no _handle, so any code
+                # that touches the unmocked engine internals raises here; that
+                # is fine — we only care about the constructor call below.
+                except AttributeError:
                     pass
 
-                # Check that storage_options was passed
-                if mock_init.called:
-                    call_kwargs = mock_init.call_args[1]
-                    assert call_kwargs.get("storage_options") == {"aws_region": "us-west-2"}
+                # The engine must actually be constructed with the options
+                mock_init.assert_called_once()
+                call_kwargs = mock_init.call_args.kwargs
+                assert call_kwargs.get("storage_options") == {"aws_region": "us-west-2"}
 
 
 class TestProfileWithStorageOptions:
