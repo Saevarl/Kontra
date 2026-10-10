@@ -91,8 +91,16 @@ class ConditionalRangeRule(BaseRule):
         # Validate parameters at construction time
         self._column = self._get_required_param("column", str)
         self._when_expr = self._get_required_param("when", str)
-        self._min_val: Optional[Union[int, float]] = params.get("min")
-        self._max_val: Optional[Union[int, float]] = params.get("max")
+        # Coerce string params to numeric (same fix as RangeRule / BUG F-032):
+        # YAML may pass min: "5", and comparing "5" > "10" lexicographically
+        # would reject a valid contract at construction time.
+        from kontra.rule_defs.builtin.range import RangeRule
+        self._min_val: Optional[Union[int, float]] = RangeRule._coerce_numeric_param(
+            params.get("min"), "min", rule_name="conditional_range"
+        )
+        self._max_val: Optional[Union[int, float]] = RangeRule._coerce_numeric_param(
+            params.get("max"), "max", rule_name="conditional_range"
+        )
 
         # At least one bound must be provided
         if self._min_val is None and self._max_val is None:
@@ -138,26 +146,38 @@ class ConditionalRangeRule(BaseRule):
         # Build comparison expression
         return compare_fn(when_col, self._when_value)
 
-    def _build_range_violation_expr(self) -> pl.Expr:
+    def _build_range_violation_expr(self, target_dtype: Optional["pl.DataType"] = None) -> pl.Expr:
         """Build expression for range violation (NULL or out of range)."""
         import polars as pl
 
         col = pl.col(self._column)
 
+        # Coerce temporal/string bounds against the target dtype, mirroring
+        # RangeRule: `min: "2024-01-01"` on a Date column must compare as a
+        # date, not a string.
+        from kontra.rule_defs.builtin.range import _coerce_temporal
+        min_val = _coerce_temporal(self._min_val, target_dtype)
+        max_val = _coerce_temporal(self._max_val, target_dtype)
+
         # NULL is a violation
         null_expr = col.is_null()
 
         # Out of range conditions
-        if self._min_val is not None and self._max_val is not None:
-            out_of_range = (col < self._min_val) | (col > self._max_val)
-        elif self._min_val is not None:
-            out_of_range = col < self._min_val
+        if min_val is not None and max_val is not None:
+            out_of_range = (col < min_val) | (col > max_val)
+        elif min_val is not None:
+            out_of_range = col < min_val
+        elif max_val is not None:
+            out_of_range = col > max_val
         else:
-            out_of_range = col > self._max_val
+            # No bounds (should not happen — validated at construction)
+            out_of_range = pl.lit(False)
 
         return null_expr | out_of_range
 
-    def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
+    def validate(self, df: "pl.DataFrame") -> Dict[str, Any]:
+        import polars as pl
+
         # Check columns exist before accessing
         col_check = self._check_columns(df, {self._column, self._when_column})
         if col_check is not None:
@@ -165,14 +185,25 @@ class ConditionalRangeRule(BaseRule):
 
         # Build condition and range violation expressions
         condition_expr = self._build_condition_expr()
-        range_violation_expr = self._build_range_violation_expr()
+        range_violation_expr = self._build_range_violation_expr(df.schema[self._column])
 
         # Mask: True = failure
         # Failure = condition is TRUE AND (column is NULL OR outside range)
         mask_expr = condition_expr & range_violation_expr
 
-        # Evaluate the expression to get a Series
-        mask = df.select(mask_expr.alias("_mask"))["_mask"]
+        try:
+            # Evaluate the expression to get a Series
+            mask = df.select(mask_expr.alias("_mask"))["_mask"]
+        except (TypeError, pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError) as e:
+            # A bound that is incompatible with the column dtype (e.g. a
+            # date-string min on a numeric column) surfaces here as a rule
+            # failure instead of escaping as a raw polars exception.
+            return {
+                "rule_id": self.rule_id,
+                "passed": False,
+                "failed_count": int(df.height),
+                "message": f"Rule execution failed: {e}",
+            }
 
         message = self._build_message()
 
@@ -220,6 +251,12 @@ class ConditionalRangeRule(BaseRule):
         if self._max_val is not None:
             details["expected_max"] = self._max_val
 
+        # Coerce temporal/string bounds against the column dtype so the
+        # below_min/above_max comparisons match the ones used in validate().
+        from kontra.rule_defs.builtin.range import _coerce_temporal
+        min_val = _coerce_temporal(self._min_val, df.schema[self._column])
+        max_val = _coerce_temporal(self._max_val, df.schema[self._column])
+
         # Filter to rows where condition is true
         condition_mask = df.select(condition_expr.alias("_cond"))["_cond"]
         conditional_df = df.filter(condition_mask)
@@ -232,13 +269,13 @@ class ConditionalRangeRule(BaseRule):
             if null_count > 0:
                 details["null_count_when_condition"] = int(null_count)
 
-            if self._min_val is not None:
-                below_min = (col < self._min_val).sum()
+            if min_val is not None:
+                below_min = (col < min_val).sum()
                 if below_min > 0:
                     details["below_min_count"] = int(below_min)
 
-            if self._max_val is not None:
-                above_max = (col > self._max_val).sum()
+            if max_val is not None:
+                above_max = (col > max_val).sum()
                 if above_max > 0:
                     details["above_max_count"] = int(above_max)
 
@@ -315,11 +352,15 @@ class ConditionalRangeRule(BaseRule):
             condition = f"{when_col} {sql_op} {self._when_value}"
 
         # Build range violation part
+        # Quote temporal/string bounds via lit_value: an unquoted ISO date
+        # renders as arithmetic (2024-01-01 == 2022) or a binder error.
+        from kontra.engine.sql_ir import lit_value
+
         range_parts = [f"{col} IS NULL"]
         if self._min_val is not None:
-            range_parts.append(f"{col} < {self._min_val}")
+            range_parts.append(f"{col} < {lit_value(self._min_val, dialect)}")
         if self._max_val is not None:
-            range_parts.append(f"{col} > {self._max_val}")
+            range_parts.append(f"{col} > {lit_value(self._max_val, dialect)}")
 
         range_violation = " OR ".join(range_parts)
 

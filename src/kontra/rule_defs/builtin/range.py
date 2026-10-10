@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time
 from typing import Dict, Any, Optional, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -120,16 +120,34 @@ class RangeRule(BaseRule):
         if max_val is not None:
             self.params["max"] = max_val
 
-        # Validate min <= max at construction time
+        # Validate min <= max at construction time. A date min and a datetime
+        # max (or vice versa) are comparable once the date is promoted to
+        # midnight of that day; comparing them directly raises TypeError.
         if min_val is not None and max_val is not None:
-            if min_val > max_val:
+            min_cmp, max_cmp = self._comparable_bounds(min_val, max_val)
+            if min_cmp > max_cmp:
                 raise RuleParameterError(
                     "range", "min/max",
                     f"min ({min_val}) must be <= max ({max_val})"
                 )
 
     @staticmethod
-    def _coerce_numeric_param(val: Any, param_name: str) -> Any:
+    def _comparable_bounds(min_val: Any, max_val: Any) -> tuple:
+        """Return (min, max) promoted so date/datetime mixes compare.
+
+        datetime.time-only comparison between a date and a datetime raises
+        TypeError in Python; promote the date to datetime at midnight.
+        """
+        if isinstance(min_val, date) and not isinstance(min_val, datetime) \
+                and isinstance(max_val, datetime):
+            return datetime.combine(min_val, dt_time.min), max_val
+        if isinstance(max_val, date) and not isinstance(max_val, datetime) \
+                and isinstance(min_val, datetime):
+            return min_val, datetime.combine(max_val, dt_time.min)
+        return min_val, max_val
+
+    @staticmethod
+    def _coerce_numeric_param(val: Any, param_name: str, rule_name: str = "range") -> Any:
         """Coerce a string param to numeric, or raise if not possible.
 
         YAML parsing and dict-format rules may pass "18" instead of 18.
@@ -141,7 +159,7 @@ class RangeRule(BaseRule):
         if isinstance(val, bool):
             from kontra.errors import RuleParameterError
             raise RuleParameterError(
-                "range", param_name,
+                rule_name, param_name,
                 f"must be numeric, got bool ({val})"
             )
         # Already numeric or temporal — OK
@@ -170,13 +188,13 @@ class RangeRule(BaseRule):
             # Not numeric, not temporal
             from kontra.errors import RuleParameterError
             raise RuleParameterError(
-                "range", param_name,
+                rule_name, param_name,
                 f"must be numeric (or a date/datetime string), got string: '{val}'"
             )
         # Unsupported type
         from kontra.errors import RuleParameterError
         raise RuleParameterError(
-            "range", param_name,
+            rule_name, param_name,
             f"must be numeric, got {type(val).__name__}"
         )
 
@@ -363,10 +381,16 @@ class RangeRule(BaseRule):
         col = f'"{column}"'
         conditions = []
 
+        # Quote temporal/string bounds via lit_value: an unquoted ISO date
+        # (e.g. from an unquoted YAML `min: 2024-01-01`, which safe_load turns
+        # into a datetime.date) renders as arithmetic (2024-01-01 == 2022) or
+        # a binder error on DuckDB/Postgres, and datetimes are syntax errors.
+        from kontra.engine.sql_ir import lit_value
+
         if min_val is not None:
-            conditions.append(f"{col} < {min_val}")
+            conditions.append(f"{col} < {lit_value(min_val, dialect)}")
         if max_val is not None:
-            conditions.append(f"{col} > {max_val}")
+            conditions.append(f"{col} > {lit_value(max_val, dialect)}")
 
         # NULL is also a failure
         conditions.append(f"{col} IS NULL")

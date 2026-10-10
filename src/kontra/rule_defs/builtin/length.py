@@ -48,8 +48,11 @@ class LengthRule(BaseRule):
     def __init__(self, name: str, params: Dict[str, Any]):
         super().__init__(name, params)
         self._column = self._get_required_param("column", str)
-        self._min_len: Optional[int] = params.get("min")
-        self._max_len: Optional[int] = params.get("max")
+        # Coerce string bounds (YAML/dict configs may pass "3"); otherwise
+        # min > max is compared lexicographically ("5" > "10") and vectorized
+        # length comparisons fail with a type error at runtime.
+        self._min_len: Optional[int] = self._coerce_int(params.get("min"), "min")
+        self._max_len: Optional[int] = self._coerce_int(params.get("max"), "max")
 
         # Validate at least one bound is provided
         if self._min_len is None and self._max_len is None:
@@ -69,6 +72,26 @@ class LengthRule(BaseRule):
             raise ValueError(f"Rule 'length' min must be non-negative, got {self._min_len}")
         if self._max_len is not None and self._max_len < 0:
             raise ValueError(f"Rule 'length' max must be non-negative, got {self._max_len}")
+
+    @staticmethod
+    def _coerce_int(val: Any, param_name: str) -> Optional[int]:
+        """Coerce a string param to int, or raise a clear error."""
+        if val is None:
+            return None
+        if isinstance(val, bool):
+            raise ValueError(f"Rule 'length' {param_name} must be an integer, got bool ({val})")
+        if isinstance(val, int):
+            return val
+        if isinstance(val, float) and val.is_integer():
+            return int(val)
+        if isinstance(val, str):
+            try:
+                return int(val)
+            except ValueError:
+                pass
+        raise ValueError(
+            f"Rule 'length' {param_name} must be an integer, got {type(val).__name__}: {val!r}"
+        )
 
     def required_columns(self) -> Set[str]:
         return {self._column}
@@ -181,15 +204,23 @@ class LengthRule(BaseRule):
             "max": self._max_len,
         }
 
-    def to_sql_filter(self, dialect: str = "postgres") -> str | None:
-        """Generate SQL filter for sampling failing rows."""
+    def to_sql_filter(self, dialect: str = "postgres") -> str:
+        """Generate SQL filter for sampling failing rows.
+
+        Uses the shared sql_ir renderer so sampling cannot drift from the main
+        executor: SQL Server LEN() ignores trailing spaces (use
+        LEN(x + N'.') - 1) and ClickHouse length() counts bytes (use
+        lengthUTF8()).
+        """
         col = f'"{self._column}"'
 
-        # SQL Server uses LEN(), others use LENGTH()
-        if dialect in ("mssql", "sqlserver"):
-            len_func = f"LEN({col})"
-        else:
-            len_func = f"LENGTH({col})"
+        from kontra.engine.sql_ir import renderer_for
+        ir_dialect = {
+            "mssql": "sqlserver",
+            "sqlserver": "sqlserver",
+            "clickhouse": "clickhouse",
+        }.get(dialect, "duckdb")
+        len_func = renderer_for(ir_dialect).len_of(col)
 
         conditions = [f"{col} IS NULL"]
         if self._min_len is not None:

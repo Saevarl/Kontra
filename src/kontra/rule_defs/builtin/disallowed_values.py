@@ -137,7 +137,11 @@ class DisallowedValuesRule(BaseRule):
             elif isinstance(v, bool):
                 quoted_values.append("TRUE" if v else "FALSE")
             else:
-                quoted_values.append(str(v))
+                # lit_value quotes temporal values (a YAML `2024-01-01` arrives
+                # as a datetime.date); str() would render an unquoted literal
+                # that DuckDB evaluates as integer arithmetic.
+                from kontra.engine.sql_ir import lit_value
+                quoted_values.append(lit_value(v, dialect))
 
         if not quoted_values:
             return None  # No values to check
