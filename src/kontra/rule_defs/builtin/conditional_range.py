@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Set, Union, TYPE_CHECKING
 if TYPE_CHECKING:
     import polars as pl
 
-from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.base import BaseRule, all_rows_failed
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
 from kontra.rule_defs.condition_parser import parse_condition, ConditionParseError
@@ -201,7 +201,7 @@ class ConditionalRangeRule(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": f"Rule execution failed: {e}",
             }
 

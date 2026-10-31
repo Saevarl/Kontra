@@ -726,13 +726,13 @@ class TestTrinoTypedSql:
         sql = self._select({"kind": "freshness", "column": column, "max_age_seconds": 60})
         assert sql.startswith(f'CASE WHEN MAX("{column}") IS NULL THEN -1 WHEN ')
 
-    @pytest.mark.parametrize("rows", [2, 0])
-    def test_no_timestamps_fails_with_the_row_count(self, rows):
+    def test_no_timestamps_fails_once(self):
         from kontra.engine.executors.trino_sql import _no_timestamps
 
-        result = _no_timestamps("r1", "ts", rows)
+        result = _no_timestamps("r1", "ts")
         assert result["passed"] is False
-        assert result["failed_count"] == rows
+        # One dataset-level violation, as for stale data and in Polars.
+        assert result["failed_count"] == 1
         assert result["message"] == "Column 'ts' has no non-null timestamps"
 
 
