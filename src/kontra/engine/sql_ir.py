@@ -194,6 +194,16 @@ class IsNull(Node):
 
 
 @dataclass(frozen=True)
+class IsNaN(Node):
+    """True for a NaN value. Only for numeric expressions."""
+
+    inner: Node
+
+    def sql(self, r: "Renderer") -> str:
+        return r.is_nan(self.inner.sql(r))
+
+
+@dataclass(frozen=True)
 class IsNotNull(Node):
     inner: Node
 
@@ -333,6 +343,10 @@ class Renderer:
     def len_of(self, inner_sql: str) -> str:
         return f"LENGTH({inner_sql})"
 
+    def is_nan(self, inner_sql: str) -> str:
+        """NaN test that accepts any numeric type (integers just give false)."""
+        return f"isnan({inner_sql})"
+
     def like_escape(self) -> str:
         """Trailing `` ESCAPE '\\' `` clause for LIKE. escape_like_pattern
         emits backslash-escaped metachars; most dialects need the explicit
@@ -387,6 +401,11 @@ class PostgresRenderer(Renderer):
     def cast_text(self, inner_sql: str) -> str:
         return f"{inner_sql}::text"
 
+    def is_nan(self, inner_sql: str) -> str:
+        # Postgres has no isnan(); NaN equals NaN in its total order, and
+        # integer and numeric columns compare through float8.
+        return f"({inner_sql} = 'NaN'::float8)"
+
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         escaped_pattern = pattern.replace("'", "''")
         return f"{col_sql} IS NULL OR NOT ({col_sql}::text ~ '{escaped_pattern}')"
@@ -397,6 +416,10 @@ class SqlServerRenderer(Renderer):
 
     def cast_text(self, inner_sql: str) -> str:
         return f"CAST({inner_sql} AS NVARCHAR(MAX))"
+
+    def is_nan(self, inner_sql: str) -> str:
+        # FLOAT and REAL can't hold NaN.
+        return "1=0"
 
     def len_of(self, inner_sql: str) -> str:
         # Plain LEN() ignores trailing spaces, so "abc   " reports length 3 —
@@ -442,6 +465,9 @@ class ClickHouseRenderer(Renderer):
         # compare against a string value-list. NULL propagates through
         # toString, and the value-list conditions guard NULL separately.
         return f"toString({inner_sql})"
+
+    def is_nan(self, inner_sql: str) -> str:
+        return f"isNaN(toFloat64({inner_sql}))"
 
     def len_of(self, inner_sql: str) -> str:
         # length() counts BYTES on ClickHouse; lengthUTF8() counts characters,
@@ -626,6 +652,9 @@ def trino_regex(pattern: str) -> str | None:
 class TrinoRenderer(Renderer):
     dialect: Dialect = "trino"
 
+    def is_nan(self, inner_sql: str) -> str:
+        return f"is_nan(CAST({inner_sql} AS double))"
+
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         # Only patterns in the shared Rust/Java subset reach here; the Trino
         # executor leaves the rest to Polars. Trino string literals take no
@@ -666,6 +695,25 @@ def renderer_for(dialect: Dialect) -> Renderer:
 # =============================================================================
 # Small IR-building helpers shared by rule builders
 # =============================================================================
+
+def numeric_literals(*values: Any) -> bool:
+    """Whether every non-None value is a number (bool excluded), and there is one."""
+    present = [v for v in values if v is not None]
+    return bool(present) and all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) for v in present
+    )
+
+
+def value_list_operand(col: Node, values: List[Any]) -> Node:
+    """The side of ``IN (...)`` that a value list is compared with.
+
+    Numbers compare as numbers. As text they don't match reliably: Postgres
+    renders 100.0 as '100' and -0.0 as '-0', ClickHouse 1e300 as '1e300', and
+    SQL Server keeps about six significant digits of a float. Other lists
+    compare as text so a mixed or string list can match any column type.
+    """
+    return col if numeric_literals(*values) else CastText(col)
+
 
 def bounds(expr: Node, min_val: Optional[Any], max_val: Optional[Any]) -> List[Node]:
     """Out-of-bounds comparison nodes for an expression (either bound optional).
@@ -715,7 +763,7 @@ def allowed_values_violation(column: str, values: List[Any]) -> Node:
     if not non_null_values:
         # Only None in values — everything non-null is a violation
         return IsNotNull(col)
-    in_check = In(CastText(col), non_null_values, negate=True)
+    in_check = In(value_list_operand(col, non_null_values), non_null_values, negate=True)
     if null_allowed:
         return And(IsNotNull(col), in_check)
     return Or(IsNull(col), in_check)

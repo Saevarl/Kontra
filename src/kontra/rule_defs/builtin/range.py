@@ -11,6 +11,21 @@ from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
 
 
+def nan_filter(col_sql: str, dialect: str, *bounds: Any) -> list[str]:
+    """The NaN condition for a range filter, when the bounds are numeric.
+
+    NaN is out of range, but SQL comparisons miss it (see
+    ``sql_utils._out_of_range``). A numeric bound implies a numeric column, so
+    the test is type-safe; an unknown dialect gets none.
+    """
+    from kontra.engine.sql_ir import _RENDERERS, numeric_literals
+
+    renderer = _RENDERERS.get(dialect)
+    if renderer is None or not numeric_literals(*bounds):
+        return []
+    return [renderer.is_nan(col_sql)]
+
+
 def _coerce_temporal(val: Any, target_dtype: Optional[pl.DataType] = None) -> Any:
     """Coerce a string boundary to date/datetime if it looks like one.
 
@@ -394,5 +409,6 @@ class RangeRule(BaseRule):
 
         # NULL is also a failure
         conditions.append(f"{col} IS NULL")
+        conditions += nan_filter(col, dialect, min_val, max_val)
 
         return " OR ".join(conditions)

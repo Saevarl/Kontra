@@ -82,7 +82,19 @@ def test_range_mixed_date_and_datetime_bounds_do_not_crash():
 
 def test_range_sql_filter_leaves_numeric_bounds_bare():
     r = RangeRule(name="r", params={"column": "age", "min": 0, "max": 120})
-    assert r.to_sql_filter("duckdb") == '"age" < 0 OR "age" > 120 OR "age" IS NULL'
+    assert r.to_sql_filter("duckdb") == (
+        '"age" < 0 OR "age" > 120 OR "age" IS NULL OR isnan("age")'
+    )
+
+
+def test_range_sql_filter_selects_nan_rows():
+    """NaN is out of range, and DuckDB orders it above every number, so a
+    min-only comparison alone would leave NaN rows out of the samples."""
+    r = RangeRule(name="r", params={"column": "x", "min": 0})
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t AS SELECT * FROM (VALUES (1.0), ('nan'::DOUBLE), (-1.0)) v(x)")
+    rows = con.execute(f"SELECT x FROM t WHERE {r.to_sql_filter('duckdb')}").fetchall()
+    assert sorted(str(x) for (x,) in rows) == ["-1.0", "nan"]
 
 
 def test_range_sql_filter_executes_correctly_on_duckdb():
