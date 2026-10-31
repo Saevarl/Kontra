@@ -20,6 +20,7 @@ for cold start; see the lazy-loading invariant in CLAUDE.md).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, List, Literal, Optional
 
@@ -246,6 +247,29 @@ class In(Node):
 
 
 @dataclass(frozen=True)
+class NumberIn(Node):
+    """``expr [NOT] IN (...)`` for a list of numbers.
+
+    Dialects that compared value lists as text (Postgres, SQL Server,
+    ClickHouse) get the numbers as quoted literals, which each converts to the
+    column's type. As text they didn't match (Postgres prints 100.0 as '100',
+    ClickHouse 1e300 as '1e300', SQL Server keeps about six digits of a float),
+    and as bare double literals they'd miss a REAL value such as 0.1. DuckDB and
+    Trino compared bare numbers already, which agrees with Polars, so they keep
+    doing that.
+    """
+
+    expr: Node
+    values: List[Any]
+    negate: bool = False
+
+    def sql(self, r: "Renderer") -> str:
+        keyword = "NOT IN" if self.negate else "IN"
+        render = _number_text if r.quote_numbers else str
+        return f"{self.expr.sql(r)} {keyword} ({', '.join(render(v) for v in self.values)})"
+
+
+@dataclass(frozen=True)
 class Like(Node):
     """``expr LIKE 'pattern'`` / ``expr NOT LIKE 'pattern'`` with ESCAPE '\\'."""
 
@@ -330,6 +354,8 @@ class Renderer:
     """
 
     dialect: Dialect = "duckdb"
+    # Number lists in IN (...) as quoted literals (see NumberIn).
+    quote_numbers: bool = False
 
     # --- identifier & literal primitives ---
     def ident(self, name: str) -> str:
@@ -397,14 +423,16 @@ class DuckDBRenderer(Renderer):
 
 class PostgresRenderer(Renderer):
     dialect: Dialect = "postgres"
+    quote_numbers = True
 
     def cast_text(self, inner_sql: str) -> str:
         return f"{inner_sql}::text"
 
     def is_nan(self, inner_sql: str) -> str:
-        # Postgres has no isnan(); NaN equals NaN in its total order, and
-        # integer and numeric columns compare through float8.
-        return f"({inner_sql} = 'NaN'::float8)"
+        # Postgres has no isnan(); NaN equals NaN in its total order. A numeric
+        # NaN keeps a NUMERIC column out of float8, which would overflow above
+        # ~1e308; float columns compare with it through float8.
+        return f"({inner_sql} = 'NaN'::numeric)"
 
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         escaped_pattern = pattern.replace("'", "''")
@@ -413,6 +441,7 @@ class PostgresRenderer(Renderer):
 
 class SqlServerRenderer(Renderer):
     dialect: Dialect = "sqlserver"
+    quote_numbers = True
 
     def cast_text(self, inner_sql: str) -> str:
         return f"CAST({inner_sql} AS NVARCHAR(MAX))"
@@ -459,6 +488,7 @@ class SqlServerRenderer(Renderer):
 
 class ClickHouseRenderer(Renderer):
     dialect: Dialect = "clickhouse"
+    quote_numbers = True
 
     def cast_text(self, inner_sql: str) -> str:
         # toString handles any type -> String; needed so numeric columns
@@ -704,15 +734,23 @@ def numeric_literals(*values: Any) -> bool:
     )
 
 
-def value_list_operand(col: Node, values: List[Any]) -> Node:
-    """The side of ``IN (...)`` that a value list is compared with.
+def value_list_check(col: Node, values: List[Any], negate: bool) -> Node:
+    """``col [NOT] IN (...)`` for a list of non-None values.
 
-    Numbers compare as numbers. As text they don't match reliably: Postgres
-    renders 100.0 as '100' and -0.0 as '-0', ClickHouse 1e300 as '1e300', and
-    SQL Server keeps about six significant digits of a float. Other lists
-    compare as text so a mixed or string list can match any column type.
+    A list of numbers compares with the column as numbers (NumberIn); other
+    lists compare as text, so a mixed or string list can match any column.
     """
-    return col if numeric_literals(*values) else CastText(col)
+    if numeric_literals(*values):
+        return NumberIn(col, values, negate)
+    return In(CastText(col), values, negate=negate)
+
+
+def _number_text(value: Any) -> str:
+    """A number as a string literal, integral floats as integers (5.0 -> '5') so
+    the literal also converts to an integer column."""
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return lit_str(str(int(value)))
+    return lit_str(repr(value))
 
 
 def bounds(expr: Node, min_val: Optional[Any], max_val: Optional[Any]) -> List[Node]:
@@ -763,7 +801,7 @@ def allowed_values_violation(column: str, values: List[Any]) -> Node:
     if not non_null_values:
         # Only None in values — everything non-null is a violation
         return IsNotNull(col)
-    in_check = In(value_list_operand(col, non_null_values), non_null_values, negate=True)
+    in_check = value_list_check(col, non_null_values, negate=True)
     if null_allowed:
         return And(IsNotNull(col), in_check)
     return Or(IsNull(col), in_check)

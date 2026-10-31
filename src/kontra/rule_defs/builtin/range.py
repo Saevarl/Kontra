@@ -177,6 +177,10 @@ class RangeRule(BaseRule):
                 rule_name, param_name,
                 f"must be numeric, got bool ({val})"
             )
+        # A NaN bound orders nothing, and the routes disagree on what it means.
+        if isinstance(val, float) and val != val:
+            from kontra.errors import RuleParameterError
+            raise RuleParameterError(rule_name, param_name, "must be a number, got NaN")
         # Already numeric or temporal — OK
         if isinstance(val, (int, float, date, datetime)):
             return val

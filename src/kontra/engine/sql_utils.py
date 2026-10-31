@@ -56,7 +56,7 @@ from kontra.engine.sql_ir import (
     allowed_values_violation,
     numeric_literals,
     val_list,
-    value_list_operand,
+    value_list_check,
     renderer_for,
 )
 
@@ -173,7 +173,7 @@ def _compare_violation(left: str, right: str, op: str) -> Node:
 def _disallowed_in_check(column: str, values: List[Any]) -> Node:
     """Non-null value that IS in the disallowed set."""
     col = Col(column)
-    return And(IsNotNull(col), In(value_list_operand(col, values), values, negate=False))
+    return And(IsNotNull(col), value_list_check(col, values, negate=False))
 
 
 # =============================================================================
@@ -223,7 +223,7 @@ def agg_allowed_values(
     if not non_null_values:
         return r.sum_case([IsNotNull(column).sql(r)], rule_id)
 
-    in_check = In(value_list_operand(column, non_null_values), non_null_values, negate=True)
+    in_check = value_list_check(column, non_null_values, negate=True)
     if null_allowed:
         return r.sum_case([And(IsNotNull(column), in_check).sql(r)], rule_id)
     # NULL is not allowed — count NULLs AND non-null values not in the list

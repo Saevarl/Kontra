@@ -49,6 +49,8 @@ def kind(dtype: pl.DataType) -> str:
     """The fuzzer's type family for a column, for picking a database type."""
     if dtype.is_integer():
         return "int"
+    if dtype == pl.Float32:
+        return "float32"
     if dtype.is_float():
         return "float"
     if dtype == pl.Boolean:
@@ -110,7 +112,7 @@ class Backend:
 
 class Postgres(Backend):
     name, env = "postgres", "KONTRA_FUZZ_POSTGRES"
-    TYPES: ClassVar[dict[str, str]] = {"int": "bigint", "float": "double precision",
+    TYPES: ClassVar[dict[str, str]] = {"int": "bigint", "float": "double precision", "float32": "real",
                                        "str": "text", "bool": "boolean",
                                        "datetime": "timestamp(6)", "date": "date"}
 
@@ -142,7 +144,8 @@ class Postgres(Backend):
 
 class SqlServer(Backend):
     name, env = "sqlserver", "KONTRA_FUZZ_SQLSERVER"
-    TYPES: ClassVar[dict[str, str]] = {"int": "BIGINT", "float": "FLOAT", "str": "NVARCHAR(100)",
+    TYPES: ClassVar[dict[str, str]] = {"int": "BIGINT", "float": "FLOAT", "float32": "REAL",
+                                       "str": "NVARCHAR(100)",
                                        "bool": "BIT", "datetime": "DATETIME2(6)", "date": "DATE"}
 
     def representable(self, df):
@@ -184,7 +187,8 @@ class SqlServer(Backend):
 
 class ClickHouse(Backend):
     name, env = "clickhouse", "KONTRA_FUZZ_CLICKHOUSE"
-    TYPES: ClassVar[dict[str, str]] = {"int": "Int64", "float": "Float64", "str": "String",
+    TYPES: ClassVar[dict[str, str]] = {"int": "Int64", "float": "Float64", "float32": "Float32",
+                                       "str": "String",
                                        "bool": "Bool", "datetime": "DateTime64(6)",
                                        "date": "Date32"}
 
@@ -224,7 +228,8 @@ class ClickHouse(Backend):
 
 class Trino(Backend):
     name, env = "trino", "KONTRA_FUZZ_TRINO"
-    TYPES: ClassVar[dict[str, str]] = {"int": "bigint", "float": "double", "str": "varchar",
+    TYPES: ClassVar[dict[str, str]] = {"int": "bigint", "float": "double", "float32": "real",
+                                       "str": "varchar",
                                        "bool": "boolean", "datetime": "timestamp(6)",
                                        "date": "date"}
 
