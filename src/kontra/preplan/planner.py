@@ -455,6 +455,9 @@ def preplan_single_parquet(
         # If column doesn't exist in schema, skip to Polars for proper error (BUG-014)
         if op != "dtype" and col not in schema_names_set:
             return "unknown"
+        # The not_null_when proof ignores the condition, whose column is val.
+        if op == "not_null_when" and val not in schema_names_set:
+            return "unknown"
 
         # Handle dtype checks via schema (no row-group stats needed)
         if op == "dtype":

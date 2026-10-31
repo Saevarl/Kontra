@@ -162,8 +162,9 @@ def preplan_postgres(
     for rule_id, column, op, value in predicates:
         col_stats = pg_stats.get(column)
 
-        if col_stats is None:
-            # No stats for this column (ANALYZE not run or column doesn't exist)
+        if col_stats is None or (op == "not_null_when" and value not in pg_stats):
+            # No stats for this column (ANALYZE not run or column doesn't exist),
+            # or the condition of a not_null_when reads a missing column
             rule_decisions[rule_id] = "unknown"
             continue
 

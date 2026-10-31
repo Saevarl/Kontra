@@ -9,6 +9,19 @@ if TYPE_CHECKING:
 from kontra.connectors.handle import DatasetHandle
 
 
+def present_columns(columns: list[str], available: list[str]) -> list[str]:
+    """
+    The requested columns the source has, in request order.
+
+    A rule naming a missing column is reported by the Polars tier as a config
+    error, but only if the load leaves that column out instead of raising.
+    When none of them exist, keep the first column: a zero-width Polars frame
+    has no rows, and the report still needs the row count.
+    """
+    have = set(available)
+    return [c for c in columns if c in have] or list(available[:1])
+
+
 class BaseMaterializer:
     """
     Minimal base class for materializers.

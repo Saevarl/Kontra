@@ -156,8 +156,9 @@ def preplan_sqlserver(
     for rule_id, column, op, value in predicates:
         col_meta = metadata.get(column)
 
-        if col_meta is None:
-            # Column not found in metadata
+        if col_meta is None or (op == "not_null_when" and value not in metadata):
+            # Column not found in metadata, or the condition of a
+            # not_null_when reads a missing column
             rule_decisions[rule_id] = "unknown"
             continue
 
