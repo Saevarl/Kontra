@@ -38,9 +38,13 @@ class TrinoMaterializer(BaseMaterializer):
 
     def __init__(self, handle: DatasetHandle):
         super().__init__(handle)
-        self._is_byoc = handle.external_conn is not None and handle.scheme == "byoc"
+        self._sql: str | None = getattr(handle, "sql", None)
+        self._is_byoc = handle.external_conn is not None and handle.scheme in ("byoc", "query")
 
-        if self._is_byoc:
+        if self._sql:
+            # Query source: materialize the SELECT as a subquery.
+            catalog, schema, table = None, None, None
+        elif self._is_byoc:
             if not handle.table_ref:
                 raise ValueError("BYOC handle missing table_ref")
             catalog, schema, table = parse_table_reference(handle.table_ref)
@@ -58,8 +62,11 @@ class TrinoMaterializer(BaseMaterializer):
         self._catalog: str | None = catalog
         self._schema_name = schema
         self._table_name = table
-        parts = [catalog, schema, table] if catalog else [schema, table]
-        self._qualified_table = ".".join(_ident(p) for p in parts)
+        if self._sql:
+            self._qualified_table = f"({self._sql}) AS _kontra_q"
+        else:
+            parts = [catalog, schema, table] if catalog else [schema, table]
+            self._qualified_table = ".".join(_ident(p) for p in parts)
         self._io_debug_enabled = bool(os.getenv("KONTRA_IO_DEBUG"))
         self._last_io_debug: dict[str, Any] | None = None
 
@@ -70,6 +77,16 @@ class TrinoMaterializer(BaseMaterializer):
 
     def schema(self) -> list[str]:
         """Return column names without loading data."""
+        if self._sql:
+            # Query source: describe via an empty result set.
+            with self._connection_ctx() as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(f"SELECT * FROM {self._qualified_table} LIMIT 0")
+                    cur.fetchall()
+                    return [d[0] for d in cur.description] if cur.description else []
+                finally:
+                    cur.close()
         from kontra.connectors import trino_read
 
         declared = trino_read.declared_columns(self.handle)

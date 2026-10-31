@@ -148,9 +148,8 @@ def _select_backend(handle: DatasetHandle, sample_size: Optional[int] = None):
         return SqlServerBackend(handle, sample_size=sample_size)
 
     if scheme in ("trino", "trinos"):
-        raise ValueError(
-            "Profiling Trino sources is not supported yet; kontra.validate() supports them."
-        )
+        from .backends.trino_backend import TrinoBackend
+        return TrinoBackend(handle, sample_size=sample_size)
 
     # Default to DuckDB for files (parquet, csv, etc.)
     from .backends.duckdb_backend import DuckDBBackend
@@ -1035,15 +1034,16 @@ class ScoutProfiler:
                         f"AS {esc(f'__median__{col}')}"
                     )
                 exprs.append(f"STDDEV({finite_col}) AS {esc(f'__std__{col}')}")
-            elif source_fmt in ("postgres", "clickhouse") and self.include_percentiles:
+            elif source_fmt in ("postgres", "clickhouse", "trino") and self.include_percentiles:
                 fractions = [0.5] + [p / 100 for p in self.percentiles if p != 50]
                 levels = ", ".join(str(p) for p in fractions)
                 # Keep each backend's existing exact definition: PostgreSQL
-                # interpolates, whereas ClickHouse uses quantileExact.
+                # interpolates, whereas ClickHouse uses quantileExact. The
+                # Trino backend rewrites the PostgreSQL form exactly.
                 aggregate = (
-                    f"PERCENTILE_CONT(ARRAY[{levels}]) WITHIN GROUP (ORDER BY {c})"
-                    if source_fmt == "postgres"
-                    else f"quantilesExact({levels})({c})"
+                    f"quantilesExact({levels})({c})"
+                    if source_fmt == "clickhouse"
+                    else f"PERCENTILE_CONT(ARRAY[{levels}]) WITHIN GROUP (ORDER BY {c})"
                 )
                 exprs.extend([
                     f"{aggregate} AS {esc(f'__quantiles__{col}')}",
