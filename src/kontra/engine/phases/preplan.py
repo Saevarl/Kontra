@@ -24,7 +24,7 @@ from kontra.logging import get_logger
 
 _logger = get_logger(__name__)
 
-_POSTGRES_PREPLAN_ELIGIBLE_OPS = frozenset({"not_null", "dtype", "unique"})
+_POSTGRES_PREPLAN_ELIGIBLE_OPS = frozenset({"not_null", "not_null_when", "dtype", "unique"})
 
 
 def _build_preplan_summary(

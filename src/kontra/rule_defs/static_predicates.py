@@ -7,7 +7,10 @@ from kontra.rule_defs.base import BaseRule
 
 # (rule_id, column, op, value)  -- op ∈ ALLOWED_OPS
 PredicateT = Tuple[str, str, str, Any]
-ALLOWED_OPS = {"==", "!=", ">=", ">", "<=", "<", "^=", "not_null", "dtype", "unique"}
+# "not_null_when": not_null on the rows a condition selects (conditional_not_null).
+# Metadata can prove it PASS (no nulls at all) but never FAIL (the nulls may
+# all sit outside the condition).
+ALLOWED_OPS = {"==", "!=", ">=", ">", "<=", "<", "^=", "not_null", "not_null_when", "dtype", "unique"}
 
 
 def _normalize(pairs: Iterable[PredicateT]) -> List[PredicateT]:
@@ -64,13 +67,19 @@ def _conservative_builtin_mapping(rule: BaseRule) -> List[PredicateT]:
     out: List[PredicateT] = []
 
     # not_null(column)
-    if name.endswith("not_null"):
+    if name == "not_null":
         col = params.get("column")
         # include_nan cannot be proven from Parquet null_count (NaN is not
         # counted as NULL in column stats), so it must NOT be resolved by the
         # metadata tier — defer to Polars, which checks is_nan() directly.
         if isinstance(col, str) and col and not params.get("include_nan", False):
             out.append((rid, col, "not_null", True))
+
+    # conditional_not_null(column, when) — pass-only, see ALLOWED_OPS
+    if name == "conditional_not_null":
+        col = params.get("column")
+        if isinstance(col, str) and col:
+            out.append((rid, col, "not_null_when", True))
 
     # equals / allowed_values (single value)
     if name in {"equals", "allowed_values"}:

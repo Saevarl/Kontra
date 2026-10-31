@@ -15,7 +15,7 @@ _logger = get_logger(__name__)
 
 # NOTE: The preplan consumes simple, metadata-usable predicates only.
 # Shape: (rule_id, column, op, value)
-#   op ∈ {"==","!=",">=",">","<=","<","^=","not_null","dtype"}
+#   op ∈ {"==","!=",">=",">","<=","<","^=","not_null","not_null_when","dtype"}
 #   "^=" means "string prefix"
 Predicate = Tuple[str, str, str, Any]  # (rule_id, column, op, value)
 
@@ -264,7 +264,7 @@ def _verdict_overlaps(op: str, val: Any, stats: Optional[Dict[str, Any]]) -> Opt
             return None
         upper = str(val) + "\uffff"
         return not (upper < mn or str(val) > mx)
-    if op == "not_null":
+    if op in ("not_null", "not_null_when"):
         # Overlap sense isn't meaningful; we handle not_null via _decide_fail/_decide_pass
         return None
     return None
@@ -306,7 +306,7 @@ def _decide_pass(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, A
             # prove PASS unless null_count is provably zero.
             if nulls != 0:
                 ok_all = False; break
-        elif op == "not_null":
+        elif op in ("not_null", "not_null_when"):
             # Can only prove PASS if null_count is exactly 0 for all row groups
             # null_count > 0 means violations exist; None means unknown (can't prove)
             if s.get("null_count") != 0:
@@ -468,18 +468,11 @@ def preplan_single_parquet(
                 fail_details[rule_id] = {"expected": val, "actual": actual_type}
                 return "fail_meta"
 
-        # Handle row-group stats-based predicates
-        #
-        # Conditional rules (conditional_not_null, conditional_range) apply a
-        # WHERE filter before checking the column. Metadata can prove PASS
-        # (zero nulls in entire column → zero nulls in any subset) but cannot
-        # prove FAIL (nulls may all be outside the condition's filter).
-        is_conditional = "conditional_" in rule_id
-
-        if not is_conditional:
-            stats_iter = (rgc.get(col) for rgc in rg_stats)
-            if _decide_fail(op, val, stats_iter):
-                return "fail_meta"
+        # Handle row-group stats-based predicates. The op carries the rule's
+        # semantics: _decide_fail never proves "not_null_when" (conditional).
+        stats_iter = (rgc.get(col) for rgc in rg_stats)
+        if _decide_fail(op, val, stats_iter):
+            return "fail_meta"
         # Need a fresh iterator after testing for failure.
         stats_iter = (rgc.get(col) for rgc in rg_stats)
         if _decide_pass(op, val, stats_iter):

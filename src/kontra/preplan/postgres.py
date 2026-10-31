@@ -170,7 +170,7 @@ def preplan_postgres(
         null_frac = col_stats.get("null_frac")
         n_distinct = col_stats.get("n_distinct")
 
-        if op == "not_null":
+        if op in ("not_null", "not_null_when"):
             # If null_frac is exactly 0, the column has no nulls
             if null_frac is not None and null_frac == 0:
                 rule_decisions[rule_id] = "pass_meta"
