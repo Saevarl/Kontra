@@ -271,7 +271,9 @@ scan: the row count (PostgreSQL `pg_class.reltuples`, SQL Server
 and `scan` presets (`pg_stats`, SQL Server histograms). These are estimates that
 can lag the live table. Trino has no exact catalog statistics, so Trino profiles
 use an exact `COUNT(*)` and live queries in every preset. Their only estimates
-are `scout`'s distinct counts (`approx_distinct`) and anything sampled.
+are `scout`'s distinct counts (`approx_distinct`), `scan`'s median above 1M
+profiled rows (`approx_percentile`, not labelled, like every median), and
+anything sampled.
 
 Estimated values are labelled, never presented as exact:
 
