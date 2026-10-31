@@ -9,8 +9,6 @@ rule, and counts the queries that read the table.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 import kontra
@@ -266,11 +264,11 @@ def modes(monkeypatch):
     return seen
 
 
-def test_failing_custom_sql_leaves_the_concurrent_scan_alone(table, modes):
+def test_failing_custom_sql_fails_only_its_own_rule(table, modes):
     """
     In Kontra's transaction, a custom SQL query that fails at run time aborts the
-    transaction and the queries beside it. Each failed query runs again alone in
-    a new transaction: the failing one is that rule's failure, the rest answer.
+    transaction. The queries run one at a time, and the next one runs in a new
+    transaction: the failing query is that rule's failure, the rest answer.
     """
     catalog, _ = table
     uri = f"trino://kontra@localhost:8095/{catalog}/{SCHEMA}.t"
@@ -285,19 +283,21 @@ def test_failing_custom_sql_leaves_the_concurrent_scan_alone(table, modes):
     assert modes == [trino_read.TRANSACTION]
 
 
-def test_a_commit_before_the_retry_reruns_the_validation(table, modes, monkeypatch):
-    """The retry's new transaction may read a newer state: the guard sees it, and the run reruns."""
+def test_a_commit_before_the_new_transaction_reruns_the_validation(table, modes, monkeypatch):
+    """The new transaction after a failure may read a newer state: the guard sees it, and the run reruns."""
     catalog, fq = table
     uri = f"trino://kontra@localhost:8095/{catalog}/{SCHEMA}.t"
-    retry = trino_sql.TrinoSqlExecutor._retry_alone
+    renew = trino_sql.TrinoSqlExecutor._new_transaction
     commits = [f"INSERT INTO {fq} (id, k, qty) VALUES (9999, NULL, 1)"]
 
-    def commit_then_retry(self, conn, task):
+    def commit_then_renew(conn):
         if commits:
             run_sql(commits.pop())
-        return retry(self, conn, task)
+        return renew(conn)
 
-    monkeypatch.setattr(trino_sql.TrinoSqlExecutor, "_retry_alone", commit_then_retry)
+    monkeypatch.setattr(
+        trino_sql.TrinoSqlExecutor, "_new_transaction", staticmethod(commit_then_renew)
+    )
     result = kontra.validate(uri, rules=FAILING, tally=True, save=False, preplan="off")
     by_id = {r.rule_id: r for r in result.rules}
     assert modes == [trino_read.TRANSACTION, trino_read.TRANSACTION]
@@ -341,30 +341,30 @@ def stateless(request, trino_container):
     run_sql(f"DROP TABLE IF EXISTS {source}")
 
 
-def test_callers_transaction_without_read_state_runs_custom_sql_after_the_scan(
-    stateless, modes, monkeypatch
-):
+def test_failing_custom_sql_in_a_callers_transaction_raises(stateless, modes):
     """
     A caller's transaction on a relation with no Iceberg read state still aborts
-    on a failed query. Custom SQL must run after the scan, or a failing query
-    takes the scan down with it. The scan is held back so that, run beside it,
-    the custom query would always fail first.
+    on a failed query, and Kontra can't renew it. The validation raises the cause
+    instead of running later queries (or the Polars fallback) on a dead
+    transaction. The scan runs first, so the rule queries before it answer.
     """
     from trino.transaction import IsolationLevel
 
+    statements: list[str] = []
     run = trino_sql.TrinoSqlExecutor._run
 
-    def slow_scan(conn, sql):
-        if '"__row_count"' in sql:
-            time.sleep(0.3)
+    def spy(conn, sql):
+        statements.append(sql)
         return run(conn, sql)
 
-    monkeypatch.setattr(trino_sql.TrinoSqlExecutor, "_run", staticmethod(slow_scan))
-    with connect(isolation_level=IsolationLevel.READ_UNCOMMITTED) as conn:
-        result = kontra.validate(
-            conn, table=stateless, rules=ABORTING, tally=True, save=False, preplan="off"
-        )
-    by_id = {r.rule_id: r for r in result.rules}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(trino_sql.TrinoSqlExecutor, "_run", staticmethod(spy))
+        with (
+            connect(isolation_level=IsolationLevel.READ_UNCOMMITTED) as conn,
+            pytest.raises(Exception, match="caller's transaction.*Division by zero"),
+        ):
+            kontra.validate(
+                conn, table=stateless, rules=ABORTING, tally=True, save=False, preplan="off"
+            )
     assert modes == [None]
-    assert by_id["COL:x:not_null"].passed and by_id["COL:x:not_null"].failed_count == 0
-    assert not by_id["bad"].passed and "Division by zero" in by_id["bad"].message
+    assert any('"__row_count"' in q for q in statements)

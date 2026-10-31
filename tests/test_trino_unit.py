@@ -296,6 +296,8 @@ class TestTrinoScanPlan:
 
         handle = DatasetHandle.from_uri("trino://u@host/lake/s.t")
         object.__setattr__(handle, "owned_conn", conn)
+        if not held or mode not in ("transaction", "caller_transaction"):
+            conn.transaction = None  # autocommit, as on a real connection
         if held:
             state = trino_read.TrinoReadState(
                 mode, [("a", "integer", True), ("b", "varchar", True)], data_rows=data_rows
@@ -384,22 +386,32 @@ class TestTrinoScanPlan:
         assert any("GROUP BY" in q for q in conn.sql)
         assert not any(q.startswith("SET SESSION") for q in conn.sql)
 
-    def test_side_queries_run_concurrently_at_most_four(self):
+    SIDE: ClassVar[list[dict]] = [
+        {"kind": "unique", "column": "b", "rule_id": f"u{i}", "tally": True} for i in range(3)
+    ] + [
+        {
+            "kind": "custom_sql_check",
+            "sql": f"SELECT * FROM {{table}} WHERE a < {i}",
+            "rule_id": f"c{i}",
+        }
+        for i in range(4)
+    ]
+
+    @pytest.mark.parametrize("mode", ["pinned", "bracketed"])
+    def test_side_queries_run_concurrently_at_most_four_in_autocommit(self, mode):
         conn = _ScanConn(delay=0.1)
-        specs = [
-            {"kind": "unique", "column": "b", "rule_id": f"u{i}", "tally": True} for i in range(3)
-        ] + [
-            {
-                "kind": "custom_sql_check",
-                "sql": f"SELECT * FROM {{table}} WHERE a < {i}",
-                "rule_id": f"c{i}",
-            }
-            for i in range(4)
-        ]
-        out, _ = self._run(conn, data_rows=2_000_000, specs=specs)
+        out, _ = self._run(conn, mode=mode, data_rows=2_000_000, specs=self.SIDE)
         assert conn.max_in_flight == 4
-        assert {r["rule_id"] for r in out["results"]} == {s["rule_id"] for s in specs}
+        assert {r["rule_id"] for r in out["results"]} == {s["rule_id"] for s in self.SIDE}
         assert all(r["passed"] for r in out["results"] if r["rule_id"].startswith("c"))
+
+    @pytest.mark.parametrize("mode", ["transaction", "caller_transaction"])
+    def test_queries_run_one_at_a_time_in_a_transaction(self, mode):
+        # The client shares one request among a transaction's cursors.
+        conn = _ScanConn(delay=0.02)
+        out, _ = self._run(conn, mode=mode, data_rows=2_000_000, specs=self.SIDE)
+        assert conn.max_in_flight == 1
+        assert {r["rule_id"] for r in out["results"]} == {s["rule_id"] for s in self.SIDE}
 
 
 class TestTrinoScanRecovery:
@@ -411,24 +423,33 @@ class TestTrinoScanRecovery:
         {"kind": "custom_sql_check", "sql": "SELECT * FROM {table} WHERE a = 2", "rule_id": "c2"},
     ]
 
-    def test_failed_queries_rerun_alone_in_new_transactions(self):
-        conn = _ScanConn(delay=0.05)
-        conn.fail = {"a = 1": 99, '"__row_count"': 1, "a = 2": 1}  # c1 always; the others once
+    def test_failed_user_sql_fails_its_rule_and_the_next_query_gets_a_new_transaction(self):
+        conn = _ScanConn()
+        conn.fail = {"a = 1": 1}
         out, _ = TestTrinoScanPlan._run(conn, specs=self.CUSTOM)
         by_id = {r["rule_id"]: r for r in out["results"]}
-        assert by_id["nn"]["failed_count"] == 3  # the scan, rerun
-        assert by_id["c2"]["passed"]  # rerun alone, answered
+        assert by_id["nn"]["failed_count"] == 3
+        assert by_id["c2"]["passed"]
         assert not by_id["c1"]["passed"] and "failed: " in by_id["c1"]["message"]
-        # One new transaction per retry, and one after the last retry failed.
-        assert conn.rollbacks == conn.started == 4
+        assert conn.rollbacks == conn.started == 1
         assert conn.outside_transaction == 0
-        assert sum('"__row_count"' in q for q in conn.sql) == 2
+        assert sum('"__row_count"' in q for q in conn.sql) == 1
 
-    def test_a_scan_that_fails_alone_raises(self):
+    def test_a_failed_scan_raises_and_leaves_a_live_transaction_for_the_fallback(self):
         conn = _ScanConn()
-        conn.fail = {'"__row_count"': 2}
+        conn.fail = {'"__row_count"': 1}
         with pytest.raises(RuntimeError, match="failed: SELECT count_if"):
             TestTrinoScanPlan._run(conn, specs=self.CUSTOM)
+        assert conn.rollbacks == conn.started == 1
+        assert conn.transaction is not None
+
+    def test_a_failed_session_property_is_skipped_in_a_new_transaction(self):
+        conn = _ScanConn()
+        conn.fail = {"SET SESSION": 1}
+        specs = [{"kind": "unique", "column": "b", "rule_id": "uq", "tally": True}]
+        out, _ = TestTrinoScanPlan._run(conn, data_rows=10, specs=specs)
+        assert [r["rule_id"] for r in out["results"]] == ["uq"]
+        assert conn.rollbacks == conn.started == 1
 
     @pytest.mark.parametrize("mode", ["pinned", "bracketed"])
     def test_autocommit_failures_are_not_retried(self, mode):
@@ -438,7 +459,7 @@ class TestTrinoScanRecovery:
         assert conn.rollbacks == 0
         assert not {r["rule_id"]: r for r in out["results"]}["c1"]["passed"]
 
-    def test_callers_transaction_runs_user_sql_after_the_scan_one_by_one(self):
+    def test_callers_transaction_runs_user_sql_after_the_scan(self):
         conn = _ScanConn(delay=0.05)
         specs = self.CUSTOM + [
             {"kind": "unique", "column": "b", "rule_id": "uq", "tally": True},
@@ -449,16 +470,17 @@ class TestTrinoScanRecovery:
         scan_ends = [
             i for i, (e, q) in enumerate(conn.events) if e == "end" and "WHERE a =" not in q
         ]
-        # The fused scan and the GROUP BY ran together, then each custom query alone.
         assert max(scan_ends) < min(custom)
-        assert [e for e, q in conn.events if "WHERE a =" in q] == ["start", "end", "start", "end"]
+        assert conn.max_in_flight == 1
 
-    def test_callers_transaction_is_never_rolled_back(self):
+    def test_a_failure_in_the_callers_transaction_raises_and_never_rolls_back(self):
+        # Trino aborted the caller's transaction; the later queries would fail too.
         conn = _ScanConn()
         conn.fail = {"a = 1": 1}
-        out, _ = TestTrinoScanPlan._run(conn, mode="caller_transaction", specs=self.CUSTOM)
-        assert conn.rollbacks == 0
-        assert not {r["rule_id"]: r for r in out["results"]}["c1"]["passed"]
+        with pytest.raises(RuntimeError, match="caller's transaction.*failed: SELECT"):
+            TestTrinoScanPlan._run(conn, mode="caller_transaction", specs=self.CUSTOM)
+        assert conn.rollbacks == conn.started == 0
+        assert not any("a = 2" in q for q in conn.sql)
 
     @pytest.mark.parametrize(
         ("level", "expected"), [("READ_UNCOMMITTED", True), ("AUTOCOMMIT", False)]

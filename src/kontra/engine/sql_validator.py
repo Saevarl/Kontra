@@ -446,7 +446,8 @@ def format_table_reference(
         return f"[{schema}].[{table}]"
     elif dialect == "trino":
         # Trino: "catalog"."schema"."table" (schema may carry the catalog)
-        return ".".join(f'"{part}"' for part in [*schema.split("."), table])
+        parts = [*schema.split("."), table]
+        return ".".join('"' + part.replace('"', '""') + '"' for part in parts)
     # Default: schema.table
     return f"{schema}.{table}"
 

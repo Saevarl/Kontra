@@ -33,7 +33,16 @@ The pushed rules are answered by one scan plan in both modes:
   ``GROUP BY ... HAVING count(*) > 1`` query per column, which needs little
   memory. A table of unknown size counts as large;
 * the ``GROUP BY`` queries and custom SQL run concurrently with the fused
-  scan, at most four at a time, on cursors of the validation's connection.
+  scan, at most four at a time, on cursors of the validation's connection,
+  but only in autocommit. Inside a transaction (Kontra's or a caller's) they
+  run one at a time: the client gives every cursor of a transaction one
+  shared request, whose paging state concurrent queries would overwrite.
+
+A failed query aborts a Trino transaction. In Kontra's own transaction the
+executor starts a new one before going on or raising, so later queries and
+the Polars fallback run on a live transaction (``trino_read.finish`` proves
+it read the same table state). A caller's transaction can't be renewed, so
+there a failure raises and the validation reports it.
 """
 
 from __future__ import annotations
@@ -81,6 +90,9 @@ _INTEGER = {"tinyint", "smallint", "integer", "bigint"}
 _UNIQUE_IN_SCAN_BELOW = 1_000_000
 # Queries of one validation in flight at once.
 _MAX_CONCURRENT = 4
+# The transaction a validation's queries run in (_run_tasks): Kontra's or the caller's.
+_OWN = "own"
+_CALLER = "caller"
 # A freshness cell's value when the column holds no timestamps (MAX is NULL).
 _NO_TIMESTAMPS = -1
 
@@ -330,13 +342,14 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
         return ".".join(self._esc(p) for p in parts) + trino_read.pin_suffix(handle)
 
     def _execute_custom_sql_queries(self, cursor, handle, custom_sql_specs):
-        # A pinned validation pins custom SQL too: {table} becomes the pinned relation.
-        if trino_read.pin_suffix(handle):
-            table = self._get_table_reference(handle)
-            custom_sql_specs = [
-                {**spec, "sql": spec.get("sql", "").replace("{table}", table)}
-                for spec in custom_sql_specs
-            ]
+        # {table} becomes the escaped relation, pinned when the validation is
+        # pinned. Substituted here: the catalog/schema/table parts stay apart, so
+        # a dot or quote in a name can't change the reference.
+        table = self._get_table_reference(handle)
+        custom_sql_specs = [
+            {**spec, "sql": spec.get("sql", "").replace("{table}", table)}
+            for spec in custom_sql_specs
+        ]
         return super()._execute_custom_sql_queries(cursor, handle, custom_sql_specs)
 
     def _get_schema_and_table(self, handle: DatasetHandle) -> tuple[str, str]:
@@ -434,6 +447,26 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
         Returns:
             {"results": [...], "row_count": ..., "available_cols": [...], "staging": None}
         """
+        try:
+            return self._execute(handle, compiled_plan)
+        except Exception:
+            # The pushdown phase falls back to Polars on failure, and that
+            # fetch needs a live transaction.
+            self._renew_own_transaction(handle)
+            raise
+
+    def _renew_own_transaction(self, handle: DatasetHandle) -> None:
+        """After a failure, replace Kontra's aborted transaction with a new one."""
+        state = trino_read.state_of(handle)
+        conn = handle.owned_conn
+        if state is None or state.mode != trino_read.TRANSACTION or conn is None:
+            return
+        try:
+            self._new_transaction(conn)
+        except Exception as e:  # noqa: BLE001 - the original error is the one to report
+            _logger.info("Could not renew the Trino transaction: %s", e)
+
+    def _execute(self, handle: DatasetHandle, compiled_plan: dict[str, Any]) -> dict[str, Any]:
         with self._get_connection_ctx(handle) as conn:
             cursor = conn.cursor()
             try:
@@ -494,7 +527,11 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
                 # Faster and leaner than the default strategy for a few distinct
                 # aggregates on a table this size.
                 # Only on Kontra's own connection: a caller's session is theirs.
-                self._run(conn, "SET SESSION distinct_aggregations_strategy = 'mark_distinct'")
+                try:
+                    self._run(conn, "SET SESSION distinct_aggregations_strategy = 'mark_distinct'")
+                except Exception as e:  # noqa: BLE001 - an optimization; the scan runs without it
+                    _logger.info("Trino session property not set: %s", e)
+                    self._new_transaction(conn)
 
             # COUNT(*) last, by position, so a rule id "__row_count" can't collide.
             selects.append('COUNT(*) AS "__row_count"')
@@ -506,14 +543,13 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             custom = [lambda s=s: self._custom_sql(conn, handle, s) for s in custom_sql_specs]
             mode = getattr(trino_read.state_of(handle), "mode", None)
             if trino_read.caller_transaction(handle):
-                # A failed query aborts a Trino transaction, and Kontra can't
-                # roll back the caller's: user SQL runs after the scan, one by one.
-                outputs = self._concurrently(conn, scan, recover=False)
-                outputs += [task() for task in custom]
+                transaction = _CALLER
+            elif mode == trino_read.TRANSACTION or getattr(conn, "transaction", None):
+                transaction = _OWN
             else:
-                outputs = self._concurrently(
-                    conn, scan + custom, recover=mode == trino_read.TRANSACTION
-                )
+                transaction = None
+            # User SQL last: inside a transaction, the scan runs before it can fail.
+            outputs = self._run_tasks(conn, scan + custom, transaction)
 
         fused_columns, fused_row = outputs[0]
         row_count = int(fused_row[-1] or 0)
@@ -533,48 +569,59 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             results += custom_results
         return {"results": results, "row_count": row_count, "staging": None}
 
-    def _concurrently(self, conn, tasks: list, recover: bool) -> list:
+    def _run_tasks(self, conn, tasks: list, transaction: str | None) -> list:
         """
-        Run the tasks, at most four at a time, and return their outputs in order.
+        Run the tasks and return their outputs in order.
 
-        ``recover`` is for Kontra's own transaction. A query that fails there
-        aborts the whole transaction, and the queries running beside it fail
-        too. So every task that failed runs again alone, each in a new
-        transaction: a query that fails alone fails for its own reason, and
-        the others get their answers. The new transactions read the table
-        afresh; ``trino_read.finish`` proves it was the same state.
+        In autocommit (``transaction`` None) they run concurrently, at most
+        four at a time. Inside a transaction they run one at a time: the
+        client shares one request among a transaction's cursors, and its
+        paging state isn't safe to share between concurrent queries.
+
+        A failed query aborts the transaction. In Kontra's own (``_OWN``) the
+        next task runs in a new transaction, so a failing custom SQL check
+        fails only its own rule; ``trino_read.finish`` proves the new
+        transaction read the same table state. A caller's (``_CALLER``) can't
+        be renewed, so any failure raises.
         """
-        if len(tasks) == 1 and not recover:
-            return [tasks[0]()]
-        with ThreadPoolExecutor(min(_MAX_CONCURRENT, len(tasks))) as pool:
-            futures = [pool.submit(self._attempt, task) for task in tasks]
-            attempts = [f.result() for f in futures]
+        if transaction is None and len(tasks) > 1:
+            with ThreadPoolExecutor(min(_MAX_CONCURRENT, len(tasks))) as pool:
+                attempts = list(pool.map(self._attempt, tasks))
+            return [self._output(output, error) for output, error in attempts]
         outputs = []
-        for task, (output, error) in zip(tasks, attempts):
-            if error is not None and recover:
-                output, error = self._retry_alone(conn, task)
-            if isinstance(error, Exception) and not isinstance(error, _UserSqlFailed):
-                raise error
-            outputs.append(output)
-        if recover and any(error is not None for _, error in attempts):
-            # The last retry may have failed too; start the next phase in a live transaction.
-            self._new_transaction(conn)
+        for task in tasks:
+            output, error = self._attempt(task)
+            if error is not None and transaction == _CALLER:
+                cause = error.__cause__ if isinstance(error, _UserSqlFailed) else error
+                raise RuntimeError(
+                    "A Trino query failed inside the caller's transaction, which Trino "
+                    f"has aborted, so the validation can't go on: {cause}"
+                ) from cause
+            # Raises for a failure other than user SQL's; execute() renews the transaction.
+            outputs.append(self._output(output, error))
+            if error is not None and transaction == _OWN:
+                self._new_transaction(conn)
         return outputs
+
+    @staticmethod
+    def _output(output: Any, error: BaseException | None) -> Any:
+        """The task's output; a failure other than user SQL's raises."""
+        if isinstance(error, Exception) and not isinstance(error, _UserSqlFailed):
+            raise error
+        return output
 
     @staticmethod
     def _attempt(task) -> tuple[Any, BaseException | None]:
         """(output, None), or (output, failure) for user SQL, or (None, exception)."""
         try:
             output = task()
-        except Exception as e:  # noqa: BLE001 - raised or retried by the caller
+        except Exception as e:  # noqa: BLE001 - raised by the caller
             return None, e
         if isinstance(output, _CustomOutput) and output.failure is not None:
-            return output, _UserSqlFailed(output.failure)
+            failed = _UserSqlFailed(output.failure)
+            failed.__cause__ = output.failure
+            return output, failed
         return output, None
-
-    def _retry_alone(self, conn, task) -> tuple[Any, BaseException | None]:
-        self._new_transaction(conn)
-        return self._attempt(task)
 
     @staticmethod
     def _new_transaction(conn) -> None:
