@@ -33,6 +33,9 @@ if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
     import pyarrow.fs as pafs
+
+    from kontra.api.results import ExplainResult
+    from kontra.config.models import Contract
     from kontra.state.backends.base import StateBackend
     from kontra.state.types import ValidationState
 
@@ -42,7 +45,6 @@ from kontra.connectors.db_utils import (
     open_shared_postgres_connection,
 )
 from kontra.engine.executors.registry import (
-    pick_executor,
     register_default_executors,
     register_executors_for_path,
 )

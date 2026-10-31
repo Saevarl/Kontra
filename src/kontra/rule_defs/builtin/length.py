@@ -18,7 +18,7 @@ At least one of `min` or `max` must be specified.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import polars as pl

@@ -7,7 +7,6 @@ Uses pg_stats for efficient metadata queries and standard SQL for profiling.
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle

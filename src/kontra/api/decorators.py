@@ -17,10 +17,14 @@ from typing import (
     Literal,
     Optional,
     TypeVar,
+    TYPE_CHECKING,
     Union,
 )
 
 from kontra.errors import ValidationError
+
+if TYPE_CHECKING:
+    from kontra.api.results import ValidationResult
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -31,7 +35,7 @@ OnFailMode = Literal["raise", "warn", "return_result"]
 _VALID_ON_FAIL_MODES = ("raise", "warn", "return_result")
 
 # Callback signature: (result, data) -> data (or raise)
-OnFailCallback = Callable[["ValidationResult", Any], Any]  # type: ignore
+OnFailCallback = Callable[["ValidationResult", Any], Any]
 
 # Accept either a mode string or a callback
 OnFailHandler = Union[OnFailMode, OnFailCallback]

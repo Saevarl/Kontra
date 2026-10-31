@@ -54,7 +54,6 @@ from kontra.engine.sql_ir import (
     bounds,
     when_condition,
     allowed_values_violation,
-    val_list,
     renderer_for,
 )
 

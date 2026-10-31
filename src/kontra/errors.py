@@ -527,8 +527,6 @@ class ValidationError(KontraError):
     """
 
     def __init__(self, result: "ValidationResult", message: Optional[str] = None):
-        from kontra.api.results import ValidationResult  # noqa: F811
-
         self.result = result
         if message is None:
             blocking = [r for r in result.rules if not r.passed and r.severity == "blocking"]
