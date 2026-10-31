@@ -315,6 +315,32 @@ class ClickHouseDatasourceConfig:
         return cls(**_pick_known(cls, _require_mapping(data, "ClickHouseDatasourceConfig")))
 
 
+@dataclass
+class TrinoDatasourceConfig:
+    """Trino datasource configuration."""
+
+    type: str = "trino"
+    host: str = "localhost"
+    port: int = 8080
+    user: str = ""
+    password: str = ""
+    catalog: str = ""
+    secure: bool = False
+    # Tables: map alias -> schema.table (within the catalog)
+    tables: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_literal(self.type, ("trino",), "type")
+        self.port = _coerce_int(self.port, "port")
+        self.secure = _coerce_bool(self.secure, "secure")
+        if self.tables is None:
+            self.tables = {}
+
+    @classmethod
+    def model_validate(cls, data: Any) -> TrinoDatasourceConfig:
+        return cls(**_pick_known(cls, _require_mapping(data, "TrinoDatasourceConfig")))
+
+
 # Union type for datasource configs
 DatasourceConfig = Union[
     PostgresDatasourceConfig,
@@ -322,6 +348,7 @@ DatasourceConfig = Union[
     S3DatasourceConfig,
     MSSQLDatasourceConfig,
     ClickHouseDatasourceConfig,
+    TrinoDatasourceConfig,
 ]
 
 
@@ -526,6 +553,8 @@ class KontraConfig:
             return MSSQLDatasourceConfig.model_validate(ds_data)
         elif ds_type == "clickhouse":
             return ClickHouseDatasourceConfig.model_validate(ds_data)
+        elif ds_type == "trino":
+            return TrinoDatasourceConfig.model_validate(ds_data)
         elif ds_type == "s3":
             return S3DatasourceConfig.model_validate(ds_data)
         elif ds_type in ("files", "file"):
@@ -1074,6 +1103,23 @@ def resolve_datasource(
             userinfo = ""
 
         return f"{scheme}://{userinfo}{ds.host}:{ds.port}/{ds.database}/{table_ref}"
+
+    elif isinstance(ds, TrinoDatasourceConfig):
+        # trino://user:pass@host:port/catalog/schema.table
+        from urllib.parse import quote
+
+        scheme = "trinos" if ds.secure else "trino"
+        user = quote(ds.user, safe="") if ds.user else ds.user
+        password = quote(ds.password, safe="") if ds.password else ds.password
+
+        if user and password:
+            userinfo = f"{user}:{password}@"
+        elif user:
+            userinfo = f"{user}@"
+        else:
+            userinfo = ""
+
+        return f"{scheme}://{userinfo}{ds.host}:{ds.port}/{ds.catalog}/{table_ref}"
 
     raise ValueError(f"Unknown datasource type for '{ds_name}'")
 

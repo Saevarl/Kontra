@@ -356,6 +356,8 @@ class ValidationEngine:
                 return "sqlserver"
             if key in ("clickhouse", "clickhouses"):
                 return "clickhouse"
+            if key in ("trino", "trinos"):
+                return "trino"
         return None
 
     # --------------------------------------------------------------------- #
@@ -492,11 +494,25 @@ class ValidationEngine:
         )
 
     def run(self) -> Dict[str, Any]:
+        from kontra.connectors import trino_read
+        from kontra.errors import DataError
+
         timers = RunTimers()
         self._staging_tmpdir = None  # Track for cleanup in finally block
 
         try:
-            result = self._run_impl(timers)
+            try:
+                result = self._run_impl(timers)
+            except trino_read.TableChanged as changed:
+                # A Trino table changed mid-validation: read it once more in a
+                # new state, and give up rather than return mixed results.
+                if not changed.retryable:
+                    raise DataError(str(changed)) from None
+                trino_read.end(self._handle)
+                try:
+                    result = self._run_impl(timers)
+                except trino_read.TableChanged as again:
+                    raise DataError(str(again)) from None
 
             # Save state if enabled
             # Skip saving when filters are active (BUG F-015):
@@ -520,6 +536,7 @@ class ValidationEngine:
 
             return result
         finally:
+            trino_read.end(self._handle)
             close_shared_postgres_connection(self._handle)
             # Cleanup staged temp directory (CSV -> Parquet staging)
             if self._staging_tmpdir is not None:
@@ -916,6 +933,10 @@ class ValidationEngine:
         # One URI-owned PostgreSQL connection is reused by preplan, SQL
         # pushdown, and materialization, then closed by run()'s finally block.
         open_shared_postgres_connection(handle)
+        # A Trino table is read in one state for the whole validation.
+        from kontra.connectors import trino_read
+
+        trino_read.begin(handle)
 
         # ------------------------------------------------------------------ #
         # Phase 5: Preplan (metadata-only optimization)
@@ -984,6 +1005,8 @@ class ValidationEngine:
         # Phase 9: Result Merging
         # ------------------------------------------------------------------ #
         results = merge_results(preplan, pushdown, residual, ctx)
+        # Every query has run: check the Trino table state held.
+        trino_read.finish(handle)
 
         # ------------------------------------------------------------------ #
         # Phase 10: Summary and Reporting

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .postgres import PostgresMaterializer  # noqa: F401
     from .sqlserver import SqlServerMaterializer  # noqa: F401
     from .clickhouse import ClickHouseMaterializer  # noqa: F401
+    from .trino import TrinoMaterializer  # noqa: F401
 
 
 # Registry: materializer_name -> ctor(handle) function
@@ -80,9 +81,17 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
                 "ClickHouse materializer not registered. "
                 "Ensure clickhouse-connect is installed: pip install 'kontra[clickhouse]'"
             )
+        elif handle.dialect == "trino" and handle.scheme == "byoc":
+            ctor = _MATS.get("trino")
+            if ctor:
+                return ctor(handle)
+            raise RuntimeError(
+                "Trino materializer not registered. "
+                "Ensure trino is installed: pip install 'kontra[trino]'"
+            )
         raise RuntimeError(
             f"Unsupported BYOC dialect: {handle.dialect}. "
-            "Supported: postgresql, sqlserver, clickhouse"
+            "Supported: postgresql, sqlserver, clickhouse, trino (tables only)"
         )
 
     # PostgreSQL: use dedicated materializer
@@ -113,6 +122,16 @@ def pick_materializer(handle: DatasetHandle) -> Materializer:
         raise RuntimeError(
             "ClickHouse materializer not registered. "
             "Ensure clickhouse-connect is installed: pip install 'kontra[clickhouse]'"
+        )
+
+    # Trino: use dedicated materializer
+    if handle.scheme in ("trino", "trinos"):
+        ctor = _MATS.get("trino")
+        if ctor:
+            return ctor(handle)
+        raise RuntimeError(
+            "Trino materializer not registered. "
+            "Ensure trino is installed: pip install 'kontra[trino]'"
         )
 
     # Remote files with known formats: use DuckDB for efficient I/O
@@ -163,6 +182,11 @@ def register_default_materializers() -> None:
     except ImportError:
         pass  # clickhouse-connect not installed, skip clickhouse materializer
 
+    try:
+        from . import trino  # noqa: F401
+    except ImportError:
+        pass  # trino not installed, skip trino materializer
+
 
 def register_materializers_for_path(
     execution_path: str,
@@ -202,6 +226,13 @@ def register_materializers_for_path(
                 raise ImportError(
                     "ClickHouse support requires clickhouse-connect. "
                     "Install with: pip install 'kontra[clickhouse]'"
+                )
+        elif database_type == "trino":
+            try:
+                from . import trino  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "Trino support requires trino. Install with: pip install 'kontra[trino]'"
                 )
         else:
             raise ValueError(f"Unknown database_type: {database_type}")

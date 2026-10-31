@@ -361,6 +361,51 @@ def _execute_clickhouse_preplan(
     )
 
 
+def _execute_trino_preplan(
+    handle: DatasetHandle,
+    ctx: CompilationContext,
+) -> PreplanResult:
+    """Execute preplan for Trino tables from declared columns and Iceberg $files (no scan)."""
+    from kontra.preplan.trino import can_preplan_trino, preplan_trino
+    from kontra.rule_defs.static_predicates import extract_static_predicates
+
+    if not can_preplan_trino(handle):
+        return _empty_preplan_result(enabled=True)
+
+    t0 = now_ms()
+    # Exact-count rules (tally=True) skip preplan; don't read metadata for them.
+    rules = [r for r in ctx.rules if not ctx.tally_map.get(r.rule_id, False)]
+    static_preds = extract_static_predicates(rules=rules)
+    pre = preplan_trino(
+        handle=handle,
+        required_columns=ctx.compiled_full.required_cols,
+        predicates=static_preds,
+        rules=rules,
+    )
+    analyze_ms = now_ms() - t0
+
+    results_by_id, handled_ids, pass_meta, fail_meta, unknown = _process_preplan_decisions(
+        pre=pre,
+        tally_map=ctx.tally_map,
+        severity_map=ctx.severity_map,
+        execution_source_msg="Trino metadata",
+    )
+
+    return PreplanResult(
+        effective=True,
+        handled_ids=handled_ids,
+        results_by_id=results_by_id,
+        analyze_ms=analyze_ms,
+        summary=_build_preplan_summary(
+            enabled=True,
+            effective=True,
+            pass_meta=pass_meta,
+            fail_meta=fail_meta,
+            unknown=unknown,
+        ),
+    )
+
+
 def execute_preplan(
     handle: "DatasetHandle",
     ctx: "CompilationContext",
@@ -448,6 +493,22 @@ def execute_preplan(
             return _execute_clickhouse_preplan(handle, ctx)
         except Exception as e:
             _logger.info("ClickHouse preplan skipped: %s", e)
+            return _empty_preplan_result(enabled=True)
+
+    if handle.scheme in ("trino", "trinos") or (
+        handle.scheme == "byoc" and handle.dialect == "trino"
+    ):
+        from kontra.connectors import trino_read
+
+        try:
+            return _execute_trino_preplan(handle, ctx)
+        except Exception as e:
+            # Preplan is optional; pushdown and Polars still run. But a failed
+            # query aborts a Trino transaction, so inside one the later queries
+            # would fail too: report the real cause instead.
+            if trino_read.in_transaction(handle):
+                raise
+            _logger.info("Trino preplan skipped: %s", e)
             return _empty_preplan_result(enabled=True)
 
     # No preplan available for this data source type

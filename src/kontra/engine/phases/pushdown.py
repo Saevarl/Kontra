@@ -194,8 +194,21 @@ def execute_pushdown(
         return result, handle, staging_tmpdir
 
     except Exception as e:
+        if _in_caller_trino_transaction(handle):
+            # A failed query aborted the caller's Trino transaction, which Kontra
+            # can't renew: the Polars fallback would fail too. Report the cause.
+            raise
         # Graceful fallback: residual Polars execution picks these rules up
         _logger.info("SQL pushdown failed (%s): %s", type(e).__name__, e)
         if show_plan:
             print(f"[WARN] SQL pushdown failed ({type(e).__name__}): {e}")
         return _empty_pushdown_result(), handle, staging_tmpdir
+
+
+def _in_caller_trino_transaction(handle: Any) -> bool:
+    """The validation reads a Trino table inside the caller's transaction."""
+    if handle is None or getattr(handle, "dialect", None) != "trino":
+        return False
+    from kontra.connectors import trino_read
+
+    return trino_read.caller_transaction(handle)

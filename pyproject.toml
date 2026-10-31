@@ -58,6 +58,8 @@ sqlserver = ["pymssql>=2.3,<3"]
 sqlserver-entra = ["pyodbc>=5.2,<6", "azure-identity>=1.23,<2"]
 # ClickHouse: HTTP client for the columnar OLAP store.
 clickhouse = ["clickhouse-connect>=1.0,<2"]
+# Trino: DBAPI client for the distributed SQL engine (Iceberg, Hive, ...).
+trino = ["trino>=0.330,<1"]
 all = [
     "s3fs>=2025.3",
     "psycopg[binary]>=3.2,<4",
@@ -65,6 +67,7 @@ all = [
     "pyodbc>=5.2,<6",
     "azure-identity>=1.23,<2",
     "clickhouse-connect>=1.0,<2",
+    "trino>=0.330,<1",
 ]
 dev = [
     "pytest>=8.4,<10",

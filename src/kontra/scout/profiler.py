@@ -147,6 +147,11 @@ def _select_backend(handle: DatasetHandle, sample_size: Optional[int] = None):
         from .backends.sqlserver_backend import SqlServerBackend
         return SqlServerBackend(handle, sample_size=sample_size)
 
+    if scheme in ("trino", "trinos"):
+        raise ValueError(
+            "Profiling Trino sources is not supported yet; kontra.validate() supports them."
+        )
+
     # Default to DuckDB for files (parquet, csv, etc.)
     from .backends.duckdb_backend import DuckDBBackend
     return DuckDBBackend(handle, sample_size=sample_size)

@@ -50,6 +50,34 @@ def _get_type_maps():
     return _EXACT_MAP, _FAMILY_MAP
 
 
+def expected_dtypes(typ: str) -> tuple[str, set | None]:
+    """(label, allowed Polars dtypes) for a dtype rule's ``type``; allowed is None if unknown.
+
+    Shared with metadata preplans that decide dtype rules from a column's
+    Polars dtype, so both answer the same way.
+    """
+    t = (typ or "").strip().lower()
+    if not t:
+        return "<unspecified>", None
+
+    # tolerate hyphen variants like "utf-8"
+    t_no_dash = t.replace("-", "")
+
+    exact_map, family_map = _get_type_maps()
+
+    # Family first (covers "string", "str", "utf8", etc.)
+    if t in family_map:
+        return t, family_map[t]
+    if t_no_dash in family_map:
+        return t_no_dash, family_map[t_no_dash]
+
+    # Exact physical types (single-member sets)
+    if t in exact_map:
+        return t, exact_map[t]
+
+    return t, None
+
+
 @register_rule("dtype", _builtin=True)
 class DtypeRule(BaseRule):
     """
@@ -135,26 +163,7 @@ class DtypeRule(BaseRule):
           - label: string echoed in error messages ("int16", "int", "date", ...)
           - allowed_set: a set of acceptable Polars dtypes (None if unknown)
         """
-        t = (typ or "").strip().lower()
-        if not t:
-            return "<unspecified>", None
-
-        # tolerate hyphen variants like "utf-8"
-        t_no_dash = t.replace("-", "")
-
-        exact_map, family_map = _get_type_maps()
-
-        # Family first (covers "string", "str", "utf8", etc.)
-        if t in family_map:
-            return t, family_map[t]
-        if t_no_dash in family_map:
-            return t_no_dash, family_map[t_no_dash]
-
-        # Exact physical types (single-member sets)
-        if t in exact_map:
-            return t, exact_map[t]
-
-        return t, None
+        return expected_dtypes(typ)
 
     # ---- Rule contract ------------------------------------------------------
 

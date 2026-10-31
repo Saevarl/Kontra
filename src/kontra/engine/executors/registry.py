@@ -76,6 +76,11 @@ def register_default_executors() -> None:
     except ImportError:
         pass  # clickhouse-connect not installed, skip clickhouse executor
 
+    try:
+        from . import trino_sql  # noqa: F401
+    except ImportError:
+        pass  # trino not installed, skip trino executor
+
 
 def register_executors_for_path(
     execution_path: str,
@@ -115,6 +120,13 @@ def register_executors_for_path(
                 raise ImportError(
                     "ClickHouse support requires clickhouse-connect. "
                     "Install with: pip install 'kontra[clickhouse]'"
+                )
+        elif database_type == "trino":
+            try:
+                from . import trino_sql  # noqa: F401
+            except ImportError:
+                raise ImportError(
+                    "Trino support requires trino. Install with: pip install 'kontra[trino]'"
                 )
         else:
             raise ValueError(f"Unknown database_type: {database_type}")
