@@ -33,6 +33,7 @@ from __future__ import annotations
 import math
 import numbers
 import statistics
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Set
 
 if TYPE_CHECKING:
@@ -169,7 +170,13 @@ def clean_measurement(metric: str, value: Any) -> Optional[float]:
     return number
 
 
+def _plain(value: Any) -> Any:
+    """A fraction from exact integer aggregation as a JSON number."""
+    return float(value) if isinstance(value, Fraction) else value
+
+
 def _fmt(value: Optional[float]) -> str:
+    value = _plain(value)
     if value is None:
         return "undefined"
     if isinstance(value, int):
@@ -178,15 +185,17 @@ def _fmt(value: Optional[float]) -> str:
 
 
 def _signed(value: float) -> str:
+    value = _plain(value)
     if isinstance(value, int):
         return f"{value:+,}"
     return f"{value:+.6g}"
 
 
 def _exceeds(amount: float, limit: float) -> bool:
-    if isinstance(amount, int) and isinstance(limit, int):
-        # Whole-number changes need no rounding tolerance, which would let a
-        # change of 1 on a 2**53 baseline pass a limit of 0.
+    if isinstance(amount, numbers.Rational) and isinstance(limit, numbers.Rational):
+        # Exact changes (integers, or fractions of them) need no rounding
+        # tolerance, which would let a change of 1 on a 2**53 baseline pass a
+        # limit of 0.
         return amount > limit
     # Float subtraction lands a hair either side of an exact limit (0.07 - 0.02
     # is 0.05000000000000001); a change equal to the limit is allowed.
@@ -384,15 +393,20 @@ class DriftRule(BaseRule):
                 result["failure_mode"] = str(FailureMode.NO_BASELINE)
             return result
 
+        # Integers aggregate as fractions, so a baseline past 2**53 stays exact.
+        exact = all(isinstance(v, int) for v in usable)
+        pool = [Fraction(v) for v in usable] if exact else usable
         if self.baseline == "median":
-            baseline = statistics.median(usable)
+            baseline = statistics.median(pool)
         elif self.baseline == "mean":
-            baseline = statistics.fmean(usable)
+            baseline = statistics.mean(pool) if exact else statistics.fmean(pool)
         else:
-            baseline = usable[0]
+            baseline = pool[0]
+        if isinstance(baseline, Fraction) and baseline.denominator == 1:
+            baseline = int(baseline)
         if self.metric in COUNT_METRICS and float(baseline).is_integer():
             baseline = int(baseline)
-        details["baseline"] = baseline
+        details["baseline"] = _plain(baseline)
         against = self._baseline_label(len(usable))
 
         if value is None:
@@ -411,11 +425,11 @@ class DriftRule(BaseRule):
 
         change = value - baseline
         if baseline != 0:
-            change_pct: Optional[float] = change / abs(baseline) * 100
+            change_pct: Optional[float] = float(change / abs(baseline) * 100)
         else:
             # Any move away from zero is an unbounded relative change.
             change_pct = 0.0 if change == 0 else math.copysign(math.inf, change)
-        details["change"] = change
+        details["change"] = _plain(change)
         details["change_pct"] = change_pct if math.isfinite(change_pct) else None
 
         exceeded = self._exceeded_limits(change, change_pct)

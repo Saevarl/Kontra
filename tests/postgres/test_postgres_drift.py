@@ -142,10 +142,30 @@ def test_nan_and_large_integers_match_polars(odd_table):
     assert sql["max:b"].details["value"] == 2**53 + 1
 
 
-def test_numeric_looking_text_mean_is_a_config_error(odd_table):
-    for kwargs in ({}, {"pushdown": "off", "preplan": "off"}):
-        result = kontra.validate(odd_table, rules=[rules.drift("mean", "s", max_change=0)], save=False, **kwargs)
-        assert result.rules[0].failure_mode == "config_error", kwargs
+def test_misconfigured_drift_leaves_the_batch_and_callers_transaction_alone(postgres_connection):
+    """A drift mean on a text column must not fail the shared SQL batch: that
+    aborted a caller's transaction and sent valid rules to Polars, where an
+    empty table's columns load as strings."""
+    name = f"drift_mix_{uuid.uuid4().hex[:10]}"
+    with postgres_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE public.{name} (s TEXT, x INT)")
+    postgres_connection.commit()
+    try:
+        result = kontra.validate(
+            postgres_connection, table=f"public.{name}", save=False,
+            rules=[rules.drift("mean", "s", max_change=0), rules.range("x", min=0, max=5),
+                   rules.drift("max", "x", max_change=0)],
+        )
+        by_name = {r.name: r for r in result.rules}
+        assert by_name["range"].passed and by_name["range"].source == "sql"
+        with postgres_connection.cursor() as cur:  # the transaction is still usable
+            cur.execute("SELECT 1")
+            assert cur.fetchone() == (1,)
+    finally:
+        postgres_connection.rollback()
+        with postgres_connection.cursor() as cur:
+            cur.execute(f"DROP TABLE public.{name}")
+        postgres_connection.commit()
 
 
 def test_empty_table_values(postgres_connection, table):

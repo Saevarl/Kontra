@@ -74,7 +74,7 @@ def test_sql_measurements_match_polars(table):
     assert sql["null_rate:score"][0] == pytest.approx(1 / 3)
 
 
-def test_numeric_looking_text_mean_is_a_config_error_and_bigint_is_exact():
+def test_bigint_extremum_is_exact():
     name = f"drift_odd_{uuid.uuid4().hex[:10]}"
     conn = _connect()
     cur = conn.cursor()
@@ -83,9 +83,6 @@ def test_numeric_looking_text_mean_is_a_config_error_and_bigint_is_exact():
     conn.commit()
     try:
         uri = f"{_BASE}/dbo.{name}"
-        for kwargs in ({}, {"pushdown": "off", "preplan": "off"}):
-            result = kontra.validate(uri, rules=[rules.drift("mean", "s", max_change=0)], save=False, **kwargs)
-            assert result.rules[0].failure_mode == "config_error", kwargs
         result = kontra.validate(uri, rules=[rules.drift("max", "b", max_change=0)], save=False)
         assert result.rules[0].source == "sql"
         assert result.rules[0].details["value"] == 2**53 + 1

@@ -339,6 +339,25 @@ class TestVerdict:
         assert judged(params, [2**53], 2**53)["passed"] is True
         assert judged({**params, "max_change": 1}, [2**62], 2**62 + 2)["passed"] is False
 
+    @pytest.mark.parametrize("baseline, history", [
+        ("mean", [2**53]),
+        ("median", [2**53, 2**53]),
+        ("median", [2**53, 2**53 + 2]),  # midpoint 2**53 + 1, a whole number
+    ])
+    def test_aggregated_integer_baselines_stay_exact(self, baseline, history):
+        params = {"metric": "max", "column": "x", "max_change": 0, "baseline": baseline,
+                  "window": 2}
+        assert judged(params, history, 2**53 + 1)["passed"] is (baseline == "median"
+                                                               and history[1] == 2**53 + 2)
+        assert judged(params, history, 2**53 + 3)["passed"] is False
+
+    def test_fractional_integer_baseline(self):
+        params = {"metric": "max", "column": "x", "max_change": 0, "baseline": "median",
+                  "window": 2}
+        result = judged(params, [2**53, 2**53 + 1], 2**53 + 1)
+        assert result["passed"] is False
+        assert result["details"]["change"] == 0.5
+
     def test_sql_non_numeric_measurement_is_config_error(self):
         rule = build({"metric": "max", "column": "name", "max_change": 1})
         rule.set_history([1.0])
@@ -620,6 +639,32 @@ class TestHistoryRead:
         attach_history([rule], store, "fp", "a.parquet")
         assert rule.evaluate(200)["details"]["baseline"] == 200
 
+    def test_a_full_read_at_the_cap_keeps_its_runs(self, tmp_path):
+        """Exactly the cap's worth of runs, all in one second: the read is
+        complete, so the latest run is still the baseline."""
+        from kontra.engine.phases import drift as phase
+
+        class OneSecond:
+            def get_history(self, fingerprint, limit):
+                start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+                runs = [
+                    ValidationState(
+                        contract_fingerprint="fp", dataset_fingerprint=None, contract_name="c",
+                        dataset_uri="a.parquet", run_at=start + timedelta(microseconds=i),
+                        summary=StateSummary(passed=True, total_rules=0, passed_rules=0,
+                                             failed_rules=0),
+                        rules=[RuleState(rule_id="rows", rule_name="drift", passed=True,
+                                         failed_count=0, execution_source="sql",
+                                         details={"metric": "row_count", "value": i})],
+                    )
+                    for i in range(phase._HISTORY_SCAN_MAX)
+                ]
+                return sorted(runs, key=lambda r: r.run_at, reverse=True)[:limit]
+
+        rule = self.rule()
+        phase.attach_history([rule], OneSecond(), "fp", "a.parquet")
+        assert rule.evaluate(2000)["details"]["baseline"] == phase._HISTORY_SCAN_MAX - 1
+
     def test_read_is_bounded(self):
         from kontra.engine.phases import drift as phase
 
@@ -645,7 +690,8 @@ class TestHistoryRead:
         store = Endless()
         rule = self.rule()
         phase.attach_history([rule], store, "fp", "a.parquet")
-        assert max(store.limits) == phase._HISTORY_SCAN_MAX
+        # One run past the limit tells a full read from a cut-off one.
+        assert max(store.limits) == phase._HISTORY_SCAN_MAX + 1
         assert rule.evaluate(5)["details"]["status"] == "no_baseline"
 
 
@@ -775,17 +821,13 @@ class TestSqlRendering:
             ("duckdb", "null_rate", 'CAST(COUNT(*) - COUNT("c") AS DOUBLE) / NULLIF(COUNT(*), 0) AS "r"'),
             ("duckdb", "mean", 'AVG(CAST("c" AS DOUBLE)) AS "r"'),
             ("duckdb", "max", 'MAX(CASE WHEN isnan("c") THEN NULL ELSE "c" END) AS "r"'),
-            ("postgres", "mean", 'AVG("c") AS "r"'),
-            ("postgres", "min", 'MIN(CASE WHEN "c" = \'NaN\'::float8 THEN NULL ELSE "c" END) AS "r"'),
+            ("postgres", "mean", 'AVG(CAST("c" AS DOUBLE PRECISION)) AS "r"'),
+            ("postgres", "min", 'MIN(CASE WHEN "c"::text = \'NaN\' THEN NULL ELSE "c" END) AS "r"'),
             ("sqlserver", "null_count", '(COUNT_BIG(*) - COUNT_BIG([c])) AS [r]'),
-            ("sqlserver", "mean", 'AVG(CAST([c] AS FLOAT) + ([c] - [c])) AS [r]'),
+            ("sqlserver", "mean", 'AVG(CAST([c] AS FLOAT)) AS [r]'),
             ("sqlserver", "max", 'MAX([c]) AS [r]'),
             ("sqlserver", "distinct_count", 'COUNT_BIG(DISTINCT [c]) AS [r]'),
-            (
-                "clickhouse",
-                "mean",
-                "avg(toFloat64(`c`) + 0 * sign(`c`)) + throwIf(toTypeName(assumeNotNull(`c`)) = 'Bool') AS `r`",
-            ),
+            ("clickhouse", "mean", "AVG(toFloat64(`c`)) AS `r`"),
             ("clickhouse", "min", "minOrNull(`c`) AS `r`"),
             ("clickhouse", "max", "maxOrNull(`c`) AS `r`"),
             ("trino", "max", 'MAX("c") AS "r"'),

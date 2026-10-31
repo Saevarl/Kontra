@@ -65,15 +65,19 @@ def attach_history(
     cap = max(limit, _HISTORY_SCAN_MAX)
     while True:
         try:
-            states = store.get_history(contract_fingerprint, limit=limit)
+            # One run past the limit tells a full read from a cut-off one.
+            states = store.get_history(contract_fingerprint, limit=limit + 1)
         except Exception as e:  # any backend failure; reported per rule
             _logger.warning("Could not read drift history: %s", e)
             for rule in rules:
                 rule.set_history(None, error=f"{type(e).__name__}: {e}")
             return
-        complete = len(states) < limit
+        complete = len(states) <= limit
         if not complete:
-            states = _drop_partial_second(states)
+            trimmed = _drop_partial_second(states[:limit])
+            # A read wholly inside one second widens; at the cap, keep it
+            # rather than lose all history.
+            states = trimmed if trimmed or limit < cap else states[:limit]
         histories = _histories(rules, states, dataset_uri)
         if complete or limit >= cap or all(
             len(values) >= rule.history_needed for rule, values in zip(rules, histories)

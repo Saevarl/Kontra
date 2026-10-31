@@ -93,17 +93,6 @@ def test_nan_and_empty_tables_match_polars(odd_table):
     assert {value for value, _ in empty.values()} == {None}
 
 
-@pytest.mark.parametrize("column", ["s", "b"])
-@pytest.mark.parametrize("empty", [False, True])
-def test_mean_of_a_string_or_bool_is_a_config_error(odd_table, column, empty):
-    c, name, uri = odd_table
-    if empty:
-        c.command(f"TRUNCATE TABLE {name}")
-    for kwargs in ({}, {"pushdown": "off", "preplan": "off"}):
-        result = kontra.validate(uri, rules=[rules.drift("mean", column, max_change=0)], save=False, **kwargs)
-        assert result.rules[0].failure_mode == "config_error", kwargs
-
-
 def test_sql_measurements_match_polars(table):
     sql = measured(table)
     polars = measured(table, pushdown="off", preplan="off")

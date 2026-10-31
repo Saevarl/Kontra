@@ -371,8 +371,10 @@ class Renderer:
         return f"CAST({inner_sql} AS DOUBLE)"
 
     def mean_of(self, col_sql: str) -> str:
-        # DuckDB and Trino only get numeric columns here (their executors
-        # check the type first); the double keeps integer sums from overflowing.
+        # As double, so integer sums don't overflow or truncate (SQL Server's
+        # integer AVG does). The DuckDB and Trino executors check the column
+        # type first; elsewhere a cast that accepts numeric-looking text is a
+        # known gap, not worth failing the shared batch over.
         return f"AVG({self.to_double(col_sql)})"
 
     def extremum(self, func: str, col_sql: str) -> str:
@@ -423,18 +425,12 @@ class PostgresRenderer(Renderer):
     def to_double(self, inner_sql: str) -> str:
         return f"CAST({inner_sql} AS DOUBLE PRECISION)"
 
-    def mean_of(self, col_sql: str) -> str:
-        # No cast: CAST(text AS DOUBLE PRECISION) would average numeric-looking
-        # text, while AVG has no text, date or boolean form, so a non-numeric
-        # column fails the query and Polars reports the config error. Integer
-        # AVG returns numeric, so nothing truncates.
-        return f"AVG({col_sql})"
-
     def extremum(self, func: str, col_sql: str) -> str:
-        # PostgreSQL orders NaN above every number. Comparing with a float8
-        # covers integer, numeric and float columns, and fails the query for
-        # non-numeric ones, as mean does.
-        return f"{func}(CASE WHEN {col_sql} = 'NaN'::float8 THEN NULL ELSE {col_sql} END)"
+        # PostgreSQL orders NaN above every number. The text form reads 'NaN'
+        # for float and numeric NaN alike and works on any column type: a
+        # float8 comparison would overflow a NUMERIC above ~1e308 and fail
+        # the whole batch on a text column.
+        return f"{func}(CASE WHEN {col_sql}::text = 'NaN' THEN NULL ELSE {col_sql} END)"
 
 
 class SqlServerRenderer(Renderer):
@@ -485,13 +481,6 @@ class SqlServerRenderer(Renderer):
     def to_double(self, inner_sql: str) -> str:
         return f"CAST({inner_sql} AS FLOAT)"
 
-    def mean_of(self, col_sql: str) -> str:
-        # Integer AVG truncates, so average as FLOAT. CAST alone would also
-        # accept numeric-looking text and datetimes; (col - col) is 0 for
-        # every numeric type and fails the query for text, date and bit
-        # columns, so Polars reports the config error.
-        return f"AVG({self.to_double(col_sql)} + ({col_sql} - {col_sql}))"
-
     def extremum(self, func: str, col_sql: str) -> str:
         return f"{func}({col_sql})"  # FLOAT holds no NaN
 
@@ -530,17 +519,6 @@ class ClickHouseRenderer(Renderer):
         # CAST(... AS Float64) rejects NULL; toFloat64 keeps a Nullable column
         # nullable, so AVG skips NULLs as everywhere else.
         return f"toFloat64({inner_sql})"
-
-    def mean_of(self, col_sql: str) -> str:
-        # avg of a UInt64/Int64 column sums in that type and wraps, so average
-        # as Float64. toFloat64 alone would parse numeric-looking strings;
-        # sign() only takes numbers, so a String or Date column fails the
-        # query and Polars reports the config error. Bool passes sign() but is
-        # not numeric in Polars, so throwIf fails it too (even with no rows).
-        return (
-            f"avg({self.to_double(col_sql)} + 0 * sign({col_sql})) "
-            f"+ throwIf(toTypeName(assumeNotNull({col_sql})) = 'Bool')"
-        )
 
     def extremum(self, func: str, col_sql: str) -> str:
         # min/max of no rows return the type's default (0) for a non-Nullable
