@@ -981,11 +981,15 @@ class SamplingOrchestrator:
         # Phase 3: Execute per-rule Polars sampling for remaining rules
         for rule_result, rule_obj, predicate, n, cols_to_include in polars_rules:
             try:
-                samples, samples_source = self.collect_samples_for_rule(rule_obj, predicate, n, cols_to_include)
-                rule_result.samples = samples
+                # One extra row tells whether more samples exist. failed_count
+                # can't: unique counts the extra copies, not the sampled rows.
+                samples, samples_source = self.collect_samples_for_rule(
+                    rule_obj, predicate, n + 1, cols_to_include
+                )
+                rule_result.samples = samples[:n]
                 rule_result.samples_source = samples_source
 
-                if len(samples) == n and rule_result.failed_count > n:
+                if len(samples) > n:
                     rule_result.samples_truncated = True
                     rule_result.samples_reason = SampleReason.TRUNCATED_LIMIT
 

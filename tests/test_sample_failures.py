@@ -772,6 +772,18 @@ class TestEagerSampling:
         assert b.samples_truncated is True
         assert b.samples_reason == "per_rule_limit"
 
+    def test_budget_limited_unique_flags_truncation_when_count_equals_cap(self):
+        """unique counts one violation for [1, 1] but both rows are samples, so a
+        budget of 1 still leaves a row out."""
+        df = pl.DataFrame({"a": [1, 1]})
+        result = kontra.validate(df, rules=[rules.unique("a")], sample=3, sample_budget=1,
+                                 tally=True)
+
+        r = result.rules[0]
+        assert r.failed_count == 1
+        assert len(r.samples) == 1
+        assert r.samples_truncated is True
+
     def test_sample_zero_disables_eager_sampling(self):
         """sample=0 disables eager sampling."""
         df = pl.DataFrame({"email": [None]})
