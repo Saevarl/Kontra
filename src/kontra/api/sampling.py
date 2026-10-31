@@ -394,7 +394,7 @@ class SamplingOrchestrator:
                 try:
                     return pl.read_csv(source), "polars"
                 except (OSError, ValueError) as csv_err:
-                    raise RuntimeError(f"Cannot load data from: {source} (parquet: {parquet_err}, csv: {csv_err})")
+                    raise RuntimeError(f"Cannot load data from: {source} (parquet: {parquet_err}, csv: {csv_err})") from csv_err
 
         # Polars DataFrame (was passed directly)
         if isinstance(source, pl.DataFrame):

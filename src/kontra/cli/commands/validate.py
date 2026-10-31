@@ -72,13 +72,13 @@ def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) 
         issues.append(str(e))
         checks_failed += 1
         typer.echo(f"\n{checks_passed} checks passed, {checks_failed} failed")
-        raise typer.Exit(code=EXIT_CONFIG_ERROR)
+        raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
     except Exception as e:
         typer.secho(f"  ✗ Contract parse error: {e}", fg=typer.colors.RED)
         issues.append(str(e))
         checks_failed += 1
         typer.echo(f"\n{checks_passed} checks passed, {checks_failed} failed")
-        raise typer.Exit(code=EXIT_CONFIG_ERROR)
+        raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
     # 2. Check dataset URI is parseable
     dataset_uri = data_path or contract.datasource
@@ -354,7 +354,7 @@ def register(app: typer.Typer) -> None:
                 typer.secho(
                     f"Config error: {format_error_for_cli(e)}", fg=typer.colors.RED
                 )
-                raise typer.Exit(code=EXIT_CONFIG_ERROR)
+                raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
             # Use resolved config values
             effective_output_format = config.output_format
@@ -371,7 +371,7 @@ def register(app: typer.Typer) -> None:
                     resolved_data = resolve_datasource(data)
                 except (ValueError, DatasourceTableError) as e:
                     typer.secho(f"Datasource error: {e}", fg=typer.colors.RED)
-                    raise typer.Exit(code=EXIT_CONFIG_ERROR)
+                    raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
             emit_report = effective_output_format == "rich"
 
@@ -421,7 +421,7 @@ def register(app: typer.Typer) -> None:
                         f"Invalid --storage-options JSON: {e}",
                         fg=typer.colors.RED,
                     )
-                    raise typer.Exit(code=EXIT_CONFIG_ERROR)
+                    raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
             # Parse --only and --columns (comma-separated)
             parsed_only = [s.strip() for s in only.split(",") if s.strip()] if only else None
@@ -526,7 +526,7 @@ def register(app: typer.Typer) -> None:
                 import traceback
 
                 typer.secho(f"\n{traceback.format_exc()}", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except ContractNotFoundError as e:
             from kontra.errors import format_error_for_cli
@@ -537,11 +537,11 @@ def register(app: typer.Typer) -> None:
                 import traceback
 
                 typer.secho(f"\n{traceback.format_exc()}", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except DatasourceTableError as e:
             typer.secho(f"Datasource error: {e}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except ValueError as e:
             from kontra.errors import format_error_for_cli
@@ -552,7 +552,7 @@ def register(app: typer.Typer) -> None:
                 import traceback
 
                 typer.secho(f"\n{traceback.format_exc()}", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except ConnectionError as e:
             from kontra.errors import format_error_for_cli
@@ -563,7 +563,7 @@ def register(app: typer.Typer) -> None:
                 import traceback
 
                 typer.secho(f"\n{traceback.format_exc()}", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=EXIT_RUNTIME_ERROR)
+            raise typer.Exit(code=EXIT_RUNTIME_ERROR) from None
 
         except Exception as e:
             from kontra.errors import format_error_for_cli
@@ -583,5 +583,5 @@ def register(app: typer.Typer) -> None:
             import yaml
 
             if isinstance(e, yaml.YAMLError):
-                raise typer.Exit(code=EXIT_CONFIG_ERROR)
-            raise typer.Exit(code=EXIT_RUNTIME_ERROR)
+                raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
+            raise typer.Exit(code=EXIT_RUNTIME_ERROR) from None

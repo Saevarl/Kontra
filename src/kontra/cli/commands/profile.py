@@ -167,7 +167,7 @@ def _run_profile(
             typer.secho(
                 f"Config error: {format_error_for_cli(e)}", fg=typer.colors.RED
             )
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         # Resolve effective values from config
         effective_preset = config.scout_preset
@@ -183,7 +183,7 @@ def _run_profile(
             resolved_source = resolve_datasource(source)
         except (ValueError, DatasourceTableError) as e:
             typer.secho(f"Datasource error: {e}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         # Parse columns filter
         cols_filter = None
@@ -206,7 +206,7 @@ def _run_profile(
                     f"Invalid --storage-options JSON: {e}",
                     fg=typer.colors.RED,
                 )
-                raise typer.Exit(code=EXIT_CONFIG_ERROR)
+                raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         profiler = ScoutProfiler(
             resolved_source,
@@ -269,7 +269,7 @@ def _run_profile(
             import traceback
 
             typer.secho(f"\n{traceback.format_exc()}", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=EXIT_CONFIG_ERROR)
+        raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
     except ConnectionError as e:
         from kontra.errors import format_error_for_cli
@@ -280,7 +280,7 @@ def _run_profile(
             import traceback
 
             typer.secho(f"\n{traceback.format_exc()}", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=EXIT_RUNTIME_ERROR)
+        raise typer.Exit(code=EXIT_RUNTIME_ERROR) from None
 
     except Exception as e:
         from kontra.errors import format_error_for_cli
@@ -295,4 +295,4 @@ def _run_profile(
         else:
             typer.secho(f"Error: {msg}", fg=typer.colors.RED)
             typer.secho("Use --verbose for full traceback.", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=EXIT_RUNTIME_ERROR)
+        raise typer.Exit(code=EXIT_RUNTIME_ERROR) from None

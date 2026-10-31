@@ -714,7 +714,7 @@ class ValidationEngine:
                 raise ValueError(
                     f"Could not convert DataFrame to Polars: {e}. "
                     "Pass a Polars DataFrame or a pandas DataFrame."
-                )
+                ) from e
 
         self.df = df
         timers.data_load_ms = now_ms() - t0

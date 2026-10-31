@@ -58,7 +58,7 @@ class RegexRule(BaseRule):
                 "regex",
                 "pattern",
                 f"Invalid regex pattern{pos_info}: {e.msg}\n  Pattern: {pattern}"
-            )
+            ) from None
         # Validate against the actual execution engine (Polars/Rust regex).
         # Some patterns valid in Python's `re` (e.g. backreferences like (a)\1)
         # are rejected by the Rust regex engine. Catching this at construction

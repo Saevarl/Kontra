@@ -705,13 +705,13 @@ def load_config_file(path: Path) -> KontraConfig:
     try:
         content = path.read_text(encoding="utf-8")
     except OSError as e:
-        raise ConfigParseError(str(path), f"Cannot read file: {e}")
+        raise ConfigParseError(str(path), f"Cannot read file: {e}") from e
 
     # Parse YAML
     try:
         raw = yaml.safe_load(content)
     except yaml.YAMLError as e:
-        raise ConfigParseError(str(path), f"Invalid YAML: {e}")
+        raise ConfigParseError(str(path), f"Invalid YAML: {e}") from e
 
     if raw is None:
         raw = {}
@@ -721,7 +721,7 @@ def load_config_file(path: Path) -> KontraConfig:
         raw = substitute_env_vars_recursive(raw)
         return KontraConfig.model_validate(raw)
     except (ValueError, TypeError) as e:
-        raise ConfigValidationError([str(e)], str(path))
+        raise ConfigValidationError([str(e)], str(path)) from e
 
 
 # --- Config overlay helpers ---
