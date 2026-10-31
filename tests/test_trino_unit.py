@@ -1260,6 +1260,35 @@ class TestProfileAdaptation:
         assert "ARRAY[0.5, 0.25]" in array
         assert array.startswith("element_at(transform(")
 
+    def test_large_scan_median_is_approximate_and_percentile_arrays_stay_exact(self):
+        from kontra.scout.backends.trino_backend import _adapt_expr
+
+        median = 'PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY "a") AS "__median__a"'
+        assert _adapt_expr(median, {}, approx_median=True) == (
+            'approx_percentile(CAST("a" AS DOUBLE), 0.5) AS "__median__a"'
+        )
+        array = 'PERCENTILE_CONT(ARRAY[0.5, 0.25]) WITHIN GROUP (ORDER BY "x") AS "q"'
+        assert "approx" not in _adapt_expr(array, {}, approx_median=True)
+
+    @pytest.mark.parametrize(
+        ("rows", "sample", "approx"),
+        [
+            (1_000_000, None, False),
+            (1_000_001, None, True),
+            (50_000_000, 10_000, False),
+            (500, 5_000_000, False),
+            (None, None, True),
+        ],
+    )
+    def test_median_is_exact_up_to_a_million_profiled_rows(self, rows, sample, approx):
+        from kontra.connectors.handle import DatasetHandle
+        from kontra.scout.backends.trino_backend import TrinoBackend
+
+        handle = DatasetHandle.from_uri("trino://u@host/lake/s.t")
+        backend = TrinoBackend(handle, sample_size=sample)
+        backend._row_count = rows
+        assert backend._approx_median() is approx
+
     def test_mean_float_cast_and_text_forms(self):
         from kontra.scout.backends.trino_backend import _adapt_expr, _text_sql
 

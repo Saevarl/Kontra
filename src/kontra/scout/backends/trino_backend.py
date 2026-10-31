@@ -31,8 +31,11 @@ The profiler emits ANSI-style aggregates; a few shapes are rewritten here:
   - ``PERCENTILE_CONT(...) WITHIN GROUP (ORDER BY c)``: Trino only has the
     approximate ``approx_percentile``. The exact continuous percentile is
     computed from the sorted non-null values with the same linear
-    interpolation PostgreSQL uses. Like ClickHouse's ``quantileExact``, this
-    holds a column's values in memory; use ``sample`` on very large tables.
+    interpolation PostgreSQL uses. This holds a column's values in memory on
+    one node, so ``scan``'s median is exact only up to 1M profiled rows and
+    ``approx_percentile`` above that; otherwise the default preset would run
+    out of memory on a large table. ``interrogate``'s percentiles are always
+    exact, as on ClickHouse; use ``sample`` on very large tables.
   - ``AVG(c)``: on DECIMAL columns Trino rounds the mean to the column's scale,
     so the mean is computed in DOUBLE.
   - ``CAST(... AS FLOAT)``: Trino has no FLOAT type; DOUBLE is used.
@@ -92,6 +95,10 @@ _CAST_FLOAT_RE = re.compile(r"\bAS\s+FLOAT\s*\)", re.IGNORECASE)
 _LENGTH_RE = re.compile(rf"\bLENGTH\(\s*({_IDENT})\s*\)", re.IGNORECASE)
 _EMPTY_RE = re.compile(rf"WHEN\s+({_IDENT})\s*=\s*''", re.IGNORECASE)
 
+# Above this many profiled rows, scan's median uses approx_percentile: the exact
+# form collects every value of every numeric column on one node.
+_EXACT_MEDIAN_MAX_ROWS = 1_000_000
+
 
 def _percentile_sql(levels: str, col: str) -> str:
     """Exact PERCENTILE_CONT over the non-null values of ``col``.
@@ -118,19 +125,32 @@ def _percentile_sql(levels: str, col: str) -> str:
     return f"element_at({expr}, 1)" if scalar else expr
 
 
-def _adapt_expr(expr: str, text_of: dict[str, str], padded: frozenset[str] = frozenset()) -> str:
+def _adapt_expr(
+    expr: str,
+    text_of: dict[str, str],
+    padded: frozenset[str] = frozenset(),
+    approx_median: bool = False,
+) -> str:
     """Rewrite one profiler aggregate into equivalent Trino SQL.
 
     ``text_of`` maps a quoted identifier to the SQL that reads it as text, for
     columns whose type has no string functions (JSON, UUID). ``padded`` holds
     the CHAR(n) columns: Trino compares them with padding, so a blank value
     equals '', but the driver returns it as n spaces, which is not empty.
+    ``approx_median`` turns a single-fraction percentile (scan's median) into
+    ``approx_percentile``; percentile arrays (interrogate) stay exact.
     """
 
     def text(match: re.Match[str]) -> str:
         return text_of.get(match.group(1), match.group(1))
 
-    expr = _PERCENTILE_RE.sub(lambda m: _percentile_sql(m.group(1), m.group(2)), expr)
+    def percentile(match: re.Match[str]) -> str:
+        levels, col = match.group(1), match.group(2)
+        if approx_median and not levels.upper().startswith("ARRAY"):
+            return f"approx_percentile(CAST({col} AS DOUBLE), {levels})"
+        return _percentile_sql(levels, col)
+
+    expr = _PERCENTILE_RE.sub(percentile, expr)
     expr = _AVG_RE.sub(lambda m: f"AVG(CAST({m.group(1)} AS DOUBLE))", expr)
     expr = _CAST_FLOAT_RE.sub("AS DOUBLE)", expr)
     expr = _LENGTH_RE.sub(lambda m: f"LENGTH({text(m)})", expr)
@@ -166,7 +186,7 @@ class TrinoBackend:
     - Schema from information_schema (no scan)
     - Exact row count (COUNT(*))
     - Single aggregate query for all column stats, computed by Trino
-    - Exact percentiles (no approx_percentile)
+    - Exact percentiles (scan's median is approximate above 1M rows)
     - Value frequencies grouped concurrently
     """
 
@@ -201,6 +221,7 @@ class TrinoBackend:
         self._schema: list[tuple[str, str]] | None = None
         self._text_of: dict[str, str] = {}
         self._padded: frozenset[str] = frozenset()
+        self._row_count: int | None = None
         # COUNT(*) is exact. Read by the profiler for provenance flagging.
         self.row_count_estimated: bool = False
         # A caller's transaction: run queries one at a time (set on connect).
@@ -268,7 +289,15 @@ class TrinoBackend:
 
     def get_row_count(self) -> int:
         rows = self._fetchall(f"SELECT COUNT(*) FROM {self._qualified_table()}")
-        return int(rows[0][0]) if rows and rows[0][0] is not None else 0
+        self._row_count = int(rows[0][0]) if rows and rows[0][0] is not None else 0
+        return self._row_count
+
+    def _approx_median(self) -> bool:
+        """True when scan's median would hold too many values in memory."""
+        rows = self._row_count
+        if self.sample_size:
+            rows = int(self.sample_size) if rows is None else min(rows, int(self.sample_size))
+        return rows is None or rows > _EXACT_MEDIAN_MAX_ROWS
 
     def get_estimated_size_bytes(self) -> int | None:
         """Trino has no connector-independent size metadata."""
@@ -320,7 +349,8 @@ class TrinoBackend:
         if not exprs:
             return {}
 
-        select = ", ".join(_adapt_expr(e, self._text_of, self._padded) for e in exprs)
+        approx = self._approx_median()
+        select = ", ".join(_adapt_expr(e, self._text_of, self._padded, approx) for e in exprs)
         if not self.sample_size:
             return self._stats_row(f"SELECT {select} FROM {self._qualified_table()}")
 
