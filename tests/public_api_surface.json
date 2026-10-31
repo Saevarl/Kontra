@@ -1,0 +1,753 @@
+{
+  "all": [
+    "__version__",
+    "validate",
+    "profile",
+    "draft",
+    "compare_profiles",
+    "explain",
+    "diff",
+    "profile_diff",
+    "compare",
+    "profile_relationship",
+    "scout",
+    "suggest_rules",
+    "scout_diff",
+    "list_runs",
+    "get_run",
+    "has_runs",
+    "list_profiles",
+    "get_profile",
+    "annotate",
+    "get_annotations",
+    "get_run_with_annotations",
+    "resolve",
+    "config",
+    "list_datasources",
+    "set_config",
+    "get_config_path",
+    "list_rules",
+    "describe_rule",
+    "health",
+    "ValidationResult",
+    "RuleResult",
+    "DryRunResult",
+    "ExplainResult",
+    "RuleExplainEntry",
+    "Diff",
+    "Suggestions",
+    "SuggestedRule",
+    "DatasetProfile",
+    "ColumnProfile",
+    "ProfileDiff",
+    "CompareResult",
+    "RelationshipProfile",
+    "Query",
+    "rules",
+    "validate_decorator",
+    "ValidationError",
+    "StateCorruptedError",
+    "ValidationEngine",
+    "ScoutProfiler",
+    "KontraConfig"
+  ],
+  "all_resolved": {
+    "ColumnProfile": {
+      "doc_sha256": "efd1674dc2154329d65774cd9ed287227ca47713c9e4738b1681e1525383c260",
+      "module": "kontra.scout.types",
+      "signature": "(name: 'str', dtype: 'str', dtype_raw: 'str', row_count: 'int' = 0, null_count: 'int' = 0, null_rate: 'float' = 0.0, distinct_count: 'int' = 0, uniqueness_ratio: 'float' = 0.0, null_count_estimated: 'bool' = False, distinct_count_estimated: 'bool' = False, is_low_cardinality: 'bool' = False, values: 'Optional[List[Any]]' = None, top_values: 'List[TopValue]' = <factory>, numeric: 'Optional[NumericStats]' = None, string: 'Optional[StringStats]' = None, temporal: 'Optional[TemporalStats]' = None, detected_patterns: 'List[str]' = <factory>, semantic_type: 'Optional[str]' = None) -> None",
+      "type": "type"
+    },
+    "CompareResult": {
+      "doc_sha256": "dcf94a3a4d45521353839d5d135871e5ecd64c9759b9d21609efd79e709c46bd",
+      "module": "kontra.api.compare",
+      "signature": "(before_rows: 'int', after_rows: 'int', key: 'List[str]', execution_tier: 'str' = 'polars', row_delta: 'int' = 0, row_ratio: 'float' = 1.0, unique_before: 'int' = 0, unique_after: 'int' = 0, preserved: 'int' = 0, dropped: 'int' = 0, added: 'int' = 0, duplicated_after: 'int' = 0, unchanged_rows: 'int' = 0, changed_rows: 'int' = 0, columns_added: 'List[str]' = <factory>, columns_removed: 'List[str]' = <factory>, columns_modified: 'List[str]' = <factory>, modified_fraction: 'Dict[str, float]' = <factory>, nullability_delta: 'Dict[str, Dict[str, Optional[float]]]' = <factory>, samples_duplicated_keys: 'List[Any]' = <factory>, samples_dropped_keys: 'List[Any]' = <factory>, samples_changed_rows: 'List[Dict[str, Any]]' = <factory>, sample_limit: 'int' = 0) -> None",
+      "type": "type"
+    },
+    "DatasetProfile": {
+      "doc_sha256": "e6c45ba8dd96dce9d2cc80f47f6fbba1637daf8953865a53f8c0547accff5bcb",
+      "module": "kontra.scout.types",
+      "signature": "(source_uri: 'str', source_format: 'str', profiled_at: 'str', engine_version: 'str', preset: 'str' = 'scan', row_count: 'int' = 0, column_count: 'int' = 0, estimated_size_bytes: 'Optional[int]' = None, row_count_estimated: 'bool' = False, sampled: 'bool' = False, sample_size: 'Optional[int]' = None, columns: 'List[ColumnProfile]' = <factory>, warnings: 'List[str]' = <factory>, profile_duration_ms: 'int' = 0) -> None",
+      "type": "type"
+    },
+    "Diff": {
+      "doc_sha256": "ed72df2d91b3d045db4d5144dd3474c8628ada91fdc630c46f6f9a0a00a8e9eb",
+      "module": "kontra.api.results",
+      "signature": "(has_changes: 'bool', improved: 'bool', regressed: 'bool', before: 'Dict[str, Any]', after: 'Dict[str, Any]', new_failures: 'List[Dict[str, Any]]', resolved: 'List[Dict[str, Any]]', regressions: 'List[Dict[str, Any]]', improvements: 'List[Dict[str, Any]]', warnings: 'List[str]' = <factory>, _state_diff: 'Optional[Any]' = None) -> None",
+      "type": "type"
+    },
+    "DryRunResult": {
+      "doc_sha256": "6ea048b25fc9f7a95224729a2ba564d602f08cf34cdf7ea7bade331a3c923143",
+      "module": "kontra.api.results",
+      "signature": "(valid: 'bool', rules_count: 'int', columns_needed: 'List[str]', contract_name: 'Optional[str]' = None, datasource: 'Optional[str]' = None, errors: 'List[str]' = <factory>) -> None",
+      "type": "type"
+    },
+    "ExplainResult": {
+      "doc_sha256": "e6b1ca51907405c3bbfe96ef33bd38b9dc1fa939cc4bd27c11d4d69df497e24b",
+      "module": "kontra.api.results",
+      "signature": "(contract_name: 'str', total_rules: 'int', rules: 'List[RuleExplainEntry]', summary: 'Dict[str, int]') -> None",
+      "type": "type"
+    },
+    "KontraConfig": {
+      "doc_sha256": "4aea29d19a3541f6f56ee05f65eafbf791fb6c07b0bfb7bf3289611922068856",
+      "module": "kontra.config.settings",
+      "signature": "(version: 'str' = '1', defaults: 'DefaultsConfig' = <factory>, scout: 'ScoutConfig' = <factory>, datasources: 'Dict[str, Any]' = <factory>, environments: 'Dict[str, EnvironmentConfig]' = <factory>, severity_weights: 'Optional[Dict[str, float]]' = None) -> None",
+      "type": "type"
+    },
+    "ProfileDiff": {
+      "doc_sha256": "abe71a3de19f45aa2123cbb3ecaacfbb118053e6c2ee065aded0631729c14fa1",
+      "module": "kontra.scout.types",
+      "signature": "(before: 'ProfileState', after: 'ProfileState', row_count_before: 'int' = 0, row_count_after: 'int' = 0, row_count_delta: 'int' = 0, row_count_pct_change: 'float' = 0.0, column_count_before: 'int' = 0, column_count_after: 'int' = 0, columns_added: 'List[str]' = <factory>, columns_removed: 'List[str]' = <factory>, columns_changed: 'List[ColumnDiff]' = <factory>, null_rate_increases: 'List[ColumnDiff]' = <factory>, null_rate_decreases: 'List[ColumnDiff]' = <factory>, cardinality_changes: 'List[ColumnDiff]' = <factory>, dtype_changes: 'List[ColumnDiff]' = <factory>) -> None",
+      "type": "type"
+    },
+    "Query": {
+      "doc_sha256": "bfca12ab257e7dd95db2c71654ab555239ffb21a027b61b9112d86008d94d0f2",
+      "module": "kontra.connectors.query",
+      "signature": "(sql: 'str', source: 'Any' = None, params: 'Optional[Dict[str, Any]]' = None, name: 'Optional[str]' = None) -> None",
+      "type": "type"
+    },
+    "RelationshipProfile": {
+      "doc_sha256": "6d747ddacfb8bd4e8e7db9daa098618a31fa53898b517626bcac65fa157c8b6d",
+      "module": "kontra.api.compare",
+      "signature": "(on: 'List[str]', left_rows: 'int', right_rows: 'int', execution_tier: 'str' = 'polars', left_null_rate: 'float' = 0.0, left_unique_keys: 'int' = 0, left_duplicate_keys: 'int' = 0, right_null_rate: 'float' = 0.0, right_unique_keys: 'int' = 0, right_duplicate_keys: 'int' = 0, left_key_multiplicity_min: 'int' = 0, left_key_multiplicity_max: 'int' = 0, right_key_multiplicity_min: 'int' = 0, right_key_multiplicity_max: 'int' = 0, left_keys_with_match: 'int' = 0, left_keys_without_match: 'int' = 0, right_keys_with_match: 'int' = 0, right_keys_without_match: 'int' = 0, samples_left_unmatched: 'List[Any]' = <factory>, samples_right_unmatched: 'List[Any]' = <factory>, samples_right_duplicates: 'List[Any]' = <factory>, sample_limit: 'int' = 0) -> None",
+      "type": "type"
+    },
+    "RuleExplainEntry": {
+      "doc_sha256": "9ab9ebcee197a0b4ddf0d2d424bcf6960a74dd23676f0f1b32e27db5ffe7430c",
+      "module": "kontra.api.results",
+      "signature": "(rule_id: 'str', name: 'str', tier: 'str', reason: 'str', column: 'Optional[str]' = None) -> None",
+      "type": "type"
+    },
+    "RuleResult": {
+      "doc_sha256": "26be657cf11371e18f5916b8f2b018f613aa1927a0c72af411c2d3cf35fe9890",
+      "module": "kontra.api.results",
+      "signature": "(rule_id: 'str', name: 'str', passed: 'bool', failed_count: 'int', message: 'str', severity: 'str' = 'blocking', source: 'str' = 'polars', tally: 'bool' = False, column: 'Optional[str]' = None, details: 'Optional[Dict[str, Any]]' = None, context: 'Optional[Dict[str, Any]]' = None, failure_mode: 'Optional[str]' = None, samples: 'Optional[List[Dict[str, Any]]]' = None, samples_source: 'Optional[str]' = None, samples_reason: 'Optional[str]' = None, samples_truncated: 'bool' = False, annotations: 'Optional[List[Dict[str, Any]]]' = None, severity_weight: 'Optional[float]' = None, _total_rows: 'Optional[int]' = None) -> None",
+      "type": "type"
+    },
+    "ScoutProfiler": {
+      "doc_sha256": "8de5f55030005ddfb2bf733fc3681f21bb1b5ef077587d67e2a4d5a4ccdb11a9",
+      "module": "kontra.scout.profiler",
+      "signature": "(source_uri: 'str', *, preset: \"Literal['lite', 'standard', 'deep']\" = 'standard', list_values_threshold: 'Optional[int]' = None, top_n: 'Optional[int]' = None, sample_size: 'Optional[int]' = None, include_patterns: 'bool' = False, percentiles: 'Optional[List[int]]' = None, columns: 'Optional[List[str]]' = None, storage_options: 'Optional[Dict[str, Any]]' = None)",
+      "type": "type"
+    },
+    "StateCorruptedError": {
+      "doc_sha256": "f314d0e8bf415a9dd20d1e65cbbf0d3e86a9fd09865147476515939131664ae8",
+      "module": "kontra.errors",
+      "signature": "(contract: 'str', error: 'str')",
+      "type": "type"
+    },
+    "SuggestedRule": {
+      "doc_sha256": "31d5a6d86268655c6eb516eec78631aaed6ee243a1aeb9e22a3d1aed119f4066",
+      "module": "kontra.api.results",
+      "signature": "(name: 'str', params: 'Dict[str, Any]', confidence: 'float', reason: 'str') -> None",
+      "type": "type"
+    },
+    "Suggestions": {
+      "doc_sha256": "147d38ba16625eb685eb7230e9a2f9e72e0cbc4108325fb5a1a5c7d359c98b07",
+      "module": "kontra.api.results",
+      "signature": "(rules: 'List[SuggestedRule]', source: 'str' = 'unknown', profile: \"Optional['DatasetProfile']\" = None)",
+      "type": "type"
+    },
+    "ValidationEngine": {
+      "doc_sha256": "b76fe096bfd00c86b6d28d0034fd0f72b24a33f647988c7841ea25e5480b3f16",
+      "module": "kontra.engine.engine",
+      "signature": "(contract_path: 'Optional[str]' = None, data_path: 'Optional[str]' = None, dataframe: \"Optional[Union['pl.DataFrame', 'pd.DataFrame']]\" = None, handle: 'Optional[DatasetHandle]' = None, emit_report: 'bool' = True, stats_mode: \"Literal['none', 'summary', 'profile']\" = 'none', preplan: \"Literal['on', 'off']\" = 'on', pushdown: \"Literal['on', 'off']\" = 'on', tally: 'Optional[bool]' = None, tally_is_override: 'bool' = False, enable_projection: 'bool' = True, csv_mode: \"Literal['auto', 'duckdb', 'parquet']\" = 'auto', show_plan: 'bool' = False, explain_preplan: 'bool' = False, state_store: \"Optional['StateBackend']\" = None, save_state: 'bool' = True, inline_rules: 'Optional[List[Dict[str, Any]]]' = None, storage_options: 'Optional[Dict[str, Any]]' = None, execution_path: 'Optional[ExecutionPath]' = None, only_rules: 'Optional[List[str]]' = None, only_columns: 'Optional[List[str]]' = None)",
+      "type": "type"
+    },
+    "ValidationError": {
+      "doc_sha256": "4db7b0b2aef68b302dd0cfe56407ff4016872be2973093855f2f1a567382d94d",
+      "module": "kontra.errors",
+      "signature": "(result: \"'ValidationResult'\", message: 'Optional[str]' = None)",
+      "type": "type"
+    },
+    "ValidationResult": {
+      "doc_sha256": "4e83869796f1f65012d8d3c7335719362f4a93c037c24bb83d2b24ef3bb4369d",
+      "module": "kontra.api.results",
+      "signature": "(passed: 'bool', dataset: 'str', total_rows: 'int', total_rules: 'int', passed_count: 'int', failed_count: 'int', warning_count: 'int', rules: 'List[RuleResult]', stats: 'Optional[Dict[str, Any]]' = None, annotations: 'Optional[List[Dict[str, Any]]]' = None, _raw: 'Optional[Dict[str, Any]]' = None, _data_source: 'Optional[Any]' = None, _rule_objects: 'Optional[List[Any]]' = None, _data: 'Optional[Any]' = None, _sampler: 'Optional[SamplingOrchestrator]' = None) -> None",
+      "type": "type"
+    },
+    "__version__": {
+      "module": null,
+      "type": "str"
+    },
+    "annotate": {
+      "doc_sha256": "6c6a257de975cceff6a6fb0ec68919a1c1ef2f44e995dc051c1d131a87a5fe79",
+      "module": "kontra",
+      "signature": "(contract: str, *, run_id: Optional[str] = None, rule_id: Optional[str] = None, actor_type: str = 'agent', actor_id: str, annotation_type: str, summary: str, payload: Optional[Dict[str, Any]] = None) -> int",
+      "type": "function"
+    },
+    "compare": {
+      "doc_sha256": "3d0b12db5c1c8802bc3a87f150d2aa33fdde3cde3eb1f06b6c1f95f12b78a2d7",
+      "module": "kontra.probes.compare",
+      "signature": "(before: 'Any', after: 'Any', key: 'Optional[Union[str, List[str]]]' = None, *, before_key: 'Optional[Union[str, List[str]]]' = None, after_key: 'Optional[Union[str, List[str]]]' = None, before_table: 'Optional[str]' = None, after_table: 'Optional[str]' = None, sample_limit: 'int' = 0, save: 'bool' = False, storage_options: 'Optional[Dict[str, Any]]' = None) -> 'CompareResult'",
+      "type": "function"
+    },
+    "compare_profiles": {
+      "doc_sha256": "ee9200eb45b5b72a96818dc8eab77e174338f9c9836834a86903bf951e78e891",
+      "module": "kontra",
+      "signature": "(a: Union[str, ForwardRef('pl.DataFrame'), List[Dict[str, Any]], Dict[str, Any]], b: Union[str, ForwardRef('pl.DataFrame'), List[Dict[str, Any]], Dict[str, Any]], *, preset: str = 'scan', columns: Optional[List[str]] = None, sample: Optional[int] = None, storage_options: Optional[Dict[str, Any]] = None, a_label: Optional[str] = None, b_label: Optional[str] = None) -> kontra.scout.types.ProfileDiff",
+      "type": "function"
+    },
+    "config": {
+      "doc_sha256": "bc66123e6608ea684f6896ef3764db5d4dac96809d2dba26b818c9ffec009d61",
+      "module": "kontra",
+      "signature": "(env: Optional[str] = None) -> 'KontraConfig'",
+      "type": "function"
+    },
+    "describe_rule": {
+      "doc_sha256": "5945d13c9dd19616c0da8b4c168194aa1a5bf3d23c8b766d0a8a61e8a932efdf",
+      "module": "kontra",
+      "signature": "(name: str) -> Dict[str, Any]",
+      "type": "function"
+    },
+    "diff": {
+      "doc_sha256": "027b6f378d27bf5079f283419e66ead0ad0af558ec2a9461f65b433dcd6d9b35",
+      "module": "kontra",
+      "signature": "(contract: str, *, since: Optional[str] = None, before: Optional[str] = None, after: Optional[str] = None) -> Optional[kontra.api.results.Diff]",
+      "type": "function"
+    },
+    "draft": {
+      "doc_sha256": "0fc9f81f08ae47117f23c22f3c972e6ec888c5c75ae85768f3ca064a0ad2a265",
+      "module": "kontra",
+      "signature": "(data: Any, min_confidence: float = 0.5, *, preset: str = 'interrogate', storage_options: Optional[Dict[str, Any]] = None) -> kontra.api.results.Suggestions",
+      "type": "function"
+    },
+    "explain": {
+      "doc_sha256": "f143d116f2cbbae9173d5e723ada4399507c770e47661bed4d62029fa63bf60c",
+      "module": "kontra",
+      "signature": "(data: Union[str, ForwardRef('pl.DataFrame'), ForwardRef('pd.DataFrame'), List[Dict[str, Any]], Dict[str, Any], Any, NoneType] = None, contract: Optional[str] = None, *, rules: Optional[List[Dict[str, Any]]] = None, preplan: str = 'on', pushdown: str = 'on', only: Optional[List[str]] = None, columns: Optional[List[str]] = None, storage_options: Optional[Dict[str, Any]] = None) -> kontra.api.results.ExplainResult",
+      "type": "function"
+    },
+    "get_annotations": {
+      "doc_sha256": "27355d81693f4c2bd050c77ef525200d2df71218649ad5a43eb5df9bd6b77c11",
+      "module": "kontra",
+      "signature": "(contract: str, *, rule_id: Optional[str] = None, annotation_type: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "get_config_path": {
+      "doc_sha256": "f09448d450e8aa876281c0984410d6dde633f22b9c926d4b99f6a9871a24067e",
+      "module": "kontra",
+      "signature": "() -> Optional[str]",
+      "type": "function"
+    },
+    "get_profile": {
+      "doc_sha256": "1ae8c1e69368e934a19e89c3ee48104802142523d6f88d589bdf0a2b9d23f435",
+      "module": "kontra",
+      "signature": "(source: str, run_id: Optional[str] = None) -> Optional[kontra.scout.types.DatasetProfile]",
+      "type": "function"
+    },
+    "get_run": {
+      "doc_sha256": "96344d2d91b22877fa136b5d052391982dc091c314086300d7f892a49d403f8d",
+      "module": "kontra",
+      "signature": "(contract: str, run_id: Optional[str] = None) -> Optional[kontra.api.results.ValidationResult]",
+      "type": "function"
+    },
+    "get_run_with_annotations": {
+      "doc_sha256": "8dd56363faf52b0c9a425909dc5a10b1ba1e7a44bf35bb7a80f0b08b1b4618a9",
+      "module": "kontra",
+      "signature": "(contract: str, run_id: Optional[str] = None) -> Optional[kontra.api.results.ValidationResult]",
+      "type": "function"
+    },
+    "has_runs": {
+      "doc_sha256": "a0ca7ffd28164497c4fc78a24d8c3a25fa68d365207545b4d1dbb2bb69a7a47e",
+      "module": "kontra",
+      "signature": "(contract: str) -> bool",
+      "type": "function"
+    },
+    "health": {
+      "doc_sha256": "ee3fc4918b9a1defe9f0ed710e6bb3a38795f6634466ed7e6e1e7e8d2d43506f",
+      "module": "kontra",
+      "signature": "() -> Dict[str, Any]",
+      "type": "function"
+    },
+    "list_datasources": {
+      "doc_sha256": "b227a289976854a4add18066b9fa642f30470a670b9e16b74e90f971f6f20728",
+      "module": "kontra.config.settings",
+      "signature": "(config: 'Optional[KontraConfig]' = None) -> 'Dict[str, List[str]]'",
+      "type": "function"
+    },
+    "list_profiles": {
+      "doc_sha256": "74a3f66f8d78005be3791a5c8702e9a3aa688d32d3fc9d6a5108a300de135585",
+      "module": "kontra",
+      "signature": "(source: str) -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "list_rules": {
+      "doc_sha256": "99cac0046b3ec97f1ec4412beedd58781900a07a9eddf23377e2f34c455c2d13",
+      "module": "kontra",
+      "signature": "() -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "list_runs": {
+      "doc_sha256": "9a8a02af0392d6f7f043b1f47f9a23e6abcb96577c71ef37c84f2efaac58e336",
+      "module": "kontra",
+      "signature": "(contract: str) -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "profile": {
+      "doc_sha256": "838f2b503fe15bc9659b6df05b9ee871d0817343738a3312e0fac01a9d343096",
+      "module": "kontra",
+      "signature": "(data: Union[str, ForwardRef('pl.DataFrame'), List[Dict[str, Any]], Dict[str, Any]], preset: str = 'scan', *, columns: Optional[List[str]] = None, sample: Optional[int] = None, save: bool = False, storage_options: Optional[Dict[str, Any]] = None, **kwargs) -> kontra.scout.types.DatasetProfile",
+      "type": "function"
+    },
+    "profile_diff": {
+      "doc_sha256": "df1acd106ccb66ca297e9ea17bf3592b4e2abfde84560b1f20292d6819e6b975",
+      "module": "kontra",
+      "signature": "(source: str, *, since: Optional[str] = None) -> Optional[kontra.scout.types.ProfileDiff]",
+      "type": "function"
+    },
+    "profile_relationship": {
+      "doc_sha256": "01e8228bfed6f1efc75d3ccfbac9cd36c59b358bf483281613852cf25e365f83",
+      "module": "kontra.probes.relationship",
+      "signature": "(left: 'Any', right: 'Any', on: 'Optional[Union[str, List[str]]]' = None, *, left_on: 'Optional[Union[str, List[str]]]' = None, right_on: 'Optional[Union[str, List[str]]]' = None, left_table: 'Optional[str]' = None, right_table: 'Optional[str]' = None, sample_limit: 'int' = 0, save: 'bool' = False, storage_options: 'Optional[Dict[str, Any]]' = None) -> 'RelationshipProfile'",
+      "type": "function"
+    },
+    "resolve": {
+      "doc_sha256": "2f35803d6f1dee52817d99ad06bb338ac7e1c117c503b0b90d2193554c11c3e0",
+      "module": "kontra",
+      "signature": "(name: str) -> str",
+      "type": "function"
+    },
+    "rules": {
+      "module": "kontra.api.rules",
+      "type": "_RulesModule"
+    },
+    "scout": {
+      "doc_sha256": "d8264c6c7586c1dfab38ce49db3f399e25d7fd6e04e70ebd557cee9f05a647bf",
+      "module": "kontra",
+      "signature": "(data: Union[str, ForwardRef('pl.DataFrame')], preset: str = 'standard', *, columns: Optional[List[str]] = None, sample: Optional[int] = None, save: bool = True, **kwargs) -> kontra.scout.types.DatasetProfile",
+      "type": "function"
+    },
+    "scout_diff": {
+      "doc_sha256": "a8a186ceebc4a35fcc414678b862d6008c5f7412fa4399049930d0ebd3450909",
+      "module": "kontra",
+      "signature": "(source: str, *, since: Optional[str] = None) -> Optional[kontra.scout.types.ProfileDiff]",
+      "type": "function"
+    },
+    "set_config": {
+      "doc_sha256": "5b72daec536ffd083d5a9c217dc398f26b4193682fa694eabd1d86dd3dd028bc",
+      "module": "kontra",
+      "signature": "(path: Optional[str]) -> None",
+      "type": "function"
+    },
+    "suggest_rules": {
+      "doc_sha256": "e42ab1741d5e84a7ca754b04798b5d0889fd4d949d155c9804a1ff78b193e1ef",
+      "module": "kontra",
+      "signature": "(data: Union[str, kontra.scout.types.DatasetProfile, ForwardRef('pl.DataFrame')], min_confidence: float = 0.5) -> kontra.api.results.Suggestions",
+      "type": "function"
+    },
+    "validate": {
+      "doc_sha256": "e731aabee1f03cb2346512fe4e9c2e060b80b00b0a57e4b5c60b638917a9d0ec",
+      "module": "kontra",
+      "signature": "(data: Union[str, ForwardRef('pl.DataFrame'), ForwardRef('pd.DataFrame'), List[Dict[str, Any]], Dict[str, Any], Any, NoneType] = None, contract: Optional[str] = None, *, table: Optional[str] = None, rules: Optional[List[Dict[str, Any]]] = None, emit_report: bool = False, save: bool = True, preplan: Optional[str] = 'on', pushdown: Optional[str] = 'on', tally: Optional[bool] = None, projection: bool = True, csv_mode: Optional[str] = 'auto', env: Optional[str] = None, stats: str = 'none', dry_run: bool = False, sample: int = 0, sample_budget: int = 50, sample_columns: Union[List[str], str, NoneType] = None, storage_options: Optional[Dict[str, Any]] = None, only: Optional[List[str]] = None, columns: Optional[List[str]] = None, explain: bool = False, **kwargs) -> Union[ForwardRef('ValidationResult'), ForwardRef('DryRunResult'), ForwardRef('ExplainResult')]",
+      "type": "function"
+    },
+    "validate_decorator": {
+      "doc_sha256": "046945f5e2db42bde33d2a7c7834bf5cce6b45cfbc5344cd95c2349199a025b6",
+      "module": "kontra.api.decorators",
+      "signature": "(contract: 'Optional[str]' = None, rules: 'Optional[List[Dict[str, Any]]]' = None, on_fail: 'OnFailHandler' = 'raise', save: 'bool' = False, sample: 'int' = 0, sample_columns: 'Optional[Union[List[str], str]]' = None, **engine_kwargs: 'Any') -> 'Callable[[F], F]'",
+      "type": "function"
+    }
+  },
+  "names": [
+    "Any",
+    "ColumnProfile",
+    "CompareResult",
+    "ContractNotFoundError",
+    "DatasetProfile",
+    "Dict",
+    "Diff",
+    "DryRunResult",
+    "ExplainResult",
+    "List",
+    "Optional",
+    "ProfileDiff",
+    "Query",
+    "RelationshipProfile",
+    "RuleExplainEntry",
+    "RuleResult",
+    "StateCorruptedError",
+    "SuggestedRule",
+    "Suggestions",
+    "TYPE_CHECKING",
+    "Union",
+    "ValidationError",
+    "ValidationResult",
+    "annotate",
+    "api",
+    "compare_profiles",
+    "config",
+    "connectors",
+    "describe_rule",
+    "diff",
+    "draft",
+    "errors",
+    "explain",
+    "get_annotations",
+    "get_config_path",
+    "get_history",
+    "get_logger",
+    "get_profile",
+    "get_run",
+    "get_run_with_annotations",
+    "has_runs",
+    "health",
+    "json",
+    "kontra",
+    "list_profiles",
+    "list_rules",
+    "list_runs",
+    "log_exception",
+    "logging",
+    "os",
+    "profile",
+    "profile_diff",
+    "resolve",
+    "rules",
+    "scout",
+    "scout_diff",
+    "set_config",
+    "suggest_rules",
+    "validate",
+    "validate_decorator",
+    "version"
+  ],
+  "surface": {
+    "Any": {
+      "module": "typing",
+      "type": "_AnyMeta"
+    },
+    "ColumnProfile": {
+      "doc_sha256": "efd1674dc2154329d65774cd9ed287227ca47713c9e4738b1681e1525383c260",
+      "module": "kontra.scout.types",
+      "signature": "(name: 'str', dtype: 'str', dtype_raw: 'str', row_count: 'int' = 0, null_count: 'int' = 0, null_rate: 'float' = 0.0, distinct_count: 'int' = 0, uniqueness_ratio: 'float' = 0.0, null_count_estimated: 'bool' = False, distinct_count_estimated: 'bool' = False, is_low_cardinality: 'bool' = False, values: 'Optional[List[Any]]' = None, top_values: 'List[TopValue]' = <factory>, numeric: 'Optional[NumericStats]' = None, string: 'Optional[StringStats]' = None, temporal: 'Optional[TemporalStats]' = None, detected_patterns: 'List[str]' = <factory>, semantic_type: 'Optional[str]' = None) -> None",
+      "type": "type"
+    },
+    "CompareResult": {
+      "doc_sha256": "dcf94a3a4d45521353839d5d135871e5ecd64c9759b9d21609efd79e709c46bd",
+      "module": "kontra.api.compare",
+      "signature": "(before_rows: 'int', after_rows: 'int', key: 'List[str]', execution_tier: 'str' = 'polars', row_delta: 'int' = 0, row_ratio: 'float' = 1.0, unique_before: 'int' = 0, unique_after: 'int' = 0, preserved: 'int' = 0, dropped: 'int' = 0, added: 'int' = 0, duplicated_after: 'int' = 0, unchanged_rows: 'int' = 0, changed_rows: 'int' = 0, columns_added: 'List[str]' = <factory>, columns_removed: 'List[str]' = <factory>, columns_modified: 'List[str]' = <factory>, modified_fraction: 'Dict[str, float]' = <factory>, nullability_delta: 'Dict[str, Dict[str, Optional[float]]]' = <factory>, samples_duplicated_keys: 'List[Any]' = <factory>, samples_dropped_keys: 'List[Any]' = <factory>, samples_changed_rows: 'List[Dict[str, Any]]' = <factory>, sample_limit: 'int' = 0) -> None",
+      "type": "type"
+    },
+    "ContractNotFoundError": {
+      "doc_sha256": "d66046f897c9a18975b47e4f8e78d8e17a80ce352d4a989cf70cd63589e1e20e",
+      "module": "kontra.errors",
+      "signature": "(path: 'str')",
+      "type": "type"
+    },
+    "DatasetProfile": {
+      "doc_sha256": "e6c45ba8dd96dce9d2cc80f47f6fbba1637daf8953865a53f8c0547accff5bcb",
+      "module": "kontra.scout.types",
+      "signature": "(source_uri: 'str', source_format: 'str', profiled_at: 'str', engine_version: 'str', preset: 'str' = 'scan', row_count: 'int' = 0, column_count: 'int' = 0, estimated_size_bytes: 'Optional[int]' = None, row_count_estimated: 'bool' = False, sampled: 'bool' = False, sample_size: 'Optional[int]' = None, columns: 'List[ColumnProfile]' = <factory>, warnings: 'List[str]' = <factory>, profile_duration_ms: 'int' = 0) -> None",
+      "type": "type"
+    },
+    "Dict": {
+      "module": "typing",
+      "type": "_SpecialGenericAlias"
+    },
+    "Diff": {
+      "doc_sha256": "ed72df2d91b3d045db4d5144dd3474c8628ada91fdc630c46f6f9a0a00a8e9eb",
+      "module": "kontra.api.results",
+      "signature": "(has_changes: 'bool', improved: 'bool', regressed: 'bool', before: 'Dict[str, Any]', after: 'Dict[str, Any]', new_failures: 'List[Dict[str, Any]]', resolved: 'List[Dict[str, Any]]', regressions: 'List[Dict[str, Any]]', improvements: 'List[Dict[str, Any]]', warnings: 'List[str]' = <factory>, _state_diff: 'Optional[Any]' = None) -> None",
+      "type": "type"
+    },
+    "DryRunResult": {
+      "doc_sha256": "6ea048b25fc9f7a95224729a2ba564d602f08cf34cdf7ea7bade331a3c923143",
+      "module": "kontra.api.results",
+      "signature": "(valid: 'bool', rules_count: 'int', columns_needed: 'List[str]', contract_name: 'Optional[str]' = None, datasource: 'Optional[str]' = None, errors: 'List[str]' = <factory>) -> None",
+      "type": "type"
+    },
+    "ExplainResult": {
+      "doc_sha256": "e6b1ca51907405c3bbfe96ef33bd38b9dc1fa939cc4bd27c11d4d69df497e24b",
+      "module": "kontra.api.results",
+      "signature": "(contract_name: 'str', total_rules: 'int', rules: 'List[RuleExplainEntry]', summary: 'Dict[str, int]') -> None",
+      "type": "type"
+    },
+    "List": {
+      "module": "typing",
+      "type": "_SpecialGenericAlias"
+    },
+    "Optional": {
+      "module": "typing",
+      "type": "_SpecialForm"
+    },
+    "ProfileDiff": {
+      "doc_sha256": "abe71a3de19f45aa2123cbb3ecaacfbb118053e6c2ee065aded0631729c14fa1",
+      "module": "kontra.scout.types",
+      "signature": "(before: 'ProfileState', after: 'ProfileState', row_count_before: 'int' = 0, row_count_after: 'int' = 0, row_count_delta: 'int' = 0, row_count_pct_change: 'float' = 0.0, column_count_before: 'int' = 0, column_count_after: 'int' = 0, columns_added: 'List[str]' = <factory>, columns_removed: 'List[str]' = <factory>, columns_changed: 'List[ColumnDiff]' = <factory>, null_rate_increases: 'List[ColumnDiff]' = <factory>, null_rate_decreases: 'List[ColumnDiff]' = <factory>, cardinality_changes: 'List[ColumnDiff]' = <factory>, dtype_changes: 'List[ColumnDiff]' = <factory>) -> None",
+      "type": "type"
+    },
+    "Query": {
+      "doc_sha256": "bfca12ab257e7dd95db2c71654ab555239ffb21a027b61b9112d86008d94d0f2",
+      "module": "kontra.connectors.query",
+      "signature": "(sql: 'str', source: 'Any' = None, params: 'Optional[Dict[str, Any]]' = None, name: 'Optional[str]' = None) -> None",
+      "type": "type"
+    },
+    "RelationshipProfile": {
+      "doc_sha256": "6d747ddacfb8bd4e8e7db9daa098618a31fa53898b517626bcac65fa157c8b6d",
+      "module": "kontra.api.compare",
+      "signature": "(on: 'List[str]', left_rows: 'int', right_rows: 'int', execution_tier: 'str' = 'polars', left_null_rate: 'float' = 0.0, left_unique_keys: 'int' = 0, left_duplicate_keys: 'int' = 0, right_null_rate: 'float' = 0.0, right_unique_keys: 'int' = 0, right_duplicate_keys: 'int' = 0, left_key_multiplicity_min: 'int' = 0, left_key_multiplicity_max: 'int' = 0, right_key_multiplicity_min: 'int' = 0, right_key_multiplicity_max: 'int' = 0, left_keys_with_match: 'int' = 0, left_keys_without_match: 'int' = 0, right_keys_with_match: 'int' = 0, right_keys_without_match: 'int' = 0, samples_left_unmatched: 'List[Any]' = <factory>, samples_right_unmatched: 'List[Any]' = <factory>, samples_right_duplicates: 'List[Any]' = <factory>, sample_limit: 'int' = 0) -> None",
+      "type": "type"
+    },
+    "RuleExplainEntry": {
+      "doc_sha256": "9ab9ebcee197a0b4ddf0d2d424bcf6960a74dd23676f0f1b32e27db5ffe7430c",
+      "module": "kontra.api.results",
+      "signature": "(rule_id: 'str', name: 'str', tier: 'str', reason: 'str', column: 'Optional[str]' = None) -> None",
+      "type": "type"
+    },
+    "RuleResult": {
+      "doc_sha256": "26be657cf11371e18f5916b8f2b018f613aa1927a0c72af411c2d3cf35fe9890",
+      "module": "kontra.api.results",
+      "signature": "(rule_id: 'str', name: 'str', passed: 'bool', failed_count: 'int', message: 'str', severity: 'str' = 'blocking', source: 'str' = 'polars', tally: 'bool' = False, column: 'Optional[str]' = None, details: 'Optional[Dict[str, Any]]' = None, context: 'Optional[Dict[str, Any]]' = None, failure_mode: 'Optional[str]' = None, samples: 'Optional[List[Dict[str, Any]]]' = None, samples_source: 'Optional[str]' = None, samples_reason: 'Optional[str]' = None, samples_truncated: 'bool' = False, annotations: 'Optional[List[Dict[str, Any]]]' = None, severity_weight: 'Optional[float]' = None, _total_rows: 'Optional[int]' = None) -> None",
+      "type": "type"
+    },
+    "StateCorruptedError": {
+      "doc_sha256": "f314d0e8bf415a9dd20d1e65cbbf0d3e86a9fd09865147476515939131664ae8",
+      "module": "kontra.errors",
+      "signature": "(contract: 'str', error: 'str')",
+      "type": "type"
+    },
+    "SuggestedRule": {
+      "doc_sha256": "31d5a6d86268655c6eb516eec78631aaed6ee243a1aeb9e22a3d1aed119f4066",
+      "module": "kontra.api.results",
+      "signature": "(name: 'str', params: 'Dict[str, Any]', confidence: 'float', reason: 'str') -> None",
+      "type": "type"
+    },
+    "Suggestions": {
+      "doc_sha256": "147d38ba16625eb685eb7230e9a2f9e72e0cbc4108325fb5a1a5c7d359c98b07",
+      "module": "kontra.api.results",
+      "signature": "(rules: 'List[SuggestedRule]', source: 'str' = 'unknown', profile: \"Optional['DatasetProfile']\" = None)",
+      "type": "type"
+    },
+    "TYPE_CHECKING": {
+      "module": null,
+      "type": "bool"
+    },
+    "Union": {
+      "module": "typing",
+      "type": "_SpecialForm"
+    },
+    "ValidationError": {
+      "doc_sha256": "4db7b0b2aef68b302dd0cfe56407ff4016872be2973093855f2f1a567382d94d",
+      "module": "kontra.errors",
+      "signature": "(result: \"'ValidationResult'\", message: 'Optional[str]' = None)",
+      "type": "type"
+    },
+    "ValidationResult": {
+      "doc_sha256": "4e83869796f1f65012d8d3c7335719362f4a93c037c24bb83d2b24ef3bb4369d",
+      "module": "kontra.api.results",
+      "signature": "(passed: 'bool', dataset: 'str', total_rows: 'int', total_rules: 'int', passed_count: 'int', failed_count: 'int', warning_count: 'int', rules: 'List[RuleResult]', stats: 'Optional[Dict[str, Any]]' = None, annotations: 'Optional[List[Dict[str, Any]]]' = None, _raw: 'Optional[Dict[str, Any]]' = None, _data_source: 'Optional[Any]' = None, _rule_objects: 'Optional[List[Any]]' = None, _data: 'Optional[Any]' = None, _sampler: 'Optional[SamplingOrchestrator]' = None) -> None",
+      "type": "type"
+    },
+    "annotate": {
+      "doc_sha256": "6c6a257de975cceff6a6fb0ec68919a1c1ef2f44e995dc051c1d131a87a5fe79",
+      "module": "kontra",
+      "signature": "(contract: str, *, run_id: Optional[str] = None, rule_id: Optional[str] = None, actor_type: str = 'agent', actor_id: str, annotation_type: str, summary: str, payload: Optional[Dict[str, Any]] = None) -> int",
+      "type": "function"
+    },
+    "api": {
+      "module": "kontra.api",
+      "type": "module"
+    },
+    "compare_profiles": {
+      "doc_sha256": "ee9200eb45b5b72a96818dc8eab77e174338f9c9836834a86903bf951e78e891",
+      "module": "kontra",
+      "signature": "(a: Union[str, ForwardRef('pl.DataFrame'), List[Dict[str, Any]], Dict[str, Any]], b: Union[str, ForwardRef('pl.DataFrame'), List[Dict[str, Any]], Dict[str, Any]], *, preset: str = 'scan', columns: Optional[List[str]] = None, sample: Optional[int] = None, storage_options: Optional[Dict[str, Any]] = None, a_label: Optional[str] = None, b_label: Optional[str] = None) -> kontra.scout.types.ProfileDiff",
+      "type": "function"
+    },
+    "config": {
+      "doc_sha256": "bc66123e6608ea684f6896ef3764db5d4dac96809d2dba26b818c9ffec009d61",
+      "module": "kontra",
+      "signature": "(env: Optional[str] = None) -> 'KontraConfig'",
+      "type": "function"
+    },
+    "connectors": {
+      "module": "kontra.connectors",
+      "type": "module"
+    },
+    "describe_rule": {
+      "doc_sha256": "5945d13c9dd19616c0da8b4c168194aa1a5bf3d23c8b766d0a8a61e8a932efdf",
+      "module": "kontra",
+      "signature": "(name: str) -> Dict[str, Any]",
+      "type": "function"
+    },
+    "diff": {
+      "doc_sha256": "027b6f378d27bf5079f283419e66ead0ad0af558ec2a9461f65b433dcd6d9b35",
+      "module": "kontra",
+      "signature": "(contract: str, *, since: Optional[str] = None, before: Optional[str] = None, after: Optional[str] = None) -> Optional[kontra.api.results.Diff]",
+      "type": "function"
+    },
+    "draft": {
+      "doc_sha256": "0fc9f81f08ae47117f23c22f3c972e6ec888c5c75ae85768f3ca064a0ad2a265",
+      "module": "kontra",
+      "signature": "(data: Any, min_confidence: float = 0.5, *, preset: str = 'interrogate', storage_options: Optional[Dict[str, Any]] = None) -> kontra.api.results.Suggestions",
+      "type": "function"
+    },
+    "errors": {
+      "module": "kontra.errors",
+      "type": "module"
+    },
+    "explain": {
+      "doc_sha256": "f143d116f2cbbae9173d5e723ada4399507c770e47661bed4d62029fa63bf60c",
+      "module": "kontra",
+      "signature": "(data: Union[str, ForwardRef('pl.DataFrame'), ForwardRef('pd.DataFrame'), List[Dict[str, Any]], Dict[str, Any], Any, NoneType] = None, contract: Optional[str] = None, *, rules: Optional[List[Dict[str, Any]]] = None, preplan: str = 'on', pushdown: str = 'on', only: Optional[List[str]] = None, columns: Optional[List[str]] = None, storage_options: Optional[Dict[str, Any]] = None) -> kontra.api.results.ExplainResult",
+      "type": "function"
+    },
+    "get_annotations": {
+      "doc_sha256": "27355d81693f4c2bd050c77ef525200d2df71218649ad5a43eb5df9bd6b77c11",
+      "module": "kontra",
+      "signature": "(contract: str, *, rule_id: Optional[str] = None, annotation_type: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "get_config_path": {
+      "doc_sha256": "f09448d450e8aa876281c0984410d6dde633f22b9c926d4b99f6a9871a24067e",
+      "module": "kontra",
+      "signature": "() -> Optional[str]",
+      "type": "function"
+    },
+    "get_history": {
+      "doc_sha256": "27efb00ea0c9337b690fb35bd2615f66d32ddefc9e17d93d61d8a0e323c59b16",
+      "module": "kontra",
+      "signature": "(contract: str, *, limit: int = 20, since: Optional[str] = None, failed_only: bool = False) -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "get_logger": {
+      "doc_sha256": "82ea209a58029dcd4218675f20aede6f2b46140dffad83a3f42ca4fb389d4da8",
+      "module": "kontra.logging",
+      "signature": "(name: 'str') -> 'logging.Logger'",
+      "type": "function"
+    },
+    "get_profile": {
+      "doc_sha256": "1ae8c1e69368e934a19e89c3ee48104802142523d6f88d589bdf0a2b9d23f435",
+      "module": "kontra",
+      "signature": "(source: str, run_id: Optional[str] = None) -> Optional[kontra.scout.types.DatasetProfile]",
+      "type": "function"
+    },
+    "get_run": {
+      "doc_sha256": "96344d2d91b22877fa136b5d052391982dc091c314086300d7f892a49d403f8d",
+      "module": "kontra",
+      "signature": "(contract: str, run_id: Optional[str] = None) -> Optional[kontra.api.results.ValidationResult]",
+      "type": "function"
+    },
+    "get_run_with_annotations": {
+      "doc_sha256": "8dd56363faf52b0c9a425909dc5a10b1ba1e7a44bf35bb7a80f0b08b1b4618a9",
+      "module": "kontra",
+      "signature": "(contract: str, run_id: Optional[str] = None) -> Optional[kontra.api.results.ValidationResult]",
+      "type": "function"
+    },
+    "has_runs": {
+      "doc_sha256": "a0ca7ffd28164497c4fc78a24d8c3a25fa68d365207545b4d1dbb2bb69a7a47e",
+      "module": "kontra",
+      "signature": "(contract: str) -> bool",
+      "type": "function"
+    },
+    "health": {
+      "doc_sha256": "ee3fc4918b9a1defe9f0ed710e6bb3a38795f6634466ed7e6e1e7e8d2d43506f",
+      "module": "kontra",
+      "signature": "() -> Dict[str, Any]",
+      "type": "function"
+    },
+    "json": {
+      "module": "json",
+      "type": "module"
+    },
+    "kontra": {
+      "module": "kontra",
+      "type": "module"
+    },
+    "list_profiles": {
+      "doc_sha256": "74a3f66f8d78005be3791a5c8702e9a3aa688d32d3fc9d6a5108a300de135585",
+      "module": "kontra",
+      "signature": "(source: str) -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "list_rules": {
+      "doc_sha256": "99cac0046b3ec97f1ec4412beedd58781900a07a9eddf23377e2f34c455c2d13",
+      "module": "kontra",
+      "signature": "() -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "list_runs": {
+      "doc_sha256": "9a8a02af0392d6f7f043b1f47f9a23e6abcb96577c71ef37c84f2efaac58e336",
+      "module": "kontra",
+      "signature": "(contract: str) -> List[Dict[str, Any]]",
+      "type": "function"
+    },
+    "log_exception": {
+      "doc_sha256": "b20f3511034cc235e1ba1cfd37fc0f70052a3f027dbd4ece686a5900f240b551",
+      "module": "kontra.logging",
+      "signature": "(logger: 'logging.Logger', msg: 'str', exc: 'Exception', level: 'int' = 10) -> 'None'",
+      "type": "function"
+    },
+    "logging": {
+      "module": "kontra.logging",
+      "type": "module"
+    },
+    "os": {
+      "module": "os",
+      "type": "module"
+    },
+    "profile": {
+      "doc_sha256": "838f2b503fe15bc9659b6df05b9ee871d0817343738a3312e0fac01a9d343096",
+      "module": "kontra",
+      "signature": "(data: Union[str, ForwardRef('pl.DataFrame'), List[Dict[str, Any]], Dict[str, Any]], preset: str = 'scan', *, columns: Optional[List[str]] = None, sample: Optional[int] = None, save: bool = False, storage_options: Optional[Dict[str, Any]] = None, **kwargs) -> kontra.scout.types.DatasetProfile",
+      "type": "function"
+    },
+    "profile_diff": {
+      "doc_sha256": "df1acd106ccb66ca297e9ea17bf3592b4e2abfde84560b1f20292d6819e6b975",
+      "module": "kontra",
+      "signature": "(source: str, *, since: Optional[str] = None) -> Optional[kontra.scout.types.ProfileDiff]",
+      "type": "function"
+    },
+    "resolve": {
+      "doc_sha256": "2f35803d6f1dee52817d99ad06bb338ac7e1c117c503b0b90d2193554c11c3e0",
+      "module": "kontra",
+      "signature": "(name: str) -> str",
+      "type": "function"
+    },
+    "rules": {
+      "module": "kontra.api.rules",
+      "type": "_RulesModule"
+    },
+    "scout": {
+      "doc_sha256": "d8264c6c7586c1dfab38ce49db3f399e25d7fd6e04e70ebd557cee9f05a647bf",
+      "module": "kontra",
+      "signature": "(data: Union[str, ForwardRef('pl.DataFrame')], preset: str = 'standard', *, columns: Optional[List[str]] = None, sample: Optional[int] = None, save: bool = True, **kwargs) -> kontra.scout.types.DatasetProfile",
+      "type": "function"
+    },
+    "scout_diff": {
+      "doc_sha256": "a8a186ceebc4a35fcc414678b862d6008c5f7412fa4399049930d0ebd3450909",
+      "module": "kontra",
+      "signature": "(source: str, *, since: Optional[str] = None) -> Optional[kontra.scout.types.ProfileDiff]",
+      "type": "function"
+    },
+    "set_config": {
+      "doc_sha256": "5b72daec536ffd083d5a9c217dc398f26b4193682fa694eabd1d86dd3dd028bc",
+      "module": "kontra",
+      "signature": "(path: Optional[str]) -> None",
+      "type": "function"
+    },
+    "suggest_rules": {
+      "doc_sha256": "e42ab1741d5e84a7ca754b04798b5d0889fd4d949d155c9804a1ff78b193e1ef",
+      "module": "kontra",
+      "signature": "(data: Union[str, kontra.scout.types.DatasetProfile, ForwardRef('pl.DataFrame')], min_confidence: float = 0.5) -> kontra.api.results.Suggestions",
+      "type": "function"
+    },
+    "validate": {
+      "doc_sha256": "e731aabee1f03cb2346512fe4e9c2e060b80b00b0a57e4b5c60b638917a9d0ec",
+      "module": "kontra",
+      "signature": "(data: Union[str, ForwardRef('pl.DataFrame'), ForwardRef('pd.DataFrame'), List[Dict[str, Any]], Dict[str, Any], Any, NoneType] = None, contract: Optional[str] = None, *, table: Optional[str] = None, rules: Optional[List[Dict[str, Any]]] = None, emit_report: bool = False, save: bool = True, preplan: Optional[str] = 'on', pushdown: Optional[str] = 'on', tally: Optional[bool] = None, projection: bool = True, csv_mode: Optional[str] = 'auto', env: Optional[str] = None, stats: str = 'none', dry_run: bool = False, sample: int = 0, sample_budget: int = 50, sample_columns: Union[List[str], str, NoneType] = None, storage_options: Optional[Dict[str, Any]] = None, only: Optional[List[str]] = None, columns: Optional[List[str]] = None, explain: bool = False, **kwargs) -> Union[ForwardRef('ValidationResult'), ForwardRef('DryRunResult'), ForwardRef('ExplainResult')]",
+      "type": "function"
+    },
+    "validate_decorator": {
+      "doc_sha256": "046945f5e2db42bde33d2a7c7834bf5cce6b45cfbc5344cd95c2349199a025b6",
+      "module": "kontra.api.decorators",
+      "signature": "(contract: 'Optional[str]' = None, rules: 'Optional[List[Dict[str, Any]]]' = None, on_fail: 'OnFailHandler' = 'raise', save: 'bool' = False, sample: 'int' = 0, sample_columns: 'Optional[Union[List[str], str]]' = None, **engine_kwargs: 'Any') -> 'Callable[[F], F]'",
+      "type": "function"
+    },
+    "version": {
+      "module": "kontra.version",
+      "type": "module"
+    }
+  }
+}
