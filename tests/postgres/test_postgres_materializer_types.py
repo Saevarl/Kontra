@@ -126,6 +126,7 @@ _TYPES = {
     "c_f4": ("real", "1.5", pl.Float64),
     "c_f8": ("double precision", "1.5", pl.Float64),
     "c_num": ("numeric(10,2)", "1.25", pl.Decimal(38, 2)),
+    "c_num_neg": ("numeric(5,-2)", "1200", pl.Decimal(38, 0)),
     "c_text": ("text", "'a'", pl.Utf8),
     "c_vc": ("varchar(20)", "'a'", pl.Utf8),
     "c_char": ("char(5)", "'ab'", pl.Utf8),

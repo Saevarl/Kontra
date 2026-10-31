@@ -64,8 +64,10 @@ def _pg_declared_types(description: Sequence[Any], time_zone: str) -> DeclaredTy
     for desc in description:
         oid = desc[1]
         if oid == _PG_NUMERIC:
-            # Unconstrained numeric reports no scale; its values set one.
-            scale = desc[5] or 0
+            # Unconstrained numeric reports no scale; its values set one. A
+            # negative scale (numeric(5,-2)) holds whole numbers, which load as
+            # scale 0, and Polars has no negative scale.
+            scale = max(desc[5] or 0, 0)
             out[desc[0]] = pl.Decimal(38, scale) if scale <= 38 else None
         else:
             out[desc[0]] = fixed.get(oid)
