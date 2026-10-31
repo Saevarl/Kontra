@@ -81,7 +81,9 @@ def _percentile_sql(columns: list[str], fractions: list[float], source: str) -> 
     values = ", ".join(f"({i}, CAST({col} AS FLOAT))" for i, col in enumerate(columns))
     outs = []
     for f in fractions:
-        pos = f"{f!r} * (q.n - 1)"
+        # FLOAT: a bare 0.333 is a DECIMAL literal, and DECIMAL's precision
+        # rules round the interpolation weight (p33.3 of [0, 1000] gave 300).
+        pos = f"CAST({f!r} AS FLOAT) * (q.n - 1)"
         lo = f"MAX(CASE WHEN q.rn = FLOOR({pos}) THEN q.val END)"
         hi = f"MAX(CASE WHEN q.rn = CEILING({pos}) THEN q.val END)"
         outs.append(f"{lo} + ({pos} - FLOOR({pos})) * ({hi} - {lo})")

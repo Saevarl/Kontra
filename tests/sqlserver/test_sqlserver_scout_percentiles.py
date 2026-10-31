@@ -173,6 +173,19 @@ class TestInterrogatePercentiles:
         )
         assert (numeric.percentiles["p0"], numeric.percentiles["p100"]) == (1.0, 9.0)
 
+    def test_fractional_levels_match(self, known_table):
+        """Levels like 33.3 interpolate in FLOAT; as DECIMAL the weight was rounded."""
+        import kontra
+
+        levels = [33.3, 99.9, 12.5]
+        profile = kontra.profile(
+            known_table, preset="interrogate", percentiles=levels, columns=["i"], save=False
+        )
+        values = [row[0] for row in ROWS]
+        assert profile.columns[0].numeric.percentiles == pytest.approx(
+            {f"p{p}": _expected(values, p / 100) for p in levels}, rel=1e-12
+        )
+
     def test_all_null_column_has_no_median(self, known_table):
         import kontra
 

@@ -128,9 +128,11 @@ class TestPercentileQuery:
         ])
         sql = conn.sql[0]
         # Position p = f * (n - 1); value = v[floor p] + (p - floor p) * (v[ceil p] - v[floor p]).
-        lo = "MAX(CASE WHEN q.rn = FLOOR(0.25 * (q.n - 1)) THEN q.val END)"
-        hi = "MAX(CASE WHEN q.rn = CEILING(0.25 * (q.n - 1)) THEN q.val END)"
-        assert f"{lo} + (0.25 * (q.n - 1) - FLOOR(0.25 * (q.n - 1))) * ({hi} - {lo})" in sql
+        # The fraction is FLOAT so DECIMAL precision rules can't round the weight.
+        p = "CAST(0.25 AS FLOAT) * (q.n - 1)"
+        lo = f"MAX(CASE WHEN q.rn = FLOOR({p}) THEN q.val END)"
+        hi = f"MAX(CASE WHEN q.rn = CEILING({p}) THEN q.val END)"
+        assert f"{lo} + ({p} - FLOOR({p})) * ({hi} - {lo})" in sql
         assert "GROUP BY q.col, q.n" in sql
 
     def test_results_map_back_to_aliases(self):
