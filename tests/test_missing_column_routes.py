@@ -135,6 +135,10 @@ def test_duckdb_materializer_leaves_missing_columns_out(sources, fmt):
 
 
 def _cnn_predicates(when: str):
+    # Registers the rule; otherwise these tests depend on another test having
+    # imported it first.
+    import kontra.rule_defs.builtin.conditional_not_null  # noqa: F401
+
     spec = RuleSpec(name="conditional_not_null", id="cnn", params={"column": "a", "when": when})
     return extract_static_predicates(rules=RuleFactory([spec]).build_rules())
 
@@ -152,7 +156,11 @@ def test_parquet_planner(sources, when, expected):
     assert pre.rule_decisions == {"cnn": expected}
 
 
-@pytest.mark.parametrize("when,expected", [("b == 1", "pass_meta"), (f"{MISSING} == 1", "unknown")])
+# "__table__" is the planners' key for table stats, not a column.
+@pytest.mark.parametrize(
+    "when,expected",
+    [("b == 1", "pass_meta"), (f"{MISSING} == 1", "unknown"), ("__table__ == 1", "unknown")],
+)
 def test_postgres_planner(monkeypatch, when, expected):
     import kontra.preplan.postgres as postgres_preplan
 
@@ -166,7 +174,11 @@ def test_postgres_planner(monkeypatch, when, expected):
     assert pre.rule_decisions == {"cnn": expected}
 
 
-@pytest.mark.parametrize("when,expected", [("b == 1", "pass_meta"), (f"{MISSING} == 1", "unknown")])
+# "__table__" is the planners' key for table stats, not a column.
+@pytest.mark.parametrize(
+    "when,expected",
+    [("b == 1", "pass_meta"), (f"{MISSING} == 1", "unknown"), ("__table__ == 1", "unknown")],
+)
 def test_sqlserver_planner(monkeypatch, when, expected):
     import kontra.preplan.sqlserver as sqlserver_preplan
 

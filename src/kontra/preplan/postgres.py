@@ -159,10 +159,13 @@ def preplan_postgres(
     rule_decisions: Dict[str, Decision] = {}
     fail_details: Dict[str, Dict[str, Any]] = {}
 
-    for rule_id, column, op, value in predicates:
-        col_stats = pg_stats.get(column)
+    # "__table__" holds table stats, not a column.
+    columns = {k for k in pg_stats if k != "__table__"}
 
-        if col_stats is None or (op == "not_null_when" and value not in pg_stats):
+    for rule_id, column, op, value in predicates:
+        col_stats = pg_stats.get(column) if column in columns else None
+
+        if col_stats is None or (op == "not_null_when" and value not in columns):
             # No stats for this column (ANALYZE not run or column doesn't exist),
             # or the condition of a not_null_when reads a missing column
             rule_decisions[rule_id] = "unknown"

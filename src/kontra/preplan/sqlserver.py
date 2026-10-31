@@ -153,10 +153,13 @@ def preplan_sqlserver(
     rule_decisions: Dict[str, Decision] = {}
     fail_details: Dict[str, Dict[str, Any]] = {}
 
-    for rule_id, column, op, value in predicates:
-        col_meta = metadata.get(column)
+    # "__table__" holds table stats, not a column.
+    columns = {k for k in metadata if k != "__table__"}
 
-        if col_meta is None or (op == "not_null_when" and value not in metadata):
+    for rule_id, column, op, value in predicates:
+        col_meta = metadata.get(column) if column in columns else None
+
+        if col_meta is None or (op == "not_null_when" and value not in columns):
             # Column not found in metadata, or the condition of a
             # not_null_when reads a missing column
             rule_decisions[rule_id] = "unknown"
