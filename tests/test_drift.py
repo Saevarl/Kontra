@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
-import warnings
 from datetime import datetime, timedelta, timezone
 
 import polars as pl
@@ -20,7 +18,6 @@ from kontra.state.types import RuleState, StateSummary, ValidationState
 
 _ensure_builtin_rules_registered()
 
-from kontra.rule_defs.builtin.drift import DriftRule  # noqa: E402  (after registration)
 
 
 def build(params, *, id=None):

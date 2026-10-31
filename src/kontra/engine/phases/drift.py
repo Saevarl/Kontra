@@ -80,12 +80,12 @@ def attach_history(
             states = trimmed if trimmed or limit < cap else states[:limit]
         histories = _histories(rules, states, dataset_uri)
         if complete or limit >= cap or all(
-            len(values) >= rule.history_needed for rule, values in zip(rules, histories)
+            len(values) >= rule.history_needed for rule, values in zip(rules, histories, strict=True)
         ):
             break
         limit = min(limit * 2, cap)
 
-    for rule, values in zip(rules, histories):
+    for rule, values in zip(rules, histories, strict=True):
         rule.set_history(values)
 
 
@@ -102,7 +102,7 @@ def _drop_partial_second(states: List[Any]) -> List[Any]:
     if not seconds:
         return states
     oldest = min(seconds)
-    return [s for s, second in zip(states, seconds) if second != oldest]
+    return [s for s, second in zip(states, seconds, strict=True) if second != oldest]
 
 
 def _histories(
