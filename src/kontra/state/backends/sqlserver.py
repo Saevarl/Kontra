@@ -13,7 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+import struct
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs
 
@@ -34,6 +35,29 @@ def _get_db_error():
         except ImportError:
             _PyodbcError = Exception  # Fallback
     return _PyodbcError
+
+
+# SQL Server caps a statement at 2100 parameters; IN lists are chunked below it.
+_MAX_IN_PARAMS = 2000
+
+# pyodbc has no built-in conversion for DATETIMEOFFSET (ODBC type -155) and
+# raises on every read of run_at/created_at, so decode SQL Server's
+# SQL_SS_TIMESTAMPOFFSET_STRUCT ourselves.
+_SQL_SS_TIMESTAMPOFFSET = -155
+
+
+def _datetimeoffset_to_datetime(value: Optional[bytes]) -> Optional[datetime]:
+    if value is None:
+        return None
+    year, month, day, hour, minute, second, nanos, tz_hour, tz_minute = struct.unpack(
+        "<6hI2h", value
+    )
+    return datetime(
+        year, month, day, hour, minute, second, nanos // 1000,
+        tzinfo=timezone(timedelta(hours=tz_hour, minutes=tz_minute)),
+    )
+
+
 from kontra.state.types import (
     Annotation,
     RuleState,
@@ -143,9 +167,11 @@ class SQLServerStore(StateBackend):
     CREATE TABLE kontra_annotations (
         id INT IDENTITY(1,1) PRIMARY KEY,
 
-        -- What this annotates
+        -- What this annotates. SQL Server rejects a second cascade path
+        -- (runs -> rule_results -> annotations, error 1785), so only run_id
+        -- cascades. Deleting a run still removes its rule-level annotations.
         run_id INT NOT NULL REFERENCES kontra_runs(id) ON DELETE CASCADE,
-        rule_result_id INT REFERENCES kontra_rule_results(id) ON DELETE CASCADE,
+        rule_result_id INT REFERENCES kontra_rule_results(id),
 
         -- Who created it
         actor_type NVARCHAR(50) NOT NULL,
@@ -265,6 +291,7 @@ class SQLServerStore(StateBackend):
 
         try:
             self._conn = pyodbc.connect(conn_str)
+            self._conn.add_output_converter(_SQL_SS_TIMESTAMPOFFSET, _datetimeoffset_to_datetime)
             self._ensure_tables()
         except Exception as e:
             raise ConnectionError(
@@ -525,15 +552,6 @@ class SQLServerStore(StateBackend):
         ORDER BY run_at DESC
         """
 
-        rule_sql = f"""
-        SELECT id, run_id, rule_id, rule_name, passed, failed_count,
-               severity, message, column_name, execution_source,
-               failure_mode, details, context, samples
-        FROM {self.RULE_RESULTS_TABLE}
-        WHERE run_id IN (?)
-        ORDER BY run_id, id
-        """
-
         try:
             cursor = conn.cursor()
             cursor.execute(run_sql, (limit, contract_fingerprint))
@@ -541,24 +559,30 @@ class SQLServerStore(StateBackend):
             if not run_rows:
                 return []
 
-            # Get all rule results (one query per run for simplicity)
-            states = []
-            rule_sql_single = f"""
-            SELECT id, run_id, rule_id, rule_name, passed, failed_count,
-                   severity, message, column_name, execution_source,
-                   failure_mode, details, context, samples
-            FROM {self.RULE_RESULTS_TABLE}
-            WHERE run_id = ?
-            ORDER BY id
-            """
-            for run_row in run_rows:
-                run_id = run_row[0]
-                cursor.execute(rule_sql_single, (run_id,))
-                rule_rows = cursor.fetchall()
-                state = self._build_state_from_rows(run_row, rule_rows)
-                states.append(state)
+            # Get all rule results in as few queries as the parameter limit allows
+            run_ids = [row[0] for row in run_rows]
+            rules_by_run: Dict[int, List[tuple]] = {}
+            for start in range(0, len(run_ids), _MAX_IN_PARAMS):
+                chunk = run_ids[start:start + _MAX_IN_PARAMS]
+                placeholders = ",".join("?" * len(chunk))
+                cursor.execute(
+                    f"""
+                    SELECT id, run_id, rule_id, rule_name, passed, failed_count,
+                           severity, message, column_name, execution_source,
+                           failure_mode, details, context, samples
+                    FROM {self.RULE_RESULTS_TABLE}
+                    WHERE run_id IN ({placeholders})
+                    ORDER BY run_id, id
+                    """,
+                    chunk,
+                )
+                for rule_row in cursor.fetchall():
+                    rules_by_run.setdefault(rule_row[1], []).append(rule_row)
 
-            return states
+            return [
+                self._build_state_from_rows(run_row, rules_by_run.get(run_row[0], []))
+                for run_row in run_rows
+            ]
         except _get_db_error() as e:
             _logger.debug(f"Database error getting history: {e}")
             return []

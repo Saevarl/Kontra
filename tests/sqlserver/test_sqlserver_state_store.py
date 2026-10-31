@@ -17,7 +17,13 @@ from __future__ import annotations
 import pytest
 
 from kontra.state.backends.sqlserver import SQLServerStore
-from tests.state_backend_cases import STATE_TABLES, StateStoreCases
+from kontra.state.types import Annotation
+from tests.state_backend_cases import (
+    FP,
+    STATE_TABLES,
+    StateStoreCases,
+    _CountingConnection,
+)
 
 STATE_DB = "kontra_state_test"
 DRIVER = "ODBC Driver 17 for SQL Server"
@@ -60,12 +66,6 @@ def sqlserver_state_db() -> str:
 class TestSQLServerStateStore(StateStoreCases):
     store_class = SQLServerStore
     supports_contract_annotations = False
-    # get_history sends one rule query per run (3 runs)
-    expected_statements = {
-        **StateStoreCases.expected_statements,
-        "get_history": 1 + 3,
-        "get_history_with_annotations": 1 + 3 + 1,
-    }
 
     @pytest.fixture
     def store_uri(self, sqlserver_state_db: str) -> str:
@@ -90,6 +90,31 @@ class TestSQLServerStateStore(StateStoreCases):
             ("kontra_rule_results", "passed", "bit"),
             ("kontra_runs", "passed", "bit"),
             ("kontra_runs", "run_at", "datetimeoffset"),
+        ]
+
+    def test_history_chunks_run_ids_under_parameter_limit(self, store, monkeypatch):
+        from kontra.state.backends import sqlserver
+
+        states = self._save_three(store)
+        for s in states:
+            store.save_annotation(
+                Annotation(run_id=s.id, actor_id="x", annotation_type="t", summary=str(s.id))
+            )
+        expected = [(h.id, [r.id for r in h.rules]) for h in store.get_history(FP)]
+
+        monkeypatch.setattr(sqlserver, "_MAX_IN_PARAMS", 2)
+        counting = _CountingConnection(store._get_conn())
+        store._conn = counting
+        try:
+            history = store.get_history(FP)
+            assert len(counting.statements) == 1 + 2
+            with_anns = store.get_history_with_annotations(FP)
+        finally:
+            store._conn = counting._conn
+
+        assert [(h.id, [r.id for r in h.rules]) for h in history] == expected
+        assert [[a.summary for a in h.annotations] for h in with_anns] == [
+            [str(h.id)] for h in with_anns
         ]
 
     def test_repr(self, store):
