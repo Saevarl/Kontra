@@ -493,9 +493,13 @@ same state of an Iceberg table, even when a writer commits in between:
   least 1. `unique` joins that scan on tables with fewer than 1M rows; on larger
   tables, or when the size is unknown, each `unique` column gets its own
   `GROUP BY ... HAVING count(*) > 1` query, which needs little memory. Those
-  queries and custom SQL run beside the scan, up to four at a time. Inside your
-  transaction, custom SQL runs after the scan, one query at a time, because a
-  failed query aborts the transaction.
+  queries and custom SQL run beside the scan, up to four at a time, when the
+  connection is in autocommit. Inside a transaction (Kontra's own or yours)
+  they run one at a time, after the scan. A failed query aborts a Trino
+  transaction: in Kontra's own, the next query runs in a new one, so a failing
+  custom SQL check fails only its own rule. Kontra can't renew your
+  transaction, so there a failed query (a custom SQL error included) stops the
+  validation with the cause.
 - A rule is pushed to Trino only when Trino's answer matches the Polars tier for
   the column's type. Where Trino's semantics differ (NaN compares as false,
   `CHAR(n)` drops its padding, regex is Java), the SQL writes Polars' meaning
@@ -527,7 +531,9 @@ same state of an Iceberg table, even when a writer commits in between:
   exact `COUNT(*)`. `scout` runs one aggregate with exact null counts and
   `approx_distinct` distinct counts, which are labelled estimated. `scan` and
   `interrogate` count distinct values exactly. Exact percentiles hold a
-  column's values in memory, so use `sample` on very large tables. With
+  column's values in memory, so `scan`'s median is exact up to 1M profiled
+  rows and approximate (`approx_percentile`) above that. `interrogate`'s
+  percentiles are always exact, so use `sample` on very large tables. With
   `sample`, an Iceberg table with at least 100 data files is sampled with
   `TABLESAMPLE SYSTEM`, which reads only the files it picks. If that sample has
   fewer rows than requested, the profile uses the first rows instead, as it
