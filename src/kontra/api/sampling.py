@@ -338,7 +338,6 @@ class SamplingOrchestrator:
         Returns:
             Tuple of (samples list, source string "sql" or "polars")
         """
-        import polars as pl
 
         source = self._ctx.data_source
 
@@ -582,7 +581,6 @@ class SamplingOrchestrator:
         Uses handle.fs_opts for credentials instead of environment variables.
         """
         import duckdb
-        import polars as pl
 
         path = handle.uri
         fs_opts = handle.fs_opts or {}
@@ -901,7 +899,6 @@ class SamplingOrchestrator:
             global_budget: Total samples across all rules
             sample_columns: Columns to include (None=all, list=specific, "relevant"=rule columns)
         """
-        import polars as pl
 
         # Sort rules by failed_count descending (worst offenders first)
         sorted_rules = sorted(
@@ -979,7 +976,7 @@ class SamplingOrchestrator:
 
         # Phase 2: Execute batched SQL sampling if applicable
         if sql_rules:
-            self._execute_batched_sql_sampling(sql_rules, per_rule_cap)
+            self._execute_batched_sql_sampling(sql_rules)
 
         # Phase 3: Execute per-rule Polars sampling for remaining rules
         for rule_result, rule_obj, predicate, n, cols_to_include in polars_rules:
@@ -988,7 +985,7 @@ class SamplingOrchestrator:
                 rule_result.samples = samples
                 rule_result.samples_source = samples_source
 
-                if len(samples) == per_rule_cap and rule_result.failed_count > per_rule_cap:
+                if len(samples) == n and rule_result.failed_count > n:
                     rule_result.samples_truncated = True
                     rule_result.samples_reason = SampleReason.TRUNCATED_LIMIT
 
@@ -1065,7 +1062,6 @@ class SamplingOrchestrator:
     def _execute_batched_sql_sampling(
         self,
         sql_rules: List[Tuple[Any, Any, int, Optional[List[str]]]],
-        per_rule_cap: int,
     ) -> None:
         """
         Execute batched SQL sampling for rules that support to_sql_filter().
@@ -1175,7 +1171,6 @@ class SamplingOrchestrator:
             ValueError: If rule doesn't support row-level samples
             RuntimeError: If data source is unavailable
         """
-        import polars as pl
 
         # Cap n at 100
         n = min(n, 100)

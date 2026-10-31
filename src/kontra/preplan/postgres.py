@@ -7,7 +7,7 @@ Similar to Parquet metadata preplan, but uses PostgreSQL's statistics catalog.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.postgres import PostgresConnectionParams
@@ -142,8 +142,6 @@ def preplan_postgres(
     """
     if not handle.db_params:
         raise ValueError("PostgreSQL handle missing db_params")
-
-    params: PostgresConnectionParams = handle.db_params
 
     # Only fetch unique constraints if there are unique rules to check
     has_unique_rules = any(op == "unique" for _, _, op, _ in predicates)

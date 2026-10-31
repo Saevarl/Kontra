@@ -101,9 +101,6 @@ class UniqueRule(BaseRule):
     def to_sql_filter(self, dialect: str = "postgres") -> str | None:
         # Unique requires a subquery to find duplicated values
         # This is more complex but still much faster than loading 1M rows
-        column = self.params["column"]
-        col = f'"{column}"'
-
         # Find values that appear more than once, then select rows with those values
         # Note: This requires knowing the table name, which we don't have here
         # Return None to fall back to Polars for this rule

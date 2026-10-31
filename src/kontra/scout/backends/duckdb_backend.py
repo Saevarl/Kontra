@@ -7,7 +7,6 @@ Supports Parquet, CSV, and newline-delimited JSON files (local + S3/HTTP).
 
 from __future__ import annotations
 
-import logging
 import os
 import re
 import stat
@@ -410,12 +409,14 @@ class DuckDBBackend:
         Returns dict mapping column_name -> {null_count, distinct_count, ...}
 
         Parquet row group statistics provide:
-        - null_count: Exact count of nulls (sum across row groups)
-        - num_values: Non-null values per row group
+        - null_count: Exact count of nulls (sum across row groups), but only
+          when every row group carries it. Statistics are optional per row
+          group and per column; if any row group lacks a null count, the sum
+          is a lower bound and is flagged as estimated.
         - min/max: Column min/max (for potential use)
 
-        Note: Parquet does NOT store distinct_count. We estimate from
-        num_values (assuming all non-null values are distinct as upper bound).
+        Note: Parquet does NOT store distinct_count. We estimate it as the
+        non-null count (assuming all non-null values are distinct as upper bound).
 
         This is used for the 'lite' preset to achieve fast profiling
         without scanning the actual data.
@@ -431,7 +432,8 @@ class DuckDBBackend:
         for col_name, _ in schema:
             col_stats[col_name] = {
                 "null_count": 0,
-                "num_values": 0,
+                # Row groups that reported a null count for this column.
+                "null_count_row_groups": 0,
                 "has_statistics": False,
             }
 
@@ -453,17 +455,20 @@ class DuckDBBackend:
                     col_stats[col_name]["has_statistics"] = True
                     if stats.null_count is not None:
                         col_stats[col_name]["null_count"] += stats.null_count
-                    if stats.num_values is not None:
-                        col_stats[col_name]["num_values"] += stats.num_values
+                        col_stats[col_name]["null_count_row_groups"] += 1
 
         result: Dict[str, Dict[str, Any]] = {}
 
-        for col_name, raw_type in schema:
+        for col_name, _ in schema:
             stats = col_stats.get(col_name, {})
 
             null_count = stats.get("null_count", 0)
-            num_values = stats.get("num_values", 0)
             has_stats = stats.get("has_statistics", False)
+            # The summed null count is only exact if every row group reported
+            # one; otherwise nulls in the other row groups are unaccounted for.
+            null_count_exact = (
+                stats.get("null_count_row_groups", 0) >= meta.num_row_groups
+            )
 
             # Estimate distinct_count:
             # - If no stats: use non-null count as upper bound
@@ -477,9 +482,10 @@ class DuckDBBackend:
                 "has_statistics": has_stats,
                 "is_estimate": True,  # Flag that distinct_count is estimated
                 "is_upper_bound": True,  # Parquet doesn't track distinct, this is always upper bound
-                # Parquet null_count is exact; distinct is an upper-bound estimate
-                # (discarded by the profiler, so its flag rarely surfaces).
-                "null_count_estimated": False,
+                # Parquet null_count is exact when present in every row group;
+                # distinct is an upper-bound estimate (discarded by the
+                # profiler, so its flag rarely surfaces).
+                "null_count_estimated": not null_count_exact,
                 "distinct_count_estimated": True,
             }
 

@@ -600,7 +600,7 @@ def preplan_parquet_glob(
         first_meta = _read_meta(first_file_path, filesystem=filesystem)
         schema_types = first_meta.schema_types
         total_rows_first_file = first_meta.num_rows
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError):
         # File I/O or invalid Parquet format — return unknown for all rules
         return PrePlan(
             manifest_columns=list(required_columns) if required_columns else [],
