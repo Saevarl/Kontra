@@ -404,7 +404,7 @@ def _null_counts(conn, backend: _Backend, ref: str, cols: List[str]) -> Dict[str
         for c in cols
     )
     row, names = _cursor_exec(conn, f"SELECT {sums} FROM {ref}", fetch="one")
-    m = dict(zip(names, row))
+    m = dict(zip(names, row, strict=True))
     return {c: int(m["n__" + c] or 0) for c in cols}
 
 
@@ -504,7 +504,7 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
                     FROM {b_ref} b JOIN {a_ref} a ON {on_clause}
                 """
                 crow, cnames = _cursor_exec(conn, change_sql, fetch="one")
-                cmap = dict(zip(cnames, crow))
+                cmap = dict(zip(cnames, crow, strict=True))
                 matched_rows = int(cmap["m"])
                 changed_rows = int(cmap["changed_rows"])
                 for c in common:

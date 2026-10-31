@@ -193,7 +193,7 @@ class PostgreSQLBackend:
             cur.execute(sql)
             row = cur.fetchone()
             col_names = [desc[0] for desc in cur.description]
-            return dict(zip(col_names, row)) if row else {}
+            return dict(zip(col_names, row, strict=True)) if row else {}
 
     def fetch_top_values(self, column: str, limit: int) -> List[Tuple[Any, int]]:
         """Fetch top N most frequent values."""
@@ -510,7 +510,7 @@ class PostgreSQLBackend:
                 cur.execute(sql)
                 row = cur.fetchone()
                 col_names = [desc[0] for desc in cur.description]
-                result = dict(zip(col_names, row)) if row else {}
+                result = dict(zip(col_names, row, strict=True)) if row else {}
 
                 # If TABLESAMPLE returned empty (all NULLs), fall back to full query
                 # This happens for small tables where 1% sampling returns 0 rows

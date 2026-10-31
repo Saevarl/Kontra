@@ -1133,8 +1133,10 @@ class ScoutProfiler:
             if quantiles is not None:
                 percentiles = {
                     f"p{p}": float(value)
+                    # Not strict: a backend returning a short quantile array
+                    # yields fewer percentiles rather than failing the profile.
                     for p, value in zip(
-                        (p for p in self.percentiles if p != 50), quantiles[1:]
+                        (p for p in self.percentiles if p != 50), quantiles[1:], strict=False
                     )
                     if value is not None
                 }

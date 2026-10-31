@@ -614,7 +614,7 @@ def results_from_row(
     """
     rule_kinds = rule_kinds or {}
     out = []
-    for rule_id, val in zip(columns, values):
+    for rule_id, val in zip(columns, values, strict=True):
         if rule_id == "__no_sql_rules__":
             continue
 

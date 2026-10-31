@@ -167,7 +167,7 @@ class TrinoMaterializer(BaseMaterializer):
         result_columns = cur._query.columns
         names = [c["name"] for c in result_columns]
         cursor_types = [c["type"] for c in result_columns]
-        dtypes = [polars_dtype(types.get(n, t)) for n, t in zip(names, cursor_types)]
+        dtypes = [polars_dtype(types.get(n, t)) for n, t in zip(names, cursor_types, strict=True)]
         mappers = RowMapperFactory().create(columns=result_columns, legacy_primitive_types=False)
         return FrameDecoder(names, cursor_types, dtypes, mappers.columns)
 

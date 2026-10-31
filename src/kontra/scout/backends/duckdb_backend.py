@@ -156,7 +156,7 @@ class DuckDBBackend:
         cur = self.con.execute(sql)
         row = cur.fetchone()
         col_names = [d[0] for d in cur.description]
-        return dict(zip(col_names, row)) if row else {}
+        return dict(zip(col_names, row, strict=True)) if row else {}
 
     def fetch_top_values(self, column: str, limit: int) -> List[Tuple[Any, int]]:
         """Fetch top N most frequent values."""
@@ -203,7 +203,7 @@ class DuckDBBackend:
         try:
             row = self.con.execute(f"SELECT {exprs} FROM {self._view_name}").fetchone()
             if row is not None:
-                for name, counts in zip(columns, row):
+                for name, counts in zip(columns, row, strict=True):
                     self._value_counts[name] = list(counts.items()) if counts else []
         except (duckdb.Error, TypeError, AttributeError) as exc:
             # Optional batching must never suppress the original query fallback.

@@ -243,7 +243,7 @@ class ClickHouseBackend:
             cur.execute(sql)
             row = cur.fetchone()
             col_names = [desc[0] for desc in cur.description]
-            return dict(zip(col_names, row)) if row else {}
+            return dict(zip(col_names, row, strict=True)) if row else {}
         finally:
             cur.close()
 
@@ -297,7 +297,7 @@ class ClickHouseBackend:
                 cur.execute("SELECT " + ", ".join(parts))
                 row = cur.fetchone()
                 if row is not None:
-                    for (column, limit), values in zip(batch, row):
+                    for (column, limit), values in zip(batch, row, strict=True):
                         counts = [(v, int(n)) for v, n in values]
                         if limit is None:
                             self._value_counts[column] = counts
@@ -414,7 +414,7 @@ class ClickHouseBackend:
             cur.execute(sql)
             row = cur.fetchone()
             names = [desc[0] for desc in cur.description]
-            agg = dict(zip(names, row)) if row else {}
+            agg = dict(zip(names, row, strict=True)) if row else {}
         finally:
             cur.close()
 

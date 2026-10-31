@@ -193,7 +193,7 @@ class SqlServerBackend:
             cursor.execute(sql)
             row = cursor.fetchone()
             col_names = [desc[0] for desc in cursor.description]
-            return dict(zip(col_names, row)) if row else {}
+            return dict(zip(col_names, row, strict=True)) if row else {}
         finally:
             cursor.close()
 
@@ -743,7 +743,7 @@ class SqlServerBackend:
             cursor.execute(sql)
             row = cursor.fetchone()
             col_names = [desc[0] for desc in cursor.description]
-            result = dict(zip(col_names, row)) if row else {}
+            result = dict(zip(col_names, row, strict=True)) if row else {}
 
             # Check if we got data - if all values are None, fall back to full scan
             if all(v is None for v in result.values()):
