@@ -7,8 +7,11 @@ Uses pymssql for database connectivity.
 
 from __future__ import annotations
 
+import datetime
+import decimal
 import os
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -25,11 +28,105 @@ from kontra.connectors.db_utils import (
 
 from .base import BaseMaterializer
 from .registry import register_materializer
+from .row_frame import DeclaredTypes, frame_from_rows
 
 
 def _get_connection_ctx(handle: DatasetHandle):
     """Get a connection context for SQL Server handles."""
     return get_connection_ctx(handle, "sqlserver")
+
+
+_SS_INT = ("tinyint", "smallint", "int", "bigint")
+_SS_TEXT = ("char", "varchar", "nchar", "nvarchar", "text", "ntext")
+_SS_DATETIME = ("datetime", "datetime2", "smalldatetime")
+
+
+def _ss_type_dtype(type_name: str) -> Any:
+    """Polars dtype for a declared type (``decimal(10,2)``), as inference types its values.
+
+    Matches what Polars makes of pymssql's Python values: integers as Int64,
+    decimals as Decimal(38, scale), money as Decimal(38, 4), datetimeoffset
+    in UTC. None for types without a fixed dtype (uniqueidentifier, xml, ...).
+    """
+    import polars as pl
+
+    t = type_name.strip().lower()
+    base = t.split("(", 1)[0].strip()
+    if base in _SS_INT:
+        return pl.Int64
+    if base == "bit":
+        return pl.Boolean
+    if base in ("real", "float"):
+        return pl.Float64
+    if base in ("decimal", "numeric"):
+        args = t[len(base) :].strip("() ").split(",")
+        return pl.Decimal(38, int(args[1]) if len(args) == 2 else 0)
+    if base in ("money", "smallmoney"):
+        return pl.Decimal(38, 4)
+    if base in _SS_TEXT:
+        return pl.Utf8
+    if base == "date":
+        return pl.Date
+    if base in _SS_DATETIME:
+        return pl.Datetime("us")
+    if base == "datetimeoffset":
+        return pl.Datetime("us", "UTC")
+    if base == "time":
+        return pl.Time
+    if base in ("binary", "varbinary", "image"):
+        return pl.Binary
+    return None
+
+
+def _pyodbc_declared_types(description: Sequence[Any]) -> DeclaredTypes | None:
+    """Polars dtypes from a pyodbc description, or None for any other driver.
+
+    pyodbc reports each column's Python type plus its precision and scale,
+    which is enough. pymssql reports coarse codes (one for every number,
+    and NULL-only datetimes come back as binary), so it needs the lookup.
+    """
+    import polars as pl
+
+    if not description or not all(isinstance(d[1], type) for d in description):
+        return None
+    by_type = {
+        int: pl.Int64,
+        bool: pl.Boolean,
+        float: pl.Float64,
+        str: pl.Utf8,
+        datetime.datetime: pl.Datetime("us"),
+        datetime.date: pl.Date,
+        datetime.time: pl.Time,
+        bytes: pl.Binary,
+        bytearray: pl.Binary,
+    }
+    out: dict[str, Any] = {}
+    for desc in description:
+        if desc[1] is decimal.Decimal:
+            out[desc[0]] = pl.Decimal(38, desc[5] or 0)
+        else:
+            out[desc[0]] = by_type.get(desc[1])
+    return out
+
+
+def _describe_result_types(conn: Any, query: str) -> DeclaredTypes:
+    """Declared type of each column ``query`` returns, without running it.
+
+    One catalog call, also exact for a Query source's SELECT. If the server
+    refuses it (permissions, a temp table in the query), the frame keeps the
+    inferred types: no worse than without the lookup.
+    """
+    cursor = conn.cursor()
+    try:
+        execute_with_params(
+            cursor,
+            "SELECT name, system_type_name FROM sys.dm_exec_describe_first_result_set(%s, NULL, 0)",
+            (query,),
+        )
+        rows = cursor.fetchall()
+    except Exception:  # noqa: BLE001 - each driver raises its own error classes
+        return {}
+    return {name: _ss_type_dtype(type_name) for name, type_name in rows if name and type_name}
 
 
 @register_materializer("sqlserver")
@@ -115,7 +212,7 @@ class SqlServerMaterializer(BaseMaterializer):
             ImportError: If polars is not installed.
         """
         try:
-            import polars as pl  # Lazy import - only needed when residual rules exist
+            import polars  # noqa: F401 - lazy, only needed when residual rules exist
         except ImportError as e:
             raise ImportError(
                 "Polars is required to materialize data for validation but is not installed. "
@@ -137,43 +234,26 @@ class SqlServerMaterializer(BaseMaterializer):
             cursor.execute(query)
             # Fetch all rows - for large tables, consider chunked loading
             rows = cursor.fetchall()
-            col_names = [desc[0] for desc in cursor.description] if cursor.description else []
+            description = list(cursor.description or [])
+            t1 = time.perf_counter()
 
-        t1 = time.perf_counter()
-
-        # Convert to Polars DataFrame
-        if rows:
-            # BUG 4 fix: pyodbc (Entra ID / BYOC pyodbc path) returns pyodbc.Row
-            # objects from fetchall(). Polars does not unpack pyodbc.Row when
-            # building a row-oriented DataFrame, which raises ShapeError ("data
-            # does not match the number of columns"). pymssql returns plain
-            # tuples, so this only bites the pyodbc driver. Coerce every row to a
-            # plain tuple so both drivers construct identically.
+            # pyodbc (Entra ID / BYOC pyodbc path) returns pyodbc.Row objects,
+            # which Polars does not unpack when building a row-oriented frame
+            # (ShapeError). pymssql returns plain tuples. Coerce every row so
+            # both drivers construct identically.
             rows = [tuple(r) for r in rows]
 
-            # BUG 5 fix: Polars' default infer_schema_length=100 only inspects
-            # the first 100 rows to pick each column's dtype. A column that is
-            # NULL for its first 100 rows infers Null/Utf8, then dies at the
-            # first real value (e.g. ComputeError appending a datetime to an
-            # inferred Null column). infer_schema_length=None scans all rows so
-            # the dtype is always inferred from real data.
-            #
-            # We infer rather than build an explicit schema from
-            # cursor.description because the driver type codes are not reliable
-            # cross-driver: pymssql reports a coarse NUMBER type that conflates
-            # INT and FLOAT, so it cannot distinguish Int64 from Float64. Full
-            # inference is correct for both pyodbc and pymssql.
-            #
-            # Perf caveat: scanning all rows for inference adds a pass over the
-            # fetched rows. For very large tables (e.g. 1M+ rows) this is a
-            # measurable but bounded cost; correctness (loading the table at all)
-            # takes precedence over the truncated-inference fast path.
-            df = pl.DataFrame(
-                rows, schema=col_names, orient="row", infer_schema_length=None
-            )
-        else:
-            # Empty DataFrame with correct schema
-            df = pl.DataFrame(schema={name: pl.Utf8 for name in col_names})
+            col_names = [desc[0] for desc in description]
+            pyodbc_types = _pyodbc_declared_types(description)
+
+            def declared() -> DeclaredTypes:
+                # pymssql: one lookup, only for an empty result or an all-NULL
+                # column, on the connection still open here.
+                if pyodbc_types is not None:
+                    return pyodbc_types
+                return _describe_result_types(conn, query)
+
+            df = frame_from_rows(rows, col_names, declared)
 
         if self._io_debug_enabled:
             self._last_io_debug = {

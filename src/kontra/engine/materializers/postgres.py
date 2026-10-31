@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -21,11 +22,64 @@ from kontra.connectors.db_utils import get_connection_ctx, pg_quote_ident as _es
 
 from .base import BaseMaterializer
 from .registry import register_materializer
+from .row_frame import DeclaredTypes, frame_from_rows
 
 
 def _get_connection_ctx(handle: DatasetHandle):
     """Get a connection context for PostgreSQL handles."""
     return get_connection_ctx(handle, "postgres")
+
+
+# Type OIDs (pg_type), the same for every driver.
+_PG_INT = (20, 21, 23, 26)  # int8, int2, int4, oid
+_PG_FLOAT = (700, 701)  # float4, float8
+_PG_TEXT = (18, 19, 25, 1042, 1043)  # "char", name, text, bpchar, varchar
+_PG_NUMERIC = 1700
+_PG_TIMESTAMPTZ = 1184
+
+
+def _pg_declared_types(description: Sequence[Any], time_zone: str) -> DeclaredTypes:
+    """Polars dtype per result column from its type OID, as inference types its values.
+
+    Integers load as Int64 and numerics as Decimal(38, scale), which is what
+    Polars makes of the driver's Python ints and Decimals. Types left out
+    (uuid, json, arrays, ...) have no fixed dtype and map to None.
+    """
+    import polars as pl
+
+    fixed = {
+        **{oid: pl.Int64 for oid in _PG_INT},
+        **{oid: pl.Float64 for oid in _PG_FLOAT},
+        **{oid: pl.Utf8 for oid in _PG_TEXT},
+        16: pl.Boolean,
+        17: pl.Binary,  # bytea
+        1082: pl.Date,
+        1083: pl.Time,
+        1266: pl.Time,  # timetz: Polars keeps no zone on a time
+        1114: pl.Datetime("us"),
+        1186: pl.Duration("us"),  # interval
+        _PG_TIMESTAMPTZ: pl.Datetime("us", time_zone),
+    }
+    out: dict[str, Any] = {}
+    for desc in description:
+        oid = desc[1]
+        if oid == _PG_NUMERIC:
+            # Unconstrained numeric reports no scale; its values set one.
+            scale = desc[5] or 0
+            out[desc[0]] = pl.Decimal(38, scale) if scale <= 38 else None
+        else:
+            out[desc[0]] = fixed.get(oid)
+    return out
+
+
+def _session_time_zone(conn: Any) -> str:
+    """The zone timestamptz values arrive in, read from the connection without a query.
+
+    psycopg 3 tracks the session TimeZone; its values are inferred as that
+    zone, and as UTC when it is a fixed offset or the driver can't tell.
+    """
+    tz = getattr(getattr(conn, "info", None), "timezone", None)
+    return getattr(tz, "key", None) or "UTC"
 
 
 @register_materializer("postgres")
@@ -108,7 +162,7 @@ class PostgresMaterializer(BaseMaterializer):
             ImportError: If polars is not installed.
         """
         try:
-            import polars as pl  # Lazy import - only needed when residual rules exist
+            import polars  # noqa: F401 - lazy, only needed when residual rules exist
         except ImportError as e:
             raise ImportError(
                 "Polars is required to materialize data for validation but is not installed. "
@@ -130,16 +184,13 @@ class PostgresMaterializer(BaseMaterializer):
                 cur.execute(query)
                 # Fetch all rows - for large tables, consider chunked loading
                 rows = cur.fetchall()
-                col_names = [desc[0] for desc in cur.description] if cur.description else []
+                description = list(cur.description or [])
+                time_zone = _session_time_zone(conn)
 
         t1 = time.perf_counter()
 
-        # Convert to Polars DataFrame
-        if rows:
-            df = pl.DataFrame(rows, schema=col_names, orient="row")
-        else:
-            # Empty DataFrame with correct schema
-            df = pl.DataFrame(schema={name: pl.Utf8 for name in col_names})
+        col_names = [desc[0] for desc in description]
+        df = frame_from_rows(rows, col_names, lambda: _pg_declared_types(description, time_zone))
 
         if self._io_debug_enabled:
             self._last_io_debug = {
