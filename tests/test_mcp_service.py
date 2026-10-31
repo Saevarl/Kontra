@@ -171,6 +171,7 @@ def test_failure_samples_request_only_rule_relevant_columns(tmp_path, monkeypatc
     service = _service(tmp_path)
     service._store_lock = threading.RLock()
     service._enforce_probe_row_limit = lambda *args: None
+    service._state_store = object()
     captured = {}
 
     rule = type(
@@ -198,6 +199,9 @@ def test_failure_samples_request_only_rule_relevant_columns(tmp_path, monkeypatc
     )
 
     assert captured["sample_columns"] == "relevant"
+    # Not saved, but drift rules compare with the service's history.
+    assert captured["save"] is False
+    assert captured["state_store"] is service._state_store
     assert payload["sample_columns"] == "relevant"
     assert payload["samples"] == [{"id": None}]
 

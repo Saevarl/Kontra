@@ -14,7 +14,7 @@ import kontra
 
 EXPECTED_RULES = {
     "allowed_values", "compare", "conditional_not_null", "conditional_range",
-    "contains", "custom_sql_check", "disallowed_values", "dtype", "ends_with",
+    "contains", "custom_sql_check", "disallowed_values", "drift", "dtype", "ends_with",
     "freshness", "length", "max_rows", "min_rows", "not_null", "range",
     "regex", "starts_with", "unique",
 }

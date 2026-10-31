@@ -40,7 +40,7 @@ class ClickHouseSqlExecutor(DatabaseSqlExecutor):
         "freshness", "range", "length", "regex",
         "contains", "starts_with", "ends_with",
         "compare", "conditional_not_null", "conditional_range",
-        "custom_sql_check", "custom_agg",
+        "custom_sql_check", "custom_agg", "metric",
     }
 
     # \w \W \d \D \s \S \b \B mean ASCII in ClickHouse's RE2 but Unicode in

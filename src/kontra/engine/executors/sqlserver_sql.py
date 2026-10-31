@@ -55,7 +55,7 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
         "freshness", "range", "length",
         "contains", "starts_with", "ends_with",  # LIKE-based, works on SQL Server
         "compare", "conditional_not_null", "conditional_range",
-        "custom_sql_check", "custom_agg"
+        "custom_sql_check", "custom_agg", "metric"
     }
 
     @property

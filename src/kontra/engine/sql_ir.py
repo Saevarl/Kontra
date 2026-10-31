@@ -363,6 +363,39 @@ class Renderer:
             f"AS {self.ident(rule_id)}"
         )
 
+    # --- measurements (drift rule): one value for the table, not a count ---
+    def count_of(self, inner_sql: str) -> str:
+        return f"COUNT({inner_sql})"
+
+    def to_double(self, inner_sql: str) -> str:
+        return f"CAST({inner_sql} AS DOUBLE)"
+
+    def metric(self, metric: str, col_sql: Optional[str], rule_id: str) -> str:
+        """
+        One drift measurement AS rule_id. NULL means undefined (an empty table's
+        null_rate, an all-NULL column's mean), as in the Polars tier.
+        """
+        rows = self.count_of("*")
+        if metric == "row_count":
+            expr = rows
+        elif metric == "null_count":
+            expr = f"({rows} - {self.count_of(col_sql)})"
+        elif metric == "null_rate":
+            nulls = self.to_double(f"{rows} - {self.count_of(col_sql)}")
+            expr = f"{nulls} / NULLIF({rows}, 0)"
+        elif metric == "distinct_count":
+            expr = self.count_of(f"DISTINCT {col_sql}")
+        elif metric == "mean":
+            # Integer AVG truncates on SQL Server; average as double everywhere.
+            expr = f"AVG({self.to_double(col_sql)})"
+        elif metric == "min":
+            expr = f"MIN({col_sql})"
+        elif metric == "max":
+            expr = f"MAX({col_sql})"
+        else:
+            raise ValueError(f"Unknown drift metric: {metric!r}")
+        return f"{expr} AS {self.ident(rule_id)}"
+
 
 class DuckDBRenderer(Renderer):
     dialect: Dialect = "duckdb"
@@ -377,6 +410,9 @@ class PostgresRenderer(Renderer):
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         escaped_pattern = pattern.replace("'", "''")
         return f"{col_sql} IS NULL OR NOT ({col_sql}::text ~ '{escaped_pattern}')"
+
+    def to_double(self, inner_sql: str) -> str:
+        return f"CAST({inner_sql} AS DOUBLE PRECISION)"
 
 
 class SqlServerRenderer(Renderer):
@@ -420,6 +456,13 @@ class SqlServerRenderer(Renderer):
             f"AS {self.ident(rule_id)}"
         )
 
+    def count_of(self, inner_sql: str) -> str:
+        # COUNT returns INT and overflows past 2^31 - 1 rows.
+        return f"COUNT_BIG({inner_sql})"
+
+    def to_double(self, inner_sql: str) -> str:
+        return f"CAST({inner_sql} AS FLOAT)"
+
 
 class ClickHouseRenderer(Renderer):
     dialect: Dialect = "clickhouse"
@@ -450,6 +493,11 @@ class ClickHouseRenderer(Renderer):
         # patterns, which RE2 and Polars agree on.
         escaped_pattern = pattern.replace("\\", "\\\\").replace("'", "''")
         return f"{col_sql} IS NULL OR NOT match(toString({col_sql}), '{escaped_pattern}')"
+
+    def to_double(self, inner_sql: str) -> str:
+        # CAST(... AS Float64) rejects NULL; toFloat64 keeps a Nullable column
+        # nullable, so AVG skips NULLs as everywhere else.
+        return f"toFloat64({inner_sql})"
 
 
 # Trino regex subset. Trino evaluates patterns with Java semantics; the Polars

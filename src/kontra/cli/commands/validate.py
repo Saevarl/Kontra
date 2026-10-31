@@ -39,6 +39,7 @@ def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) 
     import kontra.rule_defs.builtin.conditional_range  # noqa: F401
     import kontra.rule_defs.builtin.contains  # noqa: F401
     import kontra.rule_defs.builtin.custom_sql_check  # noqa: F401
+    import kontra.rule_defs.builtin.drift  # noqa: F401
     import kontra.rule_defs.builtin.dtype  # noqa: F401
     import kontra.rule_defs.builtin.ends_with  # noqa: F401
     import kontra.rule_defs.builtin.freshness  # noqa: F401
@@ -397,13 +398,11 @@ def register(app: typer.Typer) -> None:
             # Effective projection
             enable_projection = config.projection == "on"
 
-            # State backend
+            # State backend. Built even with --no-state, which only stops the
+            # save: drift rules still read their history from this backend.
+            # Stores connect lazily, so an unused one costs nothing.
             state_store = None
-            if (
-                effective_state_backend
-                and effective_state_backend != "local"
-                and not no_state
-            ):
+            if effective_state_backend and effective_state_backend != "local":
                 from kontra.state.backends import get_store
 
                 state_store = get_store(effective_state_backend)

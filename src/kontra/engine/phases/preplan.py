@@ -121,6 +121,7 @@ def _execute_parquet_preplan(
     from kontra.preplan.planner import preplan_single_parquet, preplan_parquet_glob, is_glob_pattern
     from kontra.preplan.types import PrePlan
     from kontra.rule_defs.static_predicates import extract_static_predicates
+    from kontra.engine.phases.drift import drift_rules
 
     from kontra.connectors.uri_utils import (
         is_s3_uri as _is_s3_uri,
@@ -131,6 +132,7 @@ def _execute_parquet_preplan(
 
     t0 = now_ms()
     static_preds = extract_static_predicates(rules=ctx.rules)
+    drifts = drift_rules(ctx.rules)
 
     # Check for glob patterns - use different preplan strategy
     if is_glob_pattern(handle.uri):
@@ -154,6 +156,9 @@ def _execute_parquet_preplan(
             required_columns=ctx.compiled_full.required_cols,
             predicates=static_preds,
             filesystem=preplan_fs,
+            null_count_columns={
+                r.column for r in drifts if r.metric in ("null_count", "null_rate")
+            },
         )
     analyze_ms = now_ms() - t0
 
@@ -164,6 +169,23 @@ def _execute_parquet_preplan(
         severity_map=ctx.severity_map,
         execution_source_msg="Parquet stats",
     )
+    if not is_glob_pattern(handle.uri):
+        # A single file's footer holds its exact row count and, usually, exact
+        # NULL counts: drift measurements of those need no scan.
+        for rule in drifts:
+            value = rule.measure_from_metadata(pre.stats.get("total_rows"), pre.null_counts)
+            if value is not None and rule.rule_id not in results_by_id:
+                results_by_id[rule.rule_id] = {
+                    "rule_id": rule.rule_id,
+                    "passed": True,
+                    "failed_count": 0,
+                    "message": "Measured",
+                    "metric_value": value,
+                    "execution_source": "metadata",
+                    "severity": ctx.severity_map.get(rule.rule_id, "blocking"),
+                    "tally": False,
+                }
+                handled_ids.add(rule.rule_id)
 
     row_groups = list(pre.manifest_row_groups or [])
     columns = list(pre.manifest_columns or [])

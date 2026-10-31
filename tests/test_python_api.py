@@ -1923,15 +1923,15 @@ class TestRegisterRuleProtection:
                 pass
 
     def test_overwrite_any_builtin(self):
-        """All 18 built-in rule names are protected."""
+        """All 19 built-in rule names are protected."""
         from kontra.rule_defs.registry import _BUILTIN_RULES
 
         # Ensure builtins are loaded
         kontra.validate({"x": [1]}, rules=[{"name": "not_null", "params": {"column": "x"}}])
 
-        assert len(_BUILTIN_RULES) == 18
+        assert len(_BUILTIN_RULES) == 19
         for name in ["not_null", "unique", "range", "allowed_values", "regex",
-                      "dtype", "min_rows", "max_rows", "freshness", "compare"]:
+                      "dtype", "min_rows", "max_rows", "freshness", "compare", "drift"]:
             assert name in _BUILTIN_RULES
 
     def test_custom_rule_still_works(self):

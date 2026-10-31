@@ -770,6 +770,93 @@ def ends_with(
     return _build_rule("ends_with", {"column": column, "suffix": suffix}, severity, id, tally, context)
 
 
+def drift(
+    metric: str,
+    column: Optional[str] = None,
+    *,
+    max_increase: Optional[float] = None,
+    max_decrease: Optional[float] = None,
+    max_change: Optional[float] = None,
+    max_increase_pct: Optional[float] = None,
+    max_decrease_pct: Optional[float] = None,
+    max_change_pct: Optional[float] = None,
+    baseline: str = "previous",
+    window: Optional[int] = None,
+    min_history: int = 1,
+    on_no_baseline: str = "pass",
+    severity: str = "blocking",
+    id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    A dataset statistic must not move sharply against earlier runs.
+
+    The baseline comes from saved runs of the same contract on the same
+    dataset, in the configured state backend, so runs must be saved
+    (``save=True``, the default) to build one.
+
+    Args:
+        metric: row_count | null_count | null_rate | distinct_count | mean | min | max
+        column: Column to measure (every metric except row_count)
+        max_increase / max_decrease / max_change: Absolute limits in metric
+            units (null_rate is a fraction: 0.05 is 5 percentage points)
+        max_increase_pct / max_decrease_pct / max_change_pct: Limits in percent
+            of the baseline (20 means 20%)
+        baseline: "previous" run, or the "median" / "mean" of the last ``window`` runs
+        window: Runs a median/mean baseline covers (default 7)
+        min_history: Earlier measurements needed before checking (default 1)
+        on_no_baseline: "pass" (default) or "fail" while history is too short.
+            Either way the result says no baseline was available.
+        severity: "blocking" | "warning" | "info"
+        id: Custom rule ID (default COL:{column}:drift:{metric} or DATASET:drift:{metric})
+        context: Consumer-defined metadata (owner, tags, fix_hint, etc.)
+
+    Note:
+        drift is a scalar check and does not support tally.
+
+    Returns:
+        Rule dict for use with kontra.validate()
+
+    Raises:
+        ValueError: If the metric, column, baseline or limits are invalid
+
+    Example:
+        rules.drift("null_rate", "email", max_increase=0.05)
+        rules.drift("row_count", baseline="median", window=7, max_decrease_pct=20)
+    """
+    params: Dict[str, Any] = {"metric": metric}
+    if column is not None:
+        params["column"] = column
+    limits = {
+        "max_increase": max_increase,
+        "max_decrease": max_decrease,
+        "max_change": max_change,
+        "max_increase_pct": max_increase_pct,
+        "max_decrease_pct": max_decrease_pct,
+        "max_change_pct": max_change_pct,
+    }
+    params.update({key: value for key, value in limits.items() if value is not None})
+    if baseline != "previous":
+        params["baseline"] = baseline
+    if window is not None:
+        params["window"] = window
+    if min_history != 1:
+        params["min_history"] = min_history
+    if on_no_baseline != "pass":
+        params["on_no_baseline"] = on_no_baseline
+
+    # Same checks as the contract form, reported at the call site.
+    from kontra.errors import RuleParameterError
+    from kontra.rule_defs.builtin.drift import parse_drift_params
+
+    try:
+        parse_drift_params(params)
+    except RuleParameterError as e:
+        raise ValueError(f"drift() {e.message}") from None
+
+    return _build_rule("drift", params, severity, id, None, context)
+
+
 # Module-level access for `from kontra import rules` then `rules.not_null(...)`
 class _RulesModule:
     """
@@ -796,6 +883,7 @@ class _RulesModule:
     compare = staticmethod(compare)
     conditional_not_null = staticmethod(conditional_not_null)
     conditional_range = staticmethod(conditional_range)
+    drift = staticmethod(drift)
 
     def __repr__(self) -> str:
         return "<kontra.rules module>"

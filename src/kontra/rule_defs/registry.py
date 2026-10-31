@@ -11,7 +11,7 @@ _BUILTIN_RULE_NAMES: frozenset = frozenset({
     "not_null", "unique", "allowed_values", "disallowed_values",
     "range", "regex", "dtype", "length", "contains", "starts_with",
     "ends_with", "compare", "conditional_not_null", "conditional_range",
-    "min_rows", "max_rows", "freshness", "custom_sql_check",
+    "min_rows", "max_rows", "freshness", "custom_sql_check", "drift",
 })
 
 # Dynamically populated set (extended during lazy registration).

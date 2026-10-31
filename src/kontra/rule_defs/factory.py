@@ -48,6 +48,7 @@ def _derive_rule_id(spec: RuleSpec) -> str:
       - If spec.id is set → return it as-is (caller must ensure uniqueness)
       - If column param exists and is a string → COL:{column}:{name}
       - Otherwise → DATASET:{name}
+      - drift appends its metric: COL:{column}:drift:{metric}, DATASET:drift:{metric}
     """
     explicit: Optional[str] = getattr(spec, "id", None)
     if explicit:
@@ -61,7 +62,13 @@ def _derive_rule_id(spec: RuleSpec) -> str:
         # e.g. not_null with include_nan=True → COL:val:not_null:include_nan
         if params.get("include_nan"):
             base_id += ":include_nan"
+        # drift measures one metric per rule; several metrics on one column
+        # are the normal case, so the metric is part of the id.
+        if spec.name == "drift" and isinstance(params.get("metric"), str):
+            base_id += f":{params['metric']}"
         return base_id
+    if spec.name == "drift" and isinstance(params.get("metric"), str):
+        return f"DATASET:drift:{params['metric']}"
     return f"DATASET:{spec.name}"
 
 

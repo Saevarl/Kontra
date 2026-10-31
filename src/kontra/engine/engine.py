@@ -564,8 +564,7 @@ class ValidationEngine:
             # Generate fingerprints
             contract_fp = fingerprint_contract(self.contract) if self.contract else "unknown"
 
-            source_ref = self.data_path or (self.contract.datasource if self.contract else "")
-            source_uri = _resolve_datasource_uri(source_ref) if source_ref else ""
+            source_uri = self._state_dataset_uri()
             dataset_fp = None
             try:
                 handle = DatasetHandle.from_uri(source_uri, storage_options=self._storage_options)
@@ -594,6 +593,33 @@ class ValidationEngine:
         except Exception as e:
             # Don't fail validation if state save fails
             _logger.warning("Failed to save validation state: %s", e)
+
+    def _state_dataset_uri(self) -> str:
+        """The dataset URI a saved run records (and drift history is matched on)."""
+        source_ref = self.data_path or (self.contract.datasource if self.contract else "")
+        return _resolve_datasource_uri(source_ref) if source_ref else ""
+
+    def _prepare_drift_rules(self, rules: List[Any]) -> List[Any]:
+        """Attach earlier measurements to drift rules; returns the drift rules."""
+        from kontra.engine.phases.drift import attach_history, drift_rules
+
+        drifts = drift_rules(rules)
+        if not drifts:
+            return drifts
+        try:
+            from kontra.state.backends import get_default_store
+            from kontra.state.fingerprint import fingerprint_contract
+
+            # The store runs are saved to, whether or not this run is saved.
+            store = self.state_store or get_default_store()
+            attach_history(
+                drifts, store, fingerprint_contract(self.contract), self._state_dataset_uri()
+            )
+        except Exception as e:  # e.g. an unresolvable datasource; rules report it
+            log_exception(_logger, "Could not prepare drift history", e)
+            for rule in drifts:
+                rule.set_history(None, error=f"{type(e).__name__}: {e}")
+        return drifts
 
     def get_last_state(self) -> Optional["ValidationState"]:
         """Get the state from the last validation run."""
@@ -690,6 +716,7 @@ class ValidationEngine:
         rule_severity_map: Dict[str, str],
         rule_tally_map: Dict[str, bool],
         rule_context_map: Dict[str, Dict[str, Any]],
+        drifts: List[Any],
     ) -> Dict[str, Any]:
         """
         Execute validation directly on a user-provided DataFrame.
@@ -724,6 +751,10 @@ class ValidationEngine:
         exec_result = polars_exec.execute(self.df, compiled_full, rule_tally_map)
         polars_results = exec_result.get("results", [])
         timers.polars_ms = now_ms() - t0
+        if drifts:
+            from kontra.engine.phases.drift import finalize_results
+
+            finalize_results(polars_results, drifts)
 
         # Merge results (all from Polars in this mode)
         all_results: List[Dict[str, Any]] = []
@@ -910,6 +941,7 @@ class ValidationEngine:
             only_columns=self._only_columns,
         )
         self._rules = ctx.rules  # Store for sample_failures()
+        drifts = self._prepare_drift_rules(ctx.rules)
         timers.compile_ms = now_ms() - t0
 
         # ------------------------------------------------------------------ #
@@ -918,7 +950,7 @@ class ValidationEngine:
         if self._input_dataframe is not None:
             return self._run_dataframe_mode(
                 timers, ctx.rules, ctx.plan, ctx.compiled_full,
-                ctx.severity_map, ctx.tally_map, ctx.context_map
+                ctx.severity_map, ctx.tally_map, ctx.context_map, drifts,
             )
 
         # ------------------------------------------------------------------ #
@@ -1007,6 +1039,10 @@ class ValidationEngine:
         results = merge_results(preplan, pushdown, residual, ctx)
         # Every query has run: check the Trino table state held.
         trino_read.finish(handle)
+        if drifts:
+            from kontra.engine.phases.drift import finalize_results
+
+            finalize_results(results, drifts)
 
         # ------------------------------------------------------------------ #
         # Phase 10: Summary and Reporting
@@ -1213,16 +1249,20 @@ class ValidationEngine:
             if not passed and severity != "blocking":
                 severity_tag = f" [{severity}]"
 
-            if passed:
+            details = r.get("details") or {}
+            if passed and details.get("status") == "no_baseline":
+                # A drift rule with too little history: say it wasn't checked.
+                report_line(f"  ⏳ {rule_id}{source_tag}: {r.get('message', 'No baseline')}")
+            elif passed:
                 report_line(f"  ✅ {rule_id}{source_tag}")
             else:
                 msg = r.get("message", "Failed")
                 failed_count = r.get("failed_count", 0)
                 is_tally = r.get("tally", True)
 
-                # dtype is binary (schema-level) - show message directly, no count
+                # dtype and drift verdicts aren't row counts: show the message
                 is_dtype_rule = rule_id.endswith(":dtype")
-                if is_dtype_rule:
+                if is_dtype_rule or r.get("rule_name") == "drift":
                     detail = f": {msg}"
                 elif failed_count > 0:
                     failure_word = "failure" if failed_count == 1 else "failures"

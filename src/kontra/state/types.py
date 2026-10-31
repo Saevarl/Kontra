@@ -217,6 +217,10 @@ class FailureMode(str, Enum):
     ROW_COUNT_LOW = "row_count_low"  # Below minimum rows
     ROW_COUNT_HIGH = "row_count_high"  # Above maximum rows
 
+    # History-relative failures (drift rule)
+    METRIC_DRIFT = "metric_drift"  # Statistic moved beyond its limit vs earlier runs
+    NO_BASELINE = "no_baseline"  # Too little history, with on_no_baseline: fail
+
     # Pattern failures
     PATTERN_MISMATCH = "pattern_mismatch"  # Regex pattern not matched
 

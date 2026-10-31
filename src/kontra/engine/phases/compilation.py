@@ -55,6 +55,7 @@ def _ensure_builtin_rules_registered() -> None:
         import kontra.rule_defs.builtin.compare  # noqa: F401
         import kontra.rule_defs.builtin.conditional_not_null  # noqa: F401
         import kontra.rule_defs.builtin.conditional_range  # noqa: F401
+        import kontra.rule_defs.builtin.drift  # noqa: F401
     except ImportError as e:
         raise ImportError(
             "Failed to load builtin rules. This usually means polars is not installed. "

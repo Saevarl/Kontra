@@ -82,6 +82,7 @@ __all__ = [
     "agg_compare",
     "agg_conditional_not_null",
     "agg_conditional_range",
+    "agg_metric",
     "exists_not_null",
     "exists_unique",
     "exists_allowed_values",
@@ -189,6 +190,14 @@ def agg_min_rows(threshold: int, rule_id: str, dialect: Dialect = "duckdb") -> s
 def agg_max_rows(threshold: int, rule_id: str, dialect: Dialect = "duckdb") -> str:
     """Check if row count <= threshold. Returns excess if above."""
     return renderer_for(dialect).max_rows(int(threshold), rule_id)
+
+
+def agg_metric(
+    metric: str, col: Optional[str], rule_id: str, dialect: Dialect = "duckdb"
+) -> str:
+    """One drift measurement (row_count, null_rate, mean, ...) for the table."""
+    r = renderer_for(dialect)
+    return r.metric(metric, Col(col).sql(r) if col else None, rule_id)
 
 
 def agg_allowed_values(
@@ -619,12 +628,25 @@ def results_from_row(
         if rule_id == "__no_sql_rules__":
             continue
 
+        rule_kind = rule_kinds.get(rule_id)
+        if rule_kind == "metric":
+            # A measurement, not a violation count: the drift rule judges it
+            # against history once all tiers have run (engine.phases.drift).
+            out.append({
+                "rule_id": rule_id,
+                "passed": True,
+                "failed_count": 0,
+                "message": "Measured",
+                "metric_value": val,
+                "execution_source": "sql",
+            })
+            continue
+
         if is_exists:
             failed_count = 1 if val else 0
         else:
             failed_count = int(val) if val is not None else 0
 
-        rule_kind = rule_kinds.get(rule_id)
         result = {
             "rule_id": rule_id,
             "passed": failed_count == 0,

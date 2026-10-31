@@ -274,6 +274,8 @@ class KontraMCPService:
                 sample_budget=n,
                 sample_columns="relevant",
                 save=False,
+                # Not saved, but drift rules still compare with this history.
+                state_store=self._state_store,
             )
             rule = next((item for item in result.rules if item.rule_id == rule_id), None)
             if rule is None:
