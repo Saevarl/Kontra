@@ -535,8 +535,12 @@ class ClickHouseRenderer(Renderer):
         # avg of a UInt64/Int64 column sums in that type and wraps, so average
         # as Float64. toFloat64 alone would parse numeric-looking strings;
         # sign() only takes numbers, so a String or Date column fails the
-        # query and Polars reports the config error.
-        return f"avg({self.to_double(col_sql)} + 0 * sign({col_sql}))"
+        # query and Polars reports the config error. Bool passes sign() but is
+        # not numeric in Polars, so throwIf fails it too (even with no rows).
+        return (
+            f"avg({self.to_double(col_sql)} + 0 * sign({col_sql})) "
+            f"+ throwIf(toTypeName(assumeNotNull({col_sql})) = 'Bool')"
+        )
 
     def extremum(self, func: str, col_sql: str) -> str:
         # min/max of no rows return the type's default (0) for a non-Nullable

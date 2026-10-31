@@ -781,7 +781,11 @@ class TestSqlRendering:
             ("sqlserver", "mean", 'AVG(CAST([c] AS FLOAT) + ([c] - [c])) AS [r]'),
             ("sqlserver", "max", 'MAX([c]) AS [r]'),
             ("sqlserver", "distinct_count", 'COUNT_BIG(DISTINCT [c]) AS [r]'),
-            ("clickhouse", "mean", "avg(toFloat64(`c`) + 0 * sign(`c`)) AS `r`"),
+            (
+                "clickhouse",
+                "mean",
+                "avg(toFloat64(`c`) + 0 * sign(`c`)) + throwIf(toTypeName(assumeNotNull(`c`)) = 'Bool') AS `r`",
+            ),
             ("clickhouse", "min", "minOrNull(`c`) AS `r`"),
             ("clickhouse", "max", "maxOrNull(`c`) AS `r`"),
             ("trino", "max", 'MAX("c") AS "r"'),

@@ -61,8 +61,8 @@ def odd_table():
     """Non-Nullable numbers with NaN, and numeric-looking strings."""
     name = f"drift_odd_{uuid.uuid4().hex[:10]}"
     c = _client()
-    c.command(f"CREATE TABLE {name} (i Int32, f Float64, s String) ENGINE = MergeTree ORDER BY i")
-    c.command(f"INSERT INTO {name} VALUES (7, 1, '1'), (8, nan, '2'), (9, -2, '3')")
+    c.command(f"CREATE TABLE {name} (i Int32, f Float64, s String, b Bool) ENGINE = MergeTree ORDER BY i")
+    c.command(f"INSERT INTO {name} VALUES (7, 1, '1', true), (8, nan, '2', false), (9, -2, '3', true)")
     yield c, name, f"clickhouse://{_USER}:{_PASSWORD}@{_HOST}:{_PORT}/{_DB}/{name}"
     c.command(f"DROP TABLE IF EXISTS {name}")
 
@@ -93,10 +93,14 @@ def test_nan_and_empty_tables_match_polars(odd_table):
     assert {value for value, _ in empty.values()} == {None}
 
 
-def test_numeric_looking_string_mean_is_a_config_error(odd_table):
-    _, _, uri = odd_table
+@pytest.mark.parametrize("column", ["s", "b"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_mean_of_a_string_or_bool_is_a_config_error(odd_table, column, empty):
+    c, name, uri = odd_table
+    if empty:
+        c.command(f"TRUNCATE TABLE {name}")
     for kwargs in ({}, {"pushdown": "off", "preplan": "off"}):
-        result = kontra.validate(uri, rules=[rules.drift("mean", "s", max_change=0)], save=False, **kwargs)
+        result = kontra.validate(uri, rules=[rules.drift("mean", column, max_change=0)], save=False, **kwargs)
         assert result.rules[0].failure_mode == "config_error", kwargs
 
 
