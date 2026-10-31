@@ -154,7 +154,7 @@ _RULE_SPECS: tuple[dict[str, Any], ...] = (
         "name": "drift",
         "scope": "dataset",
         "summary": "Require a dataset statistic to stay close to its value in earlier saved runs.",
-        "fails_when": "The metric moves past a configured limit against the baseline, or becomes undefined while the baseline is defined. With too little history it passes (or fails with on_no_baseline: fail) and reports details.status no_baseline.",
+        "fails_when": "The metric moves past a configured limit against the baseline, or becomes undefined while the baseline is defined. Without an earlier measurement it passes (or fails with on_no_baseline: fail) and reports details.status no_baseline.",
         "nulls": "null_count and null_rate measure NULLs; distinct_count, mean, min and max ignore them. mean, min and max of an all-NULL column, and null_rate of an empty dataset, are undefined.",
         "counting": "Scalar verdict: failed_count is 1 or 0; tally is unsupported. details holds value, baseline, change, change_pct and status (ok, drifted, no_baseline, no_value).",
         "supports_tally": False,
@@ -169,8 +169,7 @@ _RULE_SPECS: tuple[dict[str, Any], ...] = (
             _param("max_change_pct", "number", "Largest allowed move either way in percent of the baseline.", required=False, constraints=">= 0"),
             _param("baseline", "string", "previous compares with the latest earlier run; median and mean aggregate the last window runs.", required=False, default="previous", constraints="one of previous, median, mean"),
             _param("window", "integer", "Earlier runs a median or mean baseline covers.", required=False, default=7, constraints=">= 1; median and mean only"),
-            _param("min_history", "integer", "Earlier measurements needed before the check runs.", required=False, default=1, constraints=">= 1; at most window for median and mean"),
-            _param("on_no_baseline", "string", "Verdict while history is shorter than min_history.", required=False, default="pass", constraints="pass or fail"),
+            _param("on_no_baseline", "string", "Verdict while there is no earlier measurement.", required=False, default="pass", constraints="pass or fail"),
         ],
         "example": "- name: drift\n  params: { metric: null_rate, column: email, max_increase: 0.05 }",
         "notes": [

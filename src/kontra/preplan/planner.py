@@ -416,7 +416,6 @@ def preplan_single_parquet(
     required_columns: List[str],
     predicates: List[Predicate],
     filesystem: "pafs.FileSystem | None" = None,
-    null_count_columns: Iterable[str] = (),
 ) -> PrePlan:
     """
     Metadata-only pre-planner for a SINGLE Parquet file.
@@ -426,7 +425,6 @@ def preplan_single_parquet(
       - required_columns: union of columns needed for *all* rules (from your CompiledPlan)
       - predicates:       metadata-usable predicates -> List[(rule_id, column, op, value)]
       - filesystem:       PyArrow filesystem object (e.g., for S3)
-      - null_count_columns: columns whose total NULL count to read from the footer
 
     Outputs (PrePlan):
       - manifest_row_groups: RG indices that STILL MATTER for remaining rules
@@ -527,24 +525,10 @@ def preplan_single_parquet(
             "total_rows": md.num_rows,
         },
         fail_details=fail_details,
-        null_counts={col: _total_null_count(rg_stats, col) for col in null_count_columns},
     )
     if md.total_byte_size is not None:
         preplan.stats["total_byte_size"] = md.total_byte_size
     return preplan
-
-
-def _total_null_count(rg_stats: List[Dict[str, Dict[str, Any]]], col: str) -> Optional[int]:
-    """Exact NULLs in a top-level column, or None unless every row group reports them."""
-    if not rg_stats:
-        return None  # no row group to show the column exists
-    total = 0
-    for per_col in rg_stats:
-        nulls = (per_col.get(col) or {}).get("null_count")
-        if not isinstance(nulls, int) or nulls < 0:
-            return None
-        total += nulls
-    return total
 
 
 def preplan_parquet_glob(

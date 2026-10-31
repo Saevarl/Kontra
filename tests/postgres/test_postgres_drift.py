@@ -101,12 +101,51 @@ def test_text_mean_is_a_config_error(table):
     assert result.rules[0].failure_mode == "config_error"
 
 
-def test_text_max_through_sql_is_a_config_error(table):
+def test_text_max_is_a_config_error(table):
     uri = f"{_BASE}/kontra_test/public.{table}"
     result = kontra.validate(uri, rules=[rules.drift("max", "grp", max_change=0)], save=False)
-    rule = result.rules[0]
-    assert rule.source == "sql"
-    assert rule.failure_mode == "config_error"
+    assert result.rules[0].failure_mode == "config_error"
+
+
+@pytest.fixture()
+def odd_table(postgres_connection):
+    """NaN, integers past 2**53 and numeric-looking text."""
+    name = f"drift_odd_{uuid.uuid4().hex[:10]}"
+    with postgres_connection.cursor() as cur:
+        cur.execute(f"CREATE TABLE public.{name} (f DOUBLE PRECISION, b BIGINT, s TEXT)")
+        cur.execute(
+            f"INSERT INTO public.{name} VALUES "
+            "(1, 9007199254740993, '1'), ('NaN', 1, '2'), (-2, 2, '3'), (NULL, NULL, NULL)"
+        )
+    postgres_connection.commit()
+    yield f"{_BASE}/kontra_test/public.{name}"
+    with postgres_connection.cursor() as cur:
+        cur.execute(f"DROP TABLE IF EXISTS public.{name}")
+    postgres_connection.commit()
+
+
+def test_nan_and_large_integers_match_polars(odd_table):
+    drift = [
+        rules.drift(m, c, max_change=0, id=f"{m}:{c}")
+        for m, c in [("min", "f"), ("max", "f"), ("mean", "f"), ("max", "b"), ("min", "b")]
+    ]
+    sql = {r.rule_id: r for r in kontra.validate(odd_table, rules=drift, save=False).rules}
+    polars = {
+        r.rule_id: r
+        for r in kontra.validate(odd_table, rules=drift, save=False, pushdown="off", preplan="off").rules
+    }
+    assert {r.source for r in sql.values()} == {"sql"}
+    for rule_id, rule in polars.items():
+        assert sql[rule_id].details["value"] == rule.details["value"], rule_id
+    assert sql["max:f"].details["value"] == 1.0
+    assert sql["mean:f"].details["value"] is None  # NaN mean is undefined
+    assert sql["max:b"].details["value"] == 2**53 + 1
+
+
+def test_numeric_looking_text_mean_is_a_config_error(odd_table):
+    for kwargs in ({}, {"pushdown": "off", "preplan": "off"}):
+        result = kontra.validate(odd_table, rules=[rules.drift("mean", "s", max_change=0)], save=False, **kwargs)
+        assert result.rules[0].failure_mode == "config_error", kwargs
 
 
 def test_empty_table_values(postgres_connection, table):
@@ -129,9 +168,9 @@ def test_history_in_postgres_store(postgres_connection, table, state_store):
     ]
 
     first = kontra.validate(uri, rules=contract_rules, state_store=state_store)
-    assert {r.drift_status for r in first.rules} == {"no_baseline"}
+    assert {r.details["status"] for r in first.rules} == {"no_baseline"}
     second = kontra.validate(uri, rules=contract_rules, state_store=state_store)
-    assert {r.drift_status for r in second.rules} == {"ok"}
+    assert {r.details["status"] for r in second.rules} == {"ok"}
 
     with postgres_connection.cursor() as cur:
         cur.execute(f"UPDATE public.{table} SET score = NULL WHERE id % 2 = 0")
@@ -140,10 +179,10 @@ def test_history_in_postgres_store(postgres_connection, table, state_store):
 
     third = {r.rule_id: r for r in kontra.validate(uri, rules=contract_rules, state_store=state_store).rules}
     null_rate = third[f"nr_{table}"]
-    assert null_rate.drift_status == "drifted"
+    assert null_rate.details["status"] == "drifted"
     assert null_rate.details["baseline"] == pytest.approx(1 / 3)
     rows = third["DATASET:drift:row_count"]
-    assert rows.drift_status == "drifted"
+    assert rows.details["status"] == "drifted"
     assert rows.details["baseline"] == 300 and rows.details["value"] == 200
 
     # The measurement survives the JSONB round trip.

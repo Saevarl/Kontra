@@ -15,14 +15,14 @@ Usage in contract:
       window: 7                # earlier runs the median is taken over
       max_decrease_pct: 20     # at most a 20% drop against that median
 
-A run measures the metric through the cheapest route the engine has (Parquet
-footer, SQL aggregate, or Polars) and stores the measurement in the rule's
+A run measures the metric with a SQL aggregate where the engine pushes one
+down, otherwise with Polars, and stores the measurement in the rule's
 result details. The baseline comes from those stored measurements: the saved
 runs of the same contract (fingerprint) on the same dataset URI, read from the
 configured state backend. The engine attaches them before execution
 (``kontra.engine.phases.drift``), so the rule itself never touches the store.
 
-Without enough earlier measurements there is nothing to compare against. The
+Without an earlier measurement there is nothing to compare against. The
 rule then passes (or fails, with ``on_no_baseline: fail``) with
 ``details["status"] == "no_baseline"`` and a message that says so: it never
 looks like a checked pass.
@@ -67,7 +67,7 @@ STATUS_NO_BASELINE = "no_baseline"
 STATUS_NO_VALUE = "no_value"
 
 _KNOWN_PARAMS = frozenset(
-    {"metric", "column", "baseline", "window", "min_history", "on_no_baseline", *LIMITS}
+    {"metric", "column", "baseline", "window", "on_no_baseline", *LIMITS}
 )
 
 
@@ -121,10 +121,6 @@ def parse_drift_params(params: Dict[str, Any]) -> Dict[str, Any]:
     else:
         window = _positive_int(params, "window", DEFAULT_WINDOW)
 
-    min_history = _positive_int(params, "min_history", 1)
-    if baseline != "previous" and min_history > window:
-        raise _param_error("min_history", f"({min_history}) cannot exceed window ({window})")
-
     limits: Dict[str, float] = {}
     for key in LIMITS:
         if key in params and params[key] is not None:
@@ -144,7 +140,6 @@ def parse_drift_params(params: Dict[str, Any]) -> Dict[str, Any]:
         "column": column,
         "baseline": baseline,
         "window": window,
-        "min_history": min_history,
         "limits": limits,
         "on_no_baseline": on_no_baseline,
     }
@@ -159,6 +154,10 @@ def clean_measurement(metric: str, value: Any) -> Optional[float]:
     """
     if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, numbers.Integral):
+        # Integer extrema stay exact: a float has no room for every Int64, so
+        # 2**53 -> 2**53 + 1 would compare as no change.
+        return int(value)
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -185,6 +184,10 @@ def _signed(value: float) -> str:
 
 
 def _exceeds(amount: float, limit: float) -> bool:
+    if isinstance(amount, int) and isinstance(limit, int):
+        # Whole-number changes need no rounding tolerance, which would let a
+        # change of 1 on a 2**53 baseline pass a limit of 0.
+        return amount > limit
     # Float subtraction lands a hair either side of an exact limit (0.07 - 0.02
     # is 0.05000000000000001); a change equal to the limit is allowed.
     return amount > limit and not math.isclose(amount, limit, rel_tol=1e-9, abs_tol=1e-12)
@@ -200,11 +203,10 @@ class DriftRule(BaseRule):
         column: Column to measure (every metric except row_count)
         baseline: previous (default) | median | mean of the last ``window`` runs
         window: Earlier runs the median/mean is taken over (default 7)
-        min_history: Earlier measurements needed before the check runs (default 1)
         max_increase / max_decrease / max_change: Absolute limits, in metric units
         max_increase_pct / max_decrease_pct / max_change_pct: Limits in percent
             of the baseline (20 means 20%)
-        on_no_baseline: pass (default) | fail when the history is too short
+        on_no_baseline: pass (default) | fail when there is no earlier measurement
     """
 
     rule_scope = "dataset"
@@ -217,7 +219,6 @@ class DriftRule(BaseRule):
         self.column: Optional[str] = spec["column"]
         self.baseline: str = spec["baseline"]
         self.window: int = spec["window"]
-        self.min_history: int = spec["min_history"]
         self.limits: Dict[str, float] = spec["limits"]
         self.on_no_baseline: str = spec["on_no_baseline"]
         if self.column is not None:
@@ -234,7 +235,7 @@ class DriftRule(BaseRule):
     @property
     def history_needed(self) -> int:
         """How many earlier measurements the baseline can use."""
-        return max(self.window, self.min_history)
+        return self.window
 
     def set_history(self, values: Optional[Sequence[float]], error: Optional[str] = None) -> None:
         """Attach earlier measurements (newest first), or the error that prevented reading them."""
@@ -270,28 +271,6 @@ class DriftRule(BaseRule):
             "metric": self.metric,
             "column": self.column,
         }
-
-    def measure_from_metadata(
-        self, row_count: Optional[int], null_counts: Dict[str, Optional[int]]
-    ) -> Optional[float]:
-        """
-        The measurement from Parquet footer statistics, or None when the footer
-        can't give an exact answer (the engine then measures it by query).
-        """
-        if row_count is None:
-            return None
-        if self.metric == "row_count":
-            return int(row_count)
-        if self.metric not in ("null_count", "null_rate"):
-            return None
-        nulls = null_counts.get(self.column) if self.column else None
-        if nulls is None:
-            return None
-        if self.metric == "null_count":
-            return int(nulls)
-        # null_rate of an empty dataset is undefined, but the footer already
-        # knows that exactly.
-        return nulls / row_count if row_count else float("nan")
 
     def measure(self, df: "pl.DataFrame") -> Optional[float]:
         """The measurement on a Polars frame (the caller checked the column)."""
@@ -333,7 +312,7 @@ class DriftRule(BaseRule):
 
     def evaluate_measurement(self, raw_value: Any) -> Dict[str, Any]:
         """
-        Judge a measurement taken outside Polars (footer or SQL aggregate).
+        Judge a measurement taken by a SQL aggregate.
 
         SQL answers MIN/MAX of a text or date column with a non-number; that is
         the same configuration error the Polars tier reports.
@@ -387,12 +366,10 @@ class DriftRule(BaseRule):
             "details": details,
         }
 
-        found = len(history) if history is not None else 0
-        if history is None or found < self.min_history:
+        if not history:
             details["status"] = STATUS_NO_BASELINE
-            details["history_runs"] = found
-            needed = self.min_history
-            reason = f"needs {needed} earlier {'run' if needed == 1 else 'runs'} of this contract on this dataset, found {found}"
+            details["history_runs"] = 0
+            reason = "needs 1 earlier run of this contract on this dataset, found 0"
             if self._history_error:
                 details["history_error"] = self._history_error
                 reason = f"history could not be read ({self._history_error})"

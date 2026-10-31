@@ -3,7 +3,7 @@
 Drift rule support around the execution tiers.
 
 Before execution, each drift rule gets its earlier measurements from the state
-backend (``attach_history``). Preplan and SQL only *measure* a drift rule; once
+backend (``attach_history``). The SQL tier only *measures* a drift rule; once
 every tier has run, ``finalize_results`` turns those measurements into verdicts.
 A drift rule that reached Polars judged itself in ``validate()``.
 
@@ -25,9 +25,12 @@ from kontra.logging import get_logger
 
 _logger = get_logger(__name__)
 
-# Runs of other datasets share the contract's history, so read past them.
+# The first read covers the window plus some runs of other datasets sharing
+# the contract's history; each further read doubles it, up to a fixed cap so
+# a long history of other datasets can't make every run load all of it.
 _HISTORY_SCAN_FACTOR = 3
 _HISTORY_SCAN_SLACK = 10
+_HISTORY_SCAN_MAX = 1000
 
 
 def drift_rules(rules: List[Any]) -> List["DriftRule"]:
@@ -59,21 +62,57 @@ def attach_history(
 
     needed = max(rule.history_needed for rule in rules)
     limit = max(needed * _HISTORY_SCAN_FACTOR, needed + _HISTORY_SCAN_SLACK)
-    try:
-        states = store.get_history(contract_fingerprint, limit=limit)
-    except Exception as e:  # any backend failure; reported per rule
-        _logger.warning("Could not read drift history: %s", e)
-        for rule in rules:
-            rule.set_history(None, error=f"{type(e).__name__}: {e}")
-        return
+    cap = max(limit, _HISTORY_SCAN_MAX)
+    while True:
+        try:
+            states = store.get_history(contract_fingerprint, limit=limit)
+        except Exception as e:  # any backend failure; reported per rule
+            _logger.warning("Could not read drift history: %s", e)
+            for rule in rules:
+                rule.set_history(None, error=f"{type(e).__name__}: {e}")
+            return
+        complete = len(states) < limit
+        if not complete:
+            states = _drop_partial_second(states)
+        histories = _histories(rules, states, dataset_uri)
+        if complete or limit >= cap or all(
+            len(values) >= rule.history_needed for rule, values in zip(rules, histories)
+        ):
+            break
+        limit = min(limit * 2, cap)
 
-    # File-based stores order runs by a second-resolution name; run_at keeps
-    # microseconds, so runs saved within one second still come out in order.
+    for rule, values in zip(rules, histories):
+        rule.set_history(values)
+
+
+def _drop_partial_second(states: List[Any]) -> List[Any]:
+    """
+    Drop the runs of the oldest second in a truncated read.
+
+    File-based stores order runs by a second-resolution name with a random
+    suffix, so a read cut off inside one second holds an arbitrary part of that
+    second's runs, and an unread run of it may be newer than the read ones.
+    Every later second was read in full.
+    """
+    seconds = [_aware(s.run_at).replace(microsecond=0) for s in states]
+    if not seconds:
+        return states
+    oldest = min(seconds)
+    return [s for s, second in zip(states, seconds) if second != oldest]
+
+
+def _histories(
+    rules: List["DriftRule"], states: List[Any], dataset_uri: str
+) -> List[List[float]]:
+    """Each rule's measurements in this dataset's runs, newest first."""
+    # run_at keeps microseconds, so runs saved within one second still come
+    # out in order.
     states = sorted(
         (s for s in states if s.dataset_uri == dataset_uri),
         key=lambda s: _aware(s.run_at),
         reverse=True,
     )
+    histories: List[List[float]] = []
     for rule in rules:
         values: List[float] = []
         for state in states:
@@ -82,7 +121,8 @@ def attach_history(
                 values.append(value)
                 if len(values) >= rule.history_needed:
                     break
-        rule.set_history(values)
+        histories.append(values)
+    return histories
 
 
 def _aware(moment: datetime) -> datetime:
@@ -91,7 +131,7 @@ def _aware(moment: datetime) -> datetime:
 
 
 def finalize_results(results: List[Dict[str, Any]], rules: List["DriftRule"]) -> None:
-    """Judge drift measurements taken by preplan or SQL, in place."""
+    """Judge drift measurements taken by the SQL tier, in place."""
     by_id = {rule.rule_id: rule for rule in rules}
     for result in results:
         rule = by_id.get(result.get("rule_id"))

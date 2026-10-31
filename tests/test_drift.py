@@ -45,6 +45,10 @@ def by_name(result):
     return {r.rule_id: r for r in result.rules}
 
 
+def status(rule_result):
+    return rule_result.details["status"]
+
+
 # --------------------------------------------------------------------------- #
 # Parameters, ids and builders
 # --------------------------------------------------------------------------- #
@@ -66,10 +70,6 @@ class TestParameters:
             ({"metric": "row_count", "max_change": 1, "baseline": "mode"}, "baseline"),
             ({"metric": "row_count", "max_change": 1, "window": 3}, "window"),
             ({"metric": "row_count", "max_change": 1, "baseline": "median", "window": 0}, "window"),
-            (
-                {"metric": "row_count", "max_change": 1, "baseline": "mean", "window": 3, "min_history": 4},
-                "min_history",
-            ),
             ({"metric": "row_count", "max_change": 1, "on_no_baseline": "warn"}, "on_no_baseline"),
             ({"metric": "row_count", "max_chnage": 1}, "max_chnage"),
         ],
@@ -82,19 +82,13 @@ class TestParameters:
 
     def test_defaults(self):
         rule = build({"metric": "row_count", "max_change_pct": 10})
-        assert (rule.baseline, rule.window, rule.min_history, rule.on_no_baseline) == (
-            "previous", 1, 1, "pass",
-        )
+        assert (rule.baseline, rule.window, rule.on_no_baseline) == ("previous", 1, "pass")
         assert rule.supports_tally is False
         assert rule.rule_scope == "dataset"
         median = build({"metric": "mean", "column": "x", "max_change": 1, "baseline": "median"})
         assert median.window == 7
         assert median.rule_scope == "column"
         assert median.history_needed == 7
-
-    def test_previous_baseline_may_require_a_longer_history(self):
-        rule = build({"metric": "row_count", "max_change": 1, "min_history": 3})
-        assert rule.history_needed == 3
 
     def test_rule_ids_carry_the_metric(self):
         built = RuleFactory([
@@ -130,7 +124,7 @@ class TestParameters:
 
     def test_builder_matches_contract_form(self):
         rule = rules.drift(
-            "row_count", baseline="median", window=5, min_history=2,
+            "row_count", baseline="median", window=5,
             max_decrease_pct=20, on_no_baseline="fail", severity="warning", context={"owner": "x"},
         )
         assert rule == {
@@ -140,7 +134,6 @@ class TestParameters:
                 "max_decrease_pct": 20,
                 "baseline": "median",
                 "window": 5,
-                "min_history": 2,
                 "on_no_baseline": "fail",
             },
             "severity": "warning",
@@ -181,7 +174,7 @@ class TestParameters:
         assert rule.severity == "warning"
         assert rule.context == {"owner": "data"}
         assert rule.details["value"] == 1
-        assert rule.drift_status == "no_baseline"
+        assert status(rule) == "no_baseline"
 
     def test_dry_run_accepts_and_rejects(self):
         ok = kontra.validate(rules=[rules.drift("row_count", max_change=1)], dry_run=True)
@@ -217,15 +210,6 @@ class TestVerdict:
         assert result["failed_count"] == 1
         assert result["failure_mode"] == "no_baseline"
         assert result["details"]["status"] == "no_baseline"
-
-    def test_min_history_not_met(self):
-        params = {"metric": "row_count", "max_change": 1, "baseline": "median", "min_history": 3}
-        short = judged(params, [10, 10], 100)
-        assert short["passed"] is True
-        assert short["details"]["status"] == "no_baseline"
-        assert short["details"]["history_runs"] == 2
-        assert "needs 3 earlier runs" in short["message"]
-        assert judged(params, [10, 10, 10], 100)["details"]["status"] == "drifted"
 
     def test_history_read_error_is_reported(self):
         rule = build({"metric": "row_count", "max_change": 1})
@@ -344,6 +328,17 @@ class TestVerdict:
         assert type(count["details"]["value"]) is int
         json.dumps(result)  # NaN/inf/Decimal never reach stored state
 
+    def test_integers_beyond_float_precision_compare_exactly(self):
+        import numpy as np
+
+        params = {"metric": "max", "column": "x", "max_change": 0}
+        result = judged(params, [2**53], np.int64(2**53 + 1))
+        assert result["passed"] is False
+        assert result["details"]["value"] == 2**53 + 1 and type(result["details"]["value"]) is int
+        assert result["details"]["change"] == 1
+        assert judged(params, [2**53], 2**53)["passed"] is True
+        assert judged({**params, "max_change": 1}, [2**62], 2**62 + 2)["passed"] is False
+
     def test_sql_non_numeric_measurement_is_config_error(self):
         rule = build({"metric": "max", "column": "name", "max_change": 1})
         rule.set_history([1.0])
@@ -448,11 +443,11 @@ class TestEndToEnd:
     def test_runs_build_and_use_history(self, workdir):
         users(100, null_every=10).write_parquet("u.parquet")
         first = by_name(kontra.validate("u.parquet", rules=RULES))
-        assert all(r.passed and r.drift_status == "no_baseline" for r in first.values())
+        assert all(r.passed and status(r) == "no_baseline" for r in first.values())
 
         second = kontra.validate("u.parquet", rules=RULES)
         assert second.passed
-        assert {r.drift_status for r in second.rules} == {"ok"}
+        assert {status(r) for r in second.rules} == {"ok"}
 
         users(70, null_every=4, age_shift=5).write_parquet("u.parquet")
         third = by_name(kontra.validate("u.parquet", rules=RULES))
@@ -483,15 +478,15 @@ class TestEndToEnd:
         }
 
     def test_median_over_n_runs(self, workdir):
-        rule = [rules.drift("row_count", baseline="median", window=3, min_history=3, max_change_pct=10)]
+        rule = [rules.drift("row_count", baseline="median", window=3, max_change_pct=50)]
         for n in (100, 110, 90):
             users(n).write_parquet("u.parquet")
-            assert kontra.validate("u.parquet", rules=rule).rules[0].drift_status == "no_baseline"
+            kontra.validate("u.parquet", rules=rule)
         users(1000).write_parquet("u.parquet")
         result = kontra.validate("u.parquet", rules=rule).rules[0]
         assert result.details["baseline"] == 100
         assert result.details["history_runs"] == 3
-        assert result.drift_status == "drifted"
+        assert status(result) == "drifted"
         users(105).write_parquet("u.parquet")
         # Median of (1000, 90, 110): a drifted run still counts as history.
         assert kontra.validate("u.parquet", rules=rule).rules[0].details["baseline"] == 110
@@ -502,16 +497,16 @@ class TestEndToEnd:
         users(500).write_parquet("b.parquet")
         kontra.validate("a.parquet", rules=rule)
         b_first = kontra.validate("b.parquet", rules=rule).rules[0]
-        assert b_first.drift_status == "no_baseline"
-        assert kontra.validate("a.parquet", rules=rule).rules[0].drift_status == "ok"
-        assert kontra.validate("b.parquet", rules=rule).rules[0].drift_status == "ok"
+        assert status(b_first) == "no_baseline"
+        assert status(kontra.validate("a.parquet", rules=rule).rules[0]) == "ok"
+        assert status(kontra.validate("b.parquet", rules=rule).rules[0]) == "ok"
 
     def test_changing_the_contract_starts_a_new_history(self, workdir):
         users(10).write_parquet("u.parquet")
         kontra.validate("u.parquet", rules=[rules.drift("row_count", max_change=0)])
         widened = [rules.drift("row_count", max_change=0), rules.not_null("id")]
         result = kontra.validate("u.parquet", rules=widened)
-        assert by_name(result)["DATASET:drift:row_count"].drift_status == "no_baseline"
+        assert status(by_name(result)["DATASET:drift:row_count"]) == "no_baseline"
 
     def test_unsaved_runs_read_history_but_add_none(self, workdir):
         rule = [rules.drift("row_count", max_change=0)]
@@ -519,9 +514,9 @@ class TestEndToEnd:
         kontra.validate("u.parquet", rules=rule)
         users(11).write_parquet("u.parquet")
         dry = kontra.validate("u.parquet", rules=rule, save=False).rules[0]
-        assert dry.drift_status == "drifted" and dry.details["baseline"] == 10
+        assert status(dry) == "drifted" and dry.details["baseline"] == 10
         users(10).write_parquet("u.parquet")
-        assert kontra.validate("u.parquet", rules=rule).rules[0].drift_status == "ok"
+        assert status(kontra.validate("u.parquet", rules=rule).rules[0]) == "ok"
 
     def test_filtered_run_is_judged_but_not_saved(self, workdir):
         rule = [rules.drift("row_count", max_change=0), rules.not_null("id")]
@@ -530,7 +525,7 @@ class TestEndToEnd:
         users(20).write_parquet("u.parquet")
         with pytest.warns(UserWarning, match="Skipping state save"):
             filtered = kontra.validate("u.parquet", rules=rule, only=["drift"])
-        assert filtered.rules[0].drift_status == "drifted"
+        assert status(filtered.rules[0]) == "drifted"
         assert by_name(kontra.validate("u.parquet", rules=rule))["DATASET:drift:row_count"].details["baseline"] == 10
 
     def test_dataframe_input(self, workdir):
@@ -538,7 +533,7 @@ class TestEndToEnd:
         kontra.validate(users(10), rules=rule)
         result = kontra.validate(users(8), rules=rule).rules[0]
         assert result.source == "polars"
-        assert result.drift_status == "drifted"
+        assert status(result) == "drifted"
         assert result.message == (
             "distinct_count of 'id' fell from 10 to 8 (-2, -20.0%) against the previous run; "
             "exceeds max_decrease 0"
@@ -563,7 +558,7 @@ class TestEndToEnd:
             state_store=Broken(str(workdir / "state")),
         )
         rule = result.rules[0]
-        assert result.passed and rule.drift_status == "no_baseline"
+        assert result.passed and status(rule) == "no_baseline"
         assert rule.details["history_error"] == "OSError: disk gone"
 
     def test_explicit_store_is_read_not_the_default(self, workdir):
@@ -572,8 +567,86 @@ class TestEndToEnd:
         users(5).write_parquet("u.parquet")
         kontra.validate("u.parquet", rules=rule, state_store=store)
         users(6).write_parquet("u.parquet")
-        assert kontra.validate("u.parquet", rules=rule).rules[0].drift_status == "no_baseline"
-        assert kontra.validate("u.parquet", rules=rule, state_store=store).rules[0].drift_status == "drifted"
+        assert status(kontra.validate("u.parquet", rules=rule).rules[0]) == "no_baseline"
+        assert status(kontra.validate("u.parquet", rules=rule, state_store=store).rules[0]) == "drifted"
+
+
+class TestHistoryRead:
+    """attach_history against a real LocalStore."""
+
+    @staticmethod
+    def save(store, run_at, uri, value):
+        store.save(ValidationState(
+            contract_fingerprint="fp", dataset_fingerprint=None, contract_name="c",
+            dataset_uri=uri, run_at=run_at,
+            summary=StateSummary(passed=True, total_rules=1, passed_rules=1, failed_rules=0),
+            rules=[RuleState(rule_id="rows", rule_name="drift", passed=True, failed_count=0,
+                             execution_source="sql", details={"metric": "row_count", "value": value})],
+        ))
+
+    @staticmethod
+    def rule():
+        rule = build({"metric": "row_count", "max_change": 0}, id="rows")
+        return rule
+
+    def test_reads_past_runs_of_other_datasets(self, tmp_path):
+        from kontra.engine.phases.drift import attach_history
+
+        store = LocalStore(str(tmp_path))
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.save(store, start, "a.parquet", 100)
+        for i in range(40):
+            self.save(store, start + timedelta(seconds=i + 1), "b.parquet", 7)
+        rule = self.rule()
+        attach_history([rule], store, "fp", "a.parquet")
+        result = rule.evaluate(200)
+        assert result["details"]["baseline"] == 100
+        assert result["details"]["status"] == "drifted"
+
+    def test_latest_run_is_the_baseline_when_a_read_cuts_into_one_second(self, tmp_path, monkeypatch):
+        from kontra.engine.phases.drift import attach_history
+
+        store = LocalStore(str(tmp_path))
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # Twelve runs in one second whose file names sort oldest-first, so a
+        # read of the first eleven names misses the newest run.
+        for i in range(12):
+            monkeypatch.setattr(
+                store, "_generate_run_id",
+                lambda run_at, i=i: run_at.strftime("%Y-%m-%dT%H-%M-%S") + f"_{11 - i:06d}",
+            )
+            self.save(store, start + timedelta(microseconds=i), "a.parquet", 200 if i == 11 else 100)
+        rule = self.rule()
+        attach_history([rule], store, "fp", "a.parquet")
+        assert rule.evaluate(200)["details"]["baseline"] == 200
+
+    def test_read_is_bounded(self):
+        from kontra.engine.phases import drift as phase
+
+        class Endless:
+            """A history of other datasets that never ends."""
+
+            def __init__(self):
+                self.limits = []
+
+            def get_history(self, fingerprint, limit):
+                self.limits.append(limit)
+                start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+                return [
+                    ValidationState(
+                        contract_fingerprint="fp", dataset_fingerprint=None, contract_name="c",
+                        dataset_uri="other", run_at=start - timedelta(seconds=i),
+                        summary=StateSummary(passed=True, total_rules=0, passed_rules=0, failed_rules=0),
+                        rules=[],
+                    )
+                    for i in range(limit)
+                ]
+
+        store = Endless()
+        rule = self.rule()
+        phase.attach_history([rule], store, "fp", "a.parquet")
+        assert max(store.limits) == phase._HISTORY_SCAN_MAX
+        assert rule.evaluate(5)["details"]["status"] == "no_baseline"
 
 
 # --------------------------------------------------------------------------- #
@@ -619,7 +692,6 @@ class TestRoutes:
         assert expected["row_count"] == 300 and expected["null_count"] == 90
         routes = {
             "parquet": self.values("m.parquet"),
-            "parquet_sql_only": self.values("m.parquet", preplan="off"),
             "parquet_polars": self.values("m.parquet", preplan="off", pushdown="off"),
             "csv": self.values("m.csv"),
             "csv_polars": self.values("m.csv", pushdown="off"),
@@ -631,28 +703,39 @@ class TestRoutes:
 
     def test_cheapest_route(self, data):
         _, sources = self.values("m.parquet")
-        assert sources["row_count"] == "metadata"
-        assert sources["null_count"] == "metadata"
-        assert sources["null_rate"] == "metadata"
-        assert {sources[m] for m in ("distinct_count", "mean", "min", "max")} == {"sql"}
-        _, sql_only = self.values("m.parquet", preplan="off")
-        assert set(sql_only.values()) == {"sql"}
+        assert set(sources.values()) == {"sql"}
         _, polars = self.values("m.parquet", preplan="off", pushdown="off")
         assert set(polars.values()) == {"polars"}
 
-    def test_footer_without_null_counts_falls_back_to_sql(self, workdir):
-        import pyarrow.parquet as pq
+    @pytest.mark.parametrize("metric, expected", [("min", -2.0), ("max", 1.0), ("mean", None)])
+    def test_nan_is_measured_as_polars_does(self, workdir, metric, expected):
+        # Polars' min/max skip NaN; its mean is NaN, which is undefined.
+        pl.DataFrame({"x": [1.0, float("nan"), -2.0, None]}).write_parquet("nan.parquet")
+        rule = [rules.drift(metric, "x", max_change=0)]
+        sql = kontra.validate("nan.parquet", rules=rule, save=False).rules[0]
+        polars = kontra.validate("nan.parquet", rules=rule, save=False, pushdown="off").rules[0]
+        assert (sql.source, polars.source) == ("sql", "polars")
+        assert sql.details["value"] == polars.details["value"] == expected
 
-        pq.write_table(
-            pl.DataFrame({"f": [1.0, None, 3.0]}).to_arrow(), "nostats.parquet", write_statistics=False
-        )
-        result = kontra.validate(
-            "nostats.parquet",
-            rules=[rules.drift("null_count", "f", max_change=0), rules.drift("row_count", max_change=0)],
-            save=False,
-        )
-        got = {r.details["metric"]: (r.details["value"], r.source) for r in result.rules}
-        assert got == {"null_count": (1, "sql"), "row_count": (3, "metadata")}
+    def test_all_nan_column_is_undefined(self, workdir):
+        pl.DataFrame({"x": [float("nan"), None]}).write_parquet("nan.parquet")
+        for metric in ("min", "max"):
+            rule = [rules.drift(metric, "x", max_change=0)]
+            for kw in ({}, {"pushdown": "off"}):
+                measured = kontra.validate("nan.parquet", rules=rule, save=False, **kw).rules[0]
+                assert measured.details["value"] is None, (metric, kw)
+
+    def test_large_integers_stay_exact(self, workdir):
+        rule = [rules.drift("max", "x", max_change=0)]
+        for kw in ({}, {"pushdown": "off"}):
+            store = LocalStore(str(workdir / f"state{len(kw)}"))
+            for x in (2**53, 2**53 + 1):
+                pl.DataFrame({"x": [x]}).write_parquet("big.parquet")
+                result = kontra.validate("big.parquet", rules=rule, state_store=store, **kw).rules[0]
+            assert result.details["value"] == 2**53 + 1, kw
+            assert result.details["baseline"] == 2**53, kw
+            assert result.details["change"] == 1, kw
+            assert status(result) == "drifted", kw
 
     def test_text_column_mean_leaves_other_rules_in_sql(self, workdir):
         pl.DataFrame({"s": ["a", "b"], "x": [1, None]}).write_parquet("t.parquet")
@@ -675,7 +758,7 @@ class TestRoutes:
     def test_explain_shows_the_tier(self, data):
         plan = kontra.validate("m.parquet", rules=metric_rules(), explain=True)
         tiers = {e.rule_id: e.tier for e in plan.rules}
-        assert tiers["DATASET:drift:row_count"] == "metadata"
+        assert tiers["DATASET:drift:row_count"] == "sql"
         assert tiers["COL:n:drift:mean"] == "sql"
 
 
@@ -690,11 +773,17 @@ class TestSqlRendering:
         [
             ("duckdb", "row_count", 'COUNT(*) AS "r"'),
             ("duckdb", "null_rate", 'CAST(COUNT(*) - COUNT("c") AS DOUBLE) / NULLIF(COUNT(*), 0) AS "r"'),
-            ("postgres", "mean", 'AVG(CAST("c" AS DOUBLE PRECISION)) AS "r"'),
+            ("duckdb", "mean", 'AVG(CAST("c" AS DOUBLE)) AS "r"'),
+            ("duckdb", "max", 'MAX(CASE WHEN isnan("c") THEN NULL ELSE "c" END) AS "r"'),
+            ("postgres", "mean", 'AVG("c") AS "r"'),
+            ("postgres", "min", 'MIN(CASE WHEN "c" = \'NaN\'::float8 THEN NULL ELSE "c" END) AS "r"'),
             ("sqlserver", "null_count", '(COUNT_BIG(*) - COUNT_BIG([c])) AS [r]'),
-            ("sqlserver", "mean", 'AVG(CAST([c] AS FLOAT)) AS [r]'),
+            ("sqlserver", "mean", 'AVG(CAST([c] AS FLOAT) + ([c] - [c])) AS [r]'),
+            ("sqlserver", "max", 'MAX([c]) AS [r]'),
             ("sqlserver", "distinct_count", 'COUNT_BIG(DISTINCT [c]) AS [r]'),
-            ("clickhouse", "mean", "AVG(toFloat64(`c`)) AS `r`"),
+            ("clickhouse", "mean", "avg(toFloat64(`c`) + 0 * sign(`c`)) AS `r`"),
+            ("clickhouse", "min", "minOrNull(`c`) AS `r`"),
+            ("clickhouse", "max", "maxOrNull(`c`) AS `r`"),
             ("trino", "max", 'MAX("c") AS "r"'),
         ],
     )
@@ -769,10 +858,10 @@ class TestBackends:
         rule = [rules.drift("null_count", "email", max_increase=0)]
         users(20, null_every=5).write_parquet("u.parquet")
         first = kontra.validate("u.parquet", rules=rule, state_store=store).rules[0]
-        assert first.drift_status == "no_baseline"
+        assert status(first) == "no_baseline"
         users(20, null_every=2).write_parquet("u.parquet")
         second = kontra.validate("u.parquet", rules=rule, state_store=store).rules[0]
-        assert second.drift_status == "drifted"
+        assert status(second) == "drifted"
         assert (second.details["baseline"], second.details["value"]) == (4, 10)
         # Nothing went to the default local store.
         assert not (workdir / ".kontra").exists()
@@ -803,8 +892,8 @@ class TestBackends:
         })
         store.save(old)
         result = kontra.validate("u.parquet", rules=[rule], state_store=store).rules[0]
-        assert result.drift_status == "no_baseline"
-        assert kontra.validate("u.parquet", rules=[rule], state_store=store).rules[0].drift_status == "ok"
+        assert status(result) == "no_baseline"
+        assert status(kontra.validate("u.parquet", rules=[rule], state_store=store).rules[0]) == "ok"
 
     def test_state_roundtrip_keeps_details(self):
         state = ValidationState(
@@ -835,7 +924,6 @@ class TestReporting:
                 "DATASET:drift:row_count, COL:age:drift:mean") in text
         mean = by_name(first)["COL:age:drift:mean"]
         assert mean.to_llm().startswith("COL:age:drift:mean: PASS (No baseline: mean of 'age' is 24.5;")
-        assert repr(mean) == "RuleResult(COL:age:drift:mean) PASS - no baseline"
 
         users(5).write_parquet("u.parquet")
         second = kontra.validate("u.parquet", rules=RULES)
@@ -856,11 +944,11 @@ class TestReporting:
         rule = [rules.drift("row_count", max_change=0)]
         kontra.validate("u.parquet", rules=rule, emit_report=True)
         first = capsys.readouterr().out
-        assert "⏳ DATASET:drift:row_count [metadata]: No baseline" in first
+        assert "⏳ DATASET:drift:row_count [sql]: No baseline" in first
         users(12).write_parquet("u.parquet")
         kontra.validate("u.parquet", rules=rule, emit_report=True)
         second = capsys.readouterr().out
-        assert "DATASET:drift:row_count [metadata]: row_count rose from 10 to 12" in second
+        assert "DATASET:drift:row_count [sql]: row_count rose from 10 to 12" in second
         assert "--tally" not in second
 
     def test_catalog(self):

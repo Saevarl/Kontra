@@ -74,6 +74,27 @@ def test_sql_measurements_match_polars(table):
     assert sql["null_rate:score"][0] == pytest.approx(1 / 3)
 
 
+def test_numeric_looking_text_mean_is_a_config_error_and_bigint_is_exact():
+    name = f"drift_odd_{uuid.uuid4().hex[:10]}"
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(f"CREATE TABLE dbo.{name} (s VARCHAR(10), b BIGINT)")
+    cur.execute(f"INSERT INTO dbo.{name} VALUES ('1', 9007199254740993), ('2', 1)")
+    conn.commit()
+    try:
+        uri = f"{_BASE}/dbo.{name}"
+        for kwargs in ({}, {"pushdown": "off", "preplan": "off"}):
+            result = kontra.validate(uri, rules=[rules.drift("mean", "s", max_change=0)], save=False, **kwargs)
+            assert result.rules[0].failure_mode == "config_error", kwargs
+        result = kontra.validate(uri, rules=[rules.drift("max", "b", max_change=0)], save=False)
+        assert result.rules[0].source == "sql"
+        assert result.rules[0].details["value"] == 2**53 + 1
+    finally:
+        cur.execute(f"DROP TABLE IF EXISTS dbo.{name}")
+        conn.commit()
+        conn.close()
+
+
 def test_history_detects_drift(table, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     uri = f"{_BASE}/dbo.{table}"
@@ -82,8 +103,8 @@ def test_history_detects_drift(table, tmp_path, monkeypatch):
         rules.drift("mean", "qty", max_change_pct=10),
     ]
     first = kontra.validate(uri, rules=contract_rules)
-    assert {r.drift_status for r in first.rules} == {"no_baseline"}
-    assert {r.drift_status for r in kontra.validate(uri, rules=contract_rules).rules} == {"ok"}
+    assert {r.details["status"] for r in first.rules} == {"no_baseline"}
+    assert {r.details["status"] for r in kontra.validate(uri, rules=contract_rules).rules} == {"ok"}
 
     conn = _connect()
     cur = conn.cursor()
@@ -92,6 +113,6 @@ def test_history_detects_drift(table, tmp_path, monkeypatch):
     conn.close()
 
     third = {r.rule_id: r for r in kontra.validate(uri, rules=contract_rules).rules}
-    assert third["COL:score:drift:null_rate"].drift_status == "drifted"
-    assert third["COL:qty:drift:mean"].drift_status == "drifted"
+    assert third["COL:score:drift:null_rate"].details["status"] == "drifted"
+    assert third["COL:qty:drift:mean"].details["status"] == "drifted"
     assert third["COL:qty:drift:mean"].source == "sql"

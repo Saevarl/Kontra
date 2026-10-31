@@ -782,7 +782,6 @@ def drift(
     max_change_pct: Optional[float] = None,
     baseline: str = "previous",
     window: Optional[int] = None,
-    min_history: int = 1,
     on_no_baseline: str = "pass",
     severity: str = "blocking",
     id: Optional[str] = None,
@@ -804,8 +803,7 @@ def drift(
             of the baseline (20 means 20%)
         baseline: "previous" run, or the "median" / "mean" of the last ``window`` runs
         window: Runs a median/mean baseline covers (default 7)
-        min_history: Earlier measurements needed before checking (default 1)
-        on_no_baseline: "pass" (default) or "fail" while history is too short.
+        on_no_baseline: "pass" (default) or "fail" while there is no earlier run.
             Either way the result says no baseline was available.
         severity: "blocking" | "warning" | "info"
         id: Custom rule ID (default COL:{column}:drift:{metric} or DATASET:drift:{metric})
@@ -840,8 +838,6 @@ def drift(
         params["baseline"] = baseline
     if window is not None:
         params["window"] = window
-    if min_history != 1:
-        params["min_history"] = min_history
     if on_no_baseline != "pass":
         params["on_no_baseline"] = on_no_baseline
 

@@ -370,6 +370,16 @@ class Renderer:
     def to_double(self, inner_sql: str) -> str:
         return f"CAST({inner_sql} AS DOUBLE)"
 
+    def mean_of(self, col_sql: str) -> str:
+        # DuckDB and Trino only get numeric columns here (their executors
+        # check the type first); the double keeps integer sums from overflowing.
+        return f"AVG({self.to_double(col_sql)})"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        """MIN or MAX skipping NaN, as Polars does (NaN only if every value is)."""
+        # DuckDB orders NaN above every number, so MAX would return it.
+        return f"{func}(CASE WHEN isnan({col_sql}) THEN NULL ELSE {col_sql} END)"
+
     def metric(self, metric: str, col_sql: Optional[str], rule_id: str) -> str:
         """
         One drift measurement AS rule_id. NULL means undefined (an empty table's
@@ -386,12 +396,11 @@ class Renderer:
         elif metric == "distinct_count":
             expr = self.count_of(f"DISTINCT {col_sql}")
         elif metric == "mean":
-            # Integer AVG truncates on SQL Server; average as double everywhere.
-            expr = f"AVG({self.to_double(col_sql)})"
+            expr = self.mean_of(col_sql)
         elif metric == "min":
-            expr = f"MIN({col_sql})"
+            expr = self.extremum("MIN", col_sql)
         elif metric == "max":
-            expr = f"MAX({col_sql})"
+            expr = self.extremum("MAX", col_sql)
         else:
             raise ValueError(f"Unknown drift metric: {metric!r}")
         return f"{expr} AS {self.ident(rule_id)}"
@@ -413,6 +422,19 @@ class PostgresRenderer(Renderer):
 
     def to_double(self, inner_sql: str) -> str:
         return f"CAST({inner_sql} AS DOUBLE PRECISION)"
+
+    def mean_of(self, col_sql: str) -> str:
+        # No cast: CAST(text AS DOUBLE PRECISION) would average numeric-looking
+        # text, while AVG has no text, date or boolean form, so a non-numeric
+        # column fails the query and Polars reports the config error. Integer
+        # AVG returns numeric, so nothing truncates.
+        return f"AVG({col_sql})"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        # PostgreSQL orders NaN above every number. Comparing with a float8
+        # covers integer, numeric and float columns, and fails the query for
+        # non-numeric ones, as mean does.
+        return f"{func}(CASE WHEN {col_sql} = 'NaN'::float8 THEN NULL ELSE {col_sql} END)"
 
 
 class SqlServerRenderer(Renderer):
@@ -463,6 +485,16 @@ class SqlServerRenderer(Renderer):
     def to_double(self, inner_sql: str) -> str:
         return f"CAST({inner_sql} AS FLOAT)"
 
+    def mean_of(self, col_sql: str) -> str:
+        # Integer AVG truncates, so average as FLOAT. CAST alone would also
+        # accept numeric-looking text and datetimes; (col - col) is 0 for
+        # every numeric type and fails the query for text, date and bit
+        # columns, so Polars reports the config error.
+        return f"AVG({self.to_double(col_sql)} + ({col_sql} - {col_sql}))"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        return f"{func}({col_sql})"  # FLOAT holds no NaN
+
 
 class ClickHouseRenderer(Renderer):
     dialect: Dialect = "clickhouse"
@@ -498,6 +530,19 @@ class ClickHouseRenderer(Renderer):
         # CAST(... AS Float64) rejects NULL; toFloat64 keeps a Nullable column
         # nullable, so AVG skips NULLs as everywhere else.
         return f"toFloat64({inner_sql})"
+
+    def mean_of(self, col_sql: str) -> str:
+        # avg of a UInt64/Int64 column sums in that type and wraps, so average
+        # as Float64. toFloat64 alone would parse numeric-looking strings;
+        # sign() only takes numbers, so a String or Date column fails the
+        # query and Polars reports the config error.
+        return f"avg({self.to_double(col_sql)} + 0 * sign({col_sql}))"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        # min/max of no rows return the type's default (0) for a non-Nullable
+        # column; the OrNull forms return NULL, which is undefined as in
+        # Polars. ClickHouse's min/max already skip NaN.
+        return f"{func.lower()}OrNull({col_sql})"
 
 
 # Trino regex subset. Trino evaluates patterns with Java semantics; the Polars
@@ -676,6 +721,10 @@ class TrinoRenderer(Renderer):
         # (NULL is not true), and returns 0 instead of NULL on an empty table.
         condition = " OR ".join(f"({c})" for c in conditions)
         return f"count_if({condition}) AS {self.ident(rule_id)}"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        # Trino's MIN/MAX skip NaN (NaN only if every value is), as Polars does.
+        return f"{func}({col_sql})"
 
     def freshness(self, col_sql: str, secs: int, rule_id: str) -> str:
         # date_add takes a bigint; an INTERVAL ... SECOND literal is capped at
