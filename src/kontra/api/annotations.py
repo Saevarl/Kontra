@@ -130,8 +130,6 @@ def annotate(
 
     from kontra.state.backends import get_default_store
     from kontra.state.types import Annotation
-    from kontra.state.fingerprint import fingerprint_contract
-    from kontra.config.loader import ContractLoader
 
     store = get_default_store()
     if store is None:
@@ -222,8 +220,6 @@ def _find_run_id_string(store: Any, contract_fp: str, state: Any) -> Optional[st
     This is needed because file-based backends use string run IDs but
     ValidationState.id is an integer hash.
     """
-    from pathlib import Path
-
     # LocalStore
     if hasattr(store, "_runs_dir"):
         runs_dir = store._runs_dir(contract_fp)

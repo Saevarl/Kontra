@@ -83,7 +83,7 @@ def get_history(
                 if since_dt.tzinfo is None:
                     since_dt = since_dt.replace(tzinfo=timezone.utc)
             except ValueError:
-                raise ValueError(f"Invalid since format: {since}. Use '24h', '7d', or 'YYYY-MM-DD'")
+                raise ValueError(f"Invalid since format: {since}. Use '24h', '7d', or 'YYYY-MM-DD'") from None
 
     # Get history from store
     store = get_default_store()
@@ -175,7 +175,7 @@ def diff(
 
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
         # These indicate corrupted state data
-        raise StateCorruptedError(contract, str(e))
+        raise StateCorruptedError(contract, str(e)) from e
     except FileNotFoundError:
         # No history available - this is normal
         return Diff.empty("No history available")
@@ -183,7 +183,7 @@ def diff(
         # For other exceptions, log and re-raise as state corruption
         # since we've already handled the "no history" case
         log_exception(_logger, "Failed to compute diff", e)
-        raise StateCorruptedError(contract, str(e))
+        raise StateCorruptedError(contract, str(e)) from e
 
 
 def _resolve_contract_fingerprint(contract: str, store: Any, caller: str = "state function") -> Optional[str]:

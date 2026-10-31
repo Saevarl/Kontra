@@ -359,7 +359,7 @@ def profile_diff(
     before_state: Optional[Any] = None
 
     if since is not None:
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timezone
         from kontra.rule_defs.builtin.freshness import parse_duration
 
         delta = parse_duration(since)
