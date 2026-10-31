@@ -407,9 +407,9 @@ def _allowed_values_decision(files: _Files, stats: _ColumnFiles, values: Any) ->
 def _conditional_rules(rules: list[Any]) -> dict[str, str | None]:
     """conditional_not_null rules by id, with the column their condition reads.
 
-    Static predicates give these rules the generic ``not_null`` predicate. That
-    proof ignores the condition, so a condition naming a missing column would
-    PASS here while the scan raises. Only this map's path may decide them.
+    Static predicates give these rules a ``not_null_when`` predicate, whose
+    proof ignores the condition: a condition naming a missing column would
+    PASS while the scan raises. Only this map's path may decide them.
     """
     return {
         rule.rule_id: getattr(rule, "_when_column", None)
@@ -490,7 +490,9 @@ def preplan_trino(
     rules = rules or []
     held = trino_read.state_of(handle) is not None
     columns: list[tuple[str, str, bool]] = []
-    if any(op in ("not_null", "dtype") for _rid, _col, op, _val in predicates) or (held and rules):
+    if any(op in ("not_null", "not_null_when", "dtype") for _rid, _col, op, _val in predicates) or (
+        held and rules
+    ):
         columns = _fetch_columns(handle)
     nullable = {name.lower(): null for name, _type, null in columns}
     # The Polars frame keeps Trino's column names; a rule naming a column in

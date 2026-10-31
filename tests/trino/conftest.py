@@ -15,11 +15,17 @@ at the end of the session.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import time
 
 import pytest
+
+# Without the trino client (the kontra[trino] extra), skip this folder rather
+# than fail to import its modules.
+if importlib.util.find_spec("trino") is None:
+    collect_ignore_glob = ["test_*.py"]
 
 _HOST, _PORT, _USER = "localhost", 8095, "kontra"
 URI_USERS = f"trino://{_USER}@{_HOST}:{_PORT}/memory/kontra.users"

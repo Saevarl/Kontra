@@ -383,9 +383,11 @@ class TrinoBackend:
         cur = self._conn.cursor()
         try:
             cur.execute(sql)
-            row = cur.fetchone()
+            # Read the result to its end: close() cancels an unfinished query,
+            # which aborts a caller's transaction.
+            rows = cur.fetchall()
             col_names = [desc[0] for desc in cur.description]
-            return dict(zip(col_names, row)) if row else {}
+            return dict(zip(col_names, rows[0])) if rows else {}
         finally:
             cur.close()
 

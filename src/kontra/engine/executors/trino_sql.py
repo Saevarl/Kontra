@@ -763,7 +763,10 @@ class _WatchedCursor:
 
     def fetchone(self):
         # Trino streams results: a query can fail while its rows are fetched.
-        return self._watch(self._cursor.fetchone)
+        # Read them all: closing a cursor whose result isn't consumed cancels its
+        # query, and a cancelled query aborts the transaction.
+        rows = self._watch(self._cursor.fetchall)
+        return rows[0] if rows else None
 
     def fetchall(self):
         return self._watch(self._cursor.fetchall)
@@ -777,8 +780,8 @@ class _WatchedCursor:
             cursor = conn.cursor()
             try:
                 cursor.execute(f"SELECT COUNT(*) FROM {table_ref}")
-                row = cursor.fetchone()
-                n = int(row[0]) if row else 0
+                rows = cursor.fetchall()  # consumed, so close() cancels nothing
+                n = int(rows[0][0]) if rows else 0
                 cols = [name for name, _ in self._column_types(cursor, handle)]
             finally:
                 cursor.close()

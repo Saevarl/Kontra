@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import re
 import subprocess
@@ -15,6 +16,11 @@ import pytest
 
 from kontra.connectors.trino import resolve_connection_params
 from kontra.engine.sql_ir import trino_regex
+
+# Tests that use the trino client itself (the kontra[trino] extra).
+requires_trino = pytest.mark.skipif(
+    importlib.util.find_spec("trino") is None, reason="needs the trino client (kontra[trino])"
+)
 
 
 class TestTrinoUri:
@@ -487,6 +493,7 @@ class TestTrinoScanRecovery:
     @pytest.mark.parametrize(
         ("level", "expected"), [("READ_UNCOMMITTED", True), ("AUTOCOMMIT", False)]
     )
+    @requires_trino
     def test_callers_transaction_without_read_state(self, level, expected):
         """A non-Iceberg table or a view has no read state; the caller's connection decides."""
         from types import SimpleNamespace
@@ -1023,6 +1030,7 @@ class _RawCursor:
         pass
 
 
+@requires_trino
 class TestTrinoFrameDecoder:
     _COLUMNS = (
         ("i", "integer", "integer", []),
@@ -1450,6 +1458,7 @@ class TestProfilePlan:
         assert backend._sample_percent() is None
         assert not any("$files" in s for s in backend._conn.sql)
 
+    @requires_trino
     def test_a_files_error_falls_back_to_the_head_except_in_a_callers_transaction(self):
         from trino.exceptions import TrinoUserError
 
@@ -1516,6 +1525,7 @@ class TestProfilePlan:
         assert backend.fetch_top_values("c3", 5) == [(1, 9)]
         assert len(backend._conn.sql) == 8  # read back, not run again
 
+    @requires_trino
     def test_a_failed_value_query_gives_what_the_individual_call_gives(self):
         from trino.exceptions import TrinoUserError
 
