@@ -37,7 +37,7 @@ def pick_executor(
         return None  # Nothing to push down
 
     # Iterate over registered constructors
-    for name, ctor in _EXECUTORS.items():
+    for ctor in _EXECUTORS.values():
         executor = ctor()  # Instantiate the executor
         try:
             if executor.supports(handle, sql_specs):

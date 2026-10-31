@@ -380,7 +380,7 @@ class DatasourceTableError(DataError):
             suggestions=[
                 f"Available tables in '{datasource}': {tables_str}",
                 "Check the table name spelling",
-                f"Use 'kontra config show' to see all datasources and tables",
+                "Use 'kontra config show' to see all datasources and tables",
             ],
         )
 
@@ -573,7 +573,7 @@ def format_error_for_cli(error: Exception) -> str:
                 else:
                     issues.append(f"  - {msg}")
             if issues:
-                return f"Configuration error:\n" + "\n".join(issues)
+                return "Configuration error:\n" + "\n".join(issues)
         except (AttributeError, TypeError, KeyError):
             pass  # Fall through to default handling
 

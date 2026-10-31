@@ -326,7 +326,7 @@ class PostgreSQLBackend:
         pg_stats = self._get_pg_stats()
         result = {}
 
-        for col_name, raw_type in schema:
+        for col_name, _ in schema:
             col_stats = pg_stats.get(col_name, {})
 
             # null_frac is fraction of nulls (0.0 to 1.0)

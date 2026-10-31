@@ -169,7 +169,7 @@ def handle_dry_run(contract_path: str, data_path: Optional[str], verbose: bool) 
         typer.secho(
             f"✓ Ready to validate ({checks_passed} checks passed)", fg=typer.colors.GREEN
         )
-        typer.echo(f"\nRun without --dry-run to execute:")
+        typer.echo("\nRun without --dry-run to execute:")
         typer.echo(f"  kontra validate {contract_path}")
         raise typer.Exit(code=EXIT_SUCCESS)
     typer.secho(

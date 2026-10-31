@@ -94,11 +94,13 @@ def _conservative_builtin_mapping(rule: BaseRule) -> List[PredicateT]:
 
     # min / max / range style (very conservative)
     if name in {"gte", "min_value", "min"}:
-        col = params.get("column"); v = params.get("value")
+        col = params.get("column")
+        v = params.get("value")
         if isinstance(col, str) and col and v is not None:
             out.append((rid, col, ">=", v))
     if name in {"lte", "max_value", "max"}:
-        col = params.get("column"); v = params.get("value")
+        col = params.get("column")
+        v = params.get("value")
         if isinstance(col, str) and col and v is not None:
             out.append((rid, col, "<=", v))
     if name == "range":

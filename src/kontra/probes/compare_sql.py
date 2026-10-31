@@ -38,6 +38,7 @@ Known limitations (rare; would need extra native-type/isolation work):
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -570,15 +571,11 @@ def _begin_savepoint(conn, backend: _Backend) -> Optional[str]:
 
 
 def _rollback_savepoint(conn, backend: _Backend, name: str) -> None:
-    try:
+    with contextlib.suppress(Exception):
         _cursor_exec(conn, backend.savepoint_rollback_sql(name))
-    except Exception:
-        pass
 
 
 def _drop_temps(conn, backend: _Backend, temps: List[str]) -> None:
     for name in temps:
-        try:
+        with contextlib.suppress(Exception):
             _cursor_exec(conn, backend.drop_temp_sql(name))
-        except Exception:
-            pass

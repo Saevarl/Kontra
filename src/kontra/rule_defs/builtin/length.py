@@ -57,7 +57,7 @@ class LengthRule(BaseRule):
         # Validate at least one bound is provided
         if self._min_len is None and self._max_len is None:
             raise ValueError(
-                f"Rule 'length' requires at least one of 'min' or 'max' parameters"
+                "Rule 'length' requires at least one of 'min' or 'max' parameters"
             )
 
         # Validate min <= max if both provided

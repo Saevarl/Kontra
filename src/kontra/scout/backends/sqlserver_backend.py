@@ -470,7 +470,7 @@ class SqlServerBackend:
         # This gives us distinct count estimates
         stats_info: Dict[str, Dict[str, Any]] = {}
 
-        for col_name, raw_type in schema:
+        for col_name, _ in schema:
             stats_info[col_name] = {
                 "null_count": 0,
                 "distinct_count": 0,

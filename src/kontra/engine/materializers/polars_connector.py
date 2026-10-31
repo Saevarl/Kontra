@@ -123,9 +123,9 @@ class PolarsConnectorMaterializer(BaseMaterializer):
             # Provide helpful error message based on URI
             if uri == "inline" or not uri:
                 raise IOError(
-                    f"No data path specified. Either:\n"
-                    f"  1. Add 'data: path/to/file.parquet' to your contract YAML\n"
-                    f"  2. Use --data to specify the data path: kontra validate contract.yml --data path/to/file.parquet"
+                    "No data path specified. Either:\n"
+                    "  1. Add 'data: path/to/file.parquet' to your contract YAML\n"
+                    "  2. Use --data to specify the data path: kontra validate contract.yml --data path/to/file.parquet"
                 )
             elif "://" in uri:
                 raise IOError(f"Unsupported data source URI: {uri}")

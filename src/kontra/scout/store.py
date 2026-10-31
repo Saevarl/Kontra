@@ -9,6 +9,7 @@ storage backend (local, S3, PostgreSQL).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -164,10 +165,8 @@ class LocalProfileStore:
                 for filepath in source_dir.glob("*.json"):
                     filepath.unlink()
                     deleted += 1
-                try:
+                with contextlib.suppress(OSError):
                     source_dir.rmdir()
-                except OSError:
-                    pass
         else:
             if self.base_path.exists():
                 for source_dir in self.base_path.iterdir():
@@ -175,10 +174,8 @@ class LocalProfileStore:
                         for filepath in source_dir.glob("*.json"):
                             filepath.unlink()
                             deleted += 1
-                        try:
+                        with contextlib.suppress(OSError):
                             source_dir.rmdir()
-                        except OSError:
-                            pass
 
         return deleted
 

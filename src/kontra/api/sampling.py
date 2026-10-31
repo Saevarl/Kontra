@@ -757,7 +757,7 @@ class SamplingOrchestrator:
 
         # Collect all columns needed across all rules
         all_columns: set = set()
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
+        for _, _, _, columns in rules_to_sample:
             if columns:
                 all_columns.update(columns)
 
@@ -771,7 +771,7 @@ class SamplingOrchestrator:
 
         # Build UNION ALL query - one subquery per rule (wrapped in parens for DuckDB)
         subqueries = []
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
+        for rule_id, sql_filter, limit, _ in rules_to_sample:
             escaped_rule_id = rule_id.replace("'", "''")
             subquery = f"""(
                 SELECT '{escaped_rule_id}' AS _rule_id, {col_list}, ROW_NUMBER() OVER () - 1 AS row_index
@@ -824,7 +824,7 @@ class SamplingOrchestrator:
 
         # Collect all columns needed across all rules
         all_columns: set = set()
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
+        for _, _, _, columns in rules_to_sample:
             if columns:
                 all_columns.update(columns)
 
@@ -838,7 +838,7 @@ class SamplingOrchestrator:
                 col_list = ", ".join(f"[{c}]" for c in sorted(all_columns))
 
             subqueries = []
-            for rule_id, sql_filter, limit, columns in rules_to_sample:
+            for rule_id, sql_filter, limit, _ in rules_to_sample:
                 escaped_rule_id = rule_id.replace("'", "''")
                 subquery = f"""(
                     SELECT TOP {limit} '{escaped_rule_id}' AS _rule_id, {col_list},
@@ -855,7 +855,7 @@ class SamplingOrchestrator:
                 col_list = ", ".join(f'"{c}"' for c in sorted(all_columns))
 
             subqueries = []
-            for rule_id, sql_filter, limit, columns in rules_to_sample:
+            for rule_id, sql_filter, limit, _ in rules_to_sample:
                 escaped_rule_id = rule_id.replace("'", "''")
                 subquery = f"""(
                     SELECT '{escaped_rule_id}' AS _rule_id, {col_list},
@@ -1124,7 +1124,7 @@ class SamplingOrchestrator:
                                 results[rule_result.rule_id] = []
 
             # Distribute results to rule_result objects
-            for rule_result, rule_obj, n, cols_to_include in sql_rules:
+            for rule_result, _, n, _ in sql_rules:
                 samples = results.get(rule_result.rule_id, [])
                 rule_result.samples = samples
                 rule_result.samples_source = samples_source
@@ -1136,7 +1136,7 @@ class SamplingOrchestrator:
         except Exception as e:
             # Batched sampling is best-effort: record the error on every rule
             _logger.debug("Batched SQL sampling failed: %s", e)
-            for rule_result, rule_obj, n, cols_to_include in sql_rules:
+            for rule_result, _, _, _ in sql_rules:
                 rule_result.samples = None
                 rule_result.samples_reason = f"error: {str(e)[:50]}"
 
