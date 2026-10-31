@@ -524,9 +524,7 @@ class S3Store(StateBackend):
             _logger.debug(f"Could not search for run file: {e}")
 
         if not run_id_str:
-            state.annotations = []
-            for rule in state.rules:
-                rule.annotations = []
+            self._attach_annotations_to_state(state, [])
             return state
 
         # Load annotations (supports both legacy JSONL and new per-file format)
@@ -566,9 +564,7 @@ class S3Store(StateBackend):
         # Load annotations for each state
         for state in states:
             if state.id is None or state.id not in id_to_run_id:
-                state.annotations = []
-                for rule in state.rules:
-                    rule.annotations = []
+                self._attach_annotations_to_state(state, [])
                 continue
 
             run_id_str = id_to_run_id[state.id]
