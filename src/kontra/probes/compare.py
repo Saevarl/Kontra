@@ -250,8 +250,8 @@ def _align_side_keys(
             internal_key.append(candidate)
             occupied_names.add(candidate)
 
-    left_rename_map = dict(zip(left_key, internal_key))
-    right_rename_map = dict(zip(right_key, internal_key))
+    left_rename_map = dict(zip(left_key, internal_key, strict=True))
+    right_rename_map = dict(zip(right_key, internal_key, strict=True))
     return left.rename(left_rename_map), right.rename(right_rename_map), internal_key
 
 
@@ -261,7 +261,7 @@ def _restore_key_sample_names(
     output_key: List[str],
 ) -> List[Any]:
     """Replace internal alias names in composite-key samples."""
-    aliases_to_output = dict(zip(internal_key, output_key))
+    aliases_to_output = dict(zip(internal_key, output_key, strict=True))
     return [
         {aliases_to_output.get(name, name): value for name, value in sample.items()}
         if isinstance(sample, dict)
@@ -287,7 +287,7 @@ def _restore_compare_output_key_names(
         key_value = sample["key"]
         if isinstance(key_value, dict):
             sample["key"] = {
-                dict(zip(internal_key, output_key)).get(name, name): value
+                dict(zip(internal_key, output_key, strict=True)).get(name, name): value
                 for name, value in key_value.items()
             }
 

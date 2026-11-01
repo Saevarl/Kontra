@@ -10,6 +10,16 @@ if TYPE_CHECKING:
 RuleScope = Literal["column", "cross_column", "dataset", "schema", "custom"]
 
 
+def all_rows_failed(df: "pl.DataFrame") -> int:
+    """failed_count for a failure of the whole table: a wrong type, a missing
+    column, a rule that can't run. Every row counts, but never fewer than one,
+    so a failed rule on an empty table still reports a violation, as the
+    metadata and SQL routes do. A failed rule with count 0 would read as a pass
+    to anything that checks the count.
+    """
+    return max(int(df.height), 1)
+
+
 class BaseRule(ABC):
     """
     Abstract base class for all validation rules.
@@ -163,7 +173,7 @@ class BaseRule(ABC):
         return {
             "rule_id": getattr(self, "rule_id", self.name),
             "passed": False,
-            "failed_count": df.height,  # All rows fail if column missing
+            "failed_count": all_rows_failed(df),  # All rows fail if column missing
             "message": f"{msg}{nested_hint}",
             "failure_mode": str(FailureMode.CONFIG_ERROR),  # Mark as config issue, not data issue
             "details": {

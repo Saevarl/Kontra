@@ -7,7 +7,6 @@ Uses pg_stats for efficient metadata queries and standard SQL for profiling.
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
@@ -194,7 +193,7 @@ class PostgreSQLBackend:
             cur.execute(sql)
             row = cur.fetchone()
             col_names = [desc[0] for desc in cur.description]
-            return dict(zip(col_names, row)) if row else {}
+            return dict(zip(col_names, row, strict=True)) if row else {}
 
     def fetch_top_values(self, column: str, limit: int) -> List[Tuple[Any, int]]:
         """Fetch top N most frequent values."""
@@ -327,7 +326,7 @@ class PostgreSQLBackend:
         pg_stats = self._get_pg_stats()
         result = {}
 
-        for col_name, raw_type in schema:
+        for col_name, _ in schema:
             col_stats = pg_stats.get(col_name, {})
 
             # null_frac is fraction of nulls (0.0 to 1.0)
@@ -511,7 +510,7 @@ class PostgreSQLBackend:
                 cur.execute(sql)
                 row = cur.fetchone()
                 col_names = [desc[0] for desc in cur.description]
-                result = dict(zip(col_names, row)) if row else {}
+                result = dict(zip(col_names, row, strict=True)) if row else {}
 
                 # If TABLESAMPLE returned empty (all NULLs), fall back to full query
                 # This happens for small tables where 1% sampling returns 0 rows

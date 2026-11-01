@@ -38,6 +38,7 @@ Known limitations (rare; would need extra native-type/isolation work):
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -404,7 +405,7 @@ def _null_counts(conn, backend: _Backend, ref: str, cols: List[str]) -> Dict[str
         for c in cols
     )
     row, names = _cursor_exec(conn, f"SELECT {sums} FROM {ref}", fetch="one")
-    m = dict(zip(names, row))
+    m = dict(zip(names, row, strict=True))
     return {c: int(m["n__" + c] or 0) for c in cols}
 
 
@@ -504,7 +505,7 @@ def compare_sql(plan: Dict[str, Any], sample_limit: int) -> CompareResult:
                     FROM {b_ref} b JOIN {a_ref} a ON {on_clause}
                 """
                 crow, cnames = _cursor_exec(conn, change_sql, fetch="one")
-                cmap = dict(zip(cnames, crow))
+                cmap = dict(zip(cnames, crow, strict=True))
                 matched_rows = int(cmap["m"])
                 changed_rows = int(cmap["changed_rows"])
                 for c in common:
@@ -570,15 +571,11 @@ def _begin_savepoint(conn, backend: _Backend) -> Optional[str]:
 
 
 def _rollback_savepoint(conn, backend: _Backend, name: str) -> None:
-    try:
+    with contextlib.suppress(Exception):
         _cursor_exec(conn, backend.savepoint_rollback_sql(name))
-    except Exception:
-        pass
 
 
 def _drop_temps(conn, backend: _Backend, temps: List[str]) -> None:
     for name in temps:
-        try:
+        with contextlib.suppress(Exception):
             _cursor_exec(conn, backend.drop_temp_sql(name))
-        except Exception:
-            pass

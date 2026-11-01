@@ -279,7 +279,6 @@ def _decide_pass(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, A
     # For <= c: if for all rgs max <= c → pass
     # For == c: if for all rgs (min==max==c) → pass
     # For not_null: if for all rgs null_count == 0 → pass
-    ok_all = True
     for s in rg_stats_iter:
         if s is None:
             return False
@@ -287,34 +286,34 @@ def _decide_pass(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, A
         nulls = s.get("null_count")
         if op == ">=":
             if mn is None or mn < val:
-                ok_all = False; break
+                return False
             # NULLs are never >= anything — can't prove pass if nulls exist
             if nulls != 0:
-                ok_all = False; break
+                return False
         elif op == "<=":
             if mx is None or mx > val:
-                ok_all = False; break
+                return False
             # NULLs are never <= anything — can't prove pass if nulls exist
             if nulls != 0:
-                ok_all = False; break
+                return False
         elif op == "==":
             if mn is None or mx is None or not (mn == val and mx == val):
-                ok_all = False; break
+                return False
             # NULLs are a violation for ==-derived rules (allowed_values treats
             # NULL as failing even when the value matches). min/max exclude
             # NULLs, so an all-matching group can still hide nulls — can't
             # prove PASS unless null_count is provably zero.
             if nulls != 0:
-                ok_all = False; break
+                return False
         elif op in ("not_null", "not_null_when"):
             # Can only prove PASS if null_count is exactly 0 for all row groups
             # null_count > 0 means violations exist; None means unknown (can't prove)
             if s.get("null_count") != 0:
-                ok_all = False; break
+                return False
         else:
             # For >, <, !=, ^= we don't try to prove dataset-level PASS via min/max
-            ok_all = False; break
-    return ok_all
+            return False
+    return True
 
 
 def _decide_fail(op: str, val: Any, rg_stats_iter: Iterable[Optional[Dict[str, Any]]]) -> bool:
@@ -454,6 +453,9 @@ def preplan_single_parquet(
     def decide(col, op, val, rule_id) -> Decision:
         # If column doesn't exist in schema, skip to Polars for proper error (BUG-014)
         if op != "dtype" and col not in schema_names_set:
+            return "unknown"
+        # The not_null_when proof ignores the condition, whose column is val.
+        if op == "not_null_when" and val not in schema_names_set:
             return "unknown"
 
         # Handle dtype checks via schema (no row-group stats needed)
@@ -600,7 +602,7 @@ def preplan_parquet_glob(
         first_meta = _read_meta(first_file_path, filesystem=filesystem)
         schema_types = first_meta.schema_types
         total_rows_first_file = first_meta.num_rows
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError):
         # File I/O or invalid Parquet format — return unknown for all rules
         return PrePlan(
             manifest_columns=list(required_columns) if required_columns else [],

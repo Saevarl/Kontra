@@ -338,7 +338,6 @@ class SamplingOrchestrator:
         Returns:
             Tuple of (samples list, source string "sql" or "polars")
         """
-        import polars as pl
 
         source = self._ctx.data_source
 
@@ -395,7 +394,7 @@ class SamplingOrchestrator:
                 try:
                     return pl.read_csv(source), "polars"
                 except (OSError, ValueError) as csv_err:
-                    raise RuntimeError(f"Cannot load data from: {source} (parquet: {parquet_err}, csv: {csv_err})")
+                    raise RuntimeError(f"Cannot load data from: {source} (parquet: {parquet_err}, csv: {csv_err})") from csv_err
 
         # Polars DataFrame (was passed directly)
         if isinstance(source, pl.DataFrame):
@@ -582,7 +581,6 @@ class SamplingOrchestrator:
         Uses handle.fs_opts for credentials instead of environment variables.
         """
         import duckdb
-        import polars as pl
 
         path = handle.uri
         fs_opts = handle.fs_opts or {}
@@ -759,7 +757,7 @@ class SamplingOrchestrator:
 
         # Collect all columns needed across all rules
         all_columns: set = set()
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
+        for _, _, _, columns in rules_to_sample:
             if columns:
                 all_columns.update(columns)
 
@@ -773,7 +771,7 @@ class SamplingOrchestrator:
 
         # Build UNION ALL query - one subquery per rule (wrapped in parens for DuckDB)
         subqueries = []
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
+        for rule_id, sql_filter, limit, _ in rules_to_sample:
             escaped_rule_id = rule_id.replace("'", "''")
             subquery = f"""(
                 SELECT '{escaped_rule_id}' AS _rule_id, {col_list}, ROW_NUMBER() OVER () - 1 AS row_index
@@ -826,7 +824,7 @@ class SamplingOrchestrator:
 
         # Collect all columns needed across all rules
         all_columns: set = set()
-        for rule_id, sql_filter, limit, columns in rules_to_sample:
+        for _, _, _, columns in rules_to_sample:
             if columns:
                 all_columns.update(columns)
 
@@ -840,7 +838,7 @@ class SamplingOrchestrator:
                 col_list = ", ".join(f"[{c}]" for c in sorted(all_columns))
 
             subqueries = []
-            for rule_id, sql_filter, limit, columns in rules_to_sample:
+            for rule_id, sql_filter, limit, _ in rules_to_sample:
                 escaped_rule_id = rule_id.replace("'", "''")
                 subquery = f"""(
                     SELECT TOP {limit} '{escaped_rule_id}' AS _rule_id, {col_list},
@@ -857,7 +855,7 @@ class SamplingOrchestrator:
                 col_list = ", ".join(f'"{c}"' for c in sorted(all_columns))
 
             subqueries = []
-            for rule_id, sql_filter, limit, columns in rules_to_sample:
+            for rule_id, sql_filter, limit, _ in rules_to_sample:
                 escaped_rule_id = rule_id.replace("'", "''")
                 subquery = f"""(
                     SELECT '{escaped_rule_id}' AS _rule_id, {col_list},
@@ -901,7 +899,6 @@ class SamplingOrchestrator:
             global_budget: Total samples across all rules
             sample_columns: Columns to include (None=all, list=specific, "relevant"=rule columns)
         """
-        import polars as pl
 
         # Sort rules by failed_count descending (worst offenders first)
         sorted_rules = sorted(
@@ -979,16 +976,20 @@ class SamplingOrchestrator:
 
         # Phase 2: Execute batched SQL sampling if applicable
         if sql_rules:
-            self._execute_batched_sql_sampling(sql_rules, per_rule_cap)
+            self._execute_batched_sql_sampling(sql_rules)
 
         # Phase 3: Execute per-rule Polars sampling for remaining rules
         for rule_result, rule_obj, predicate, n, cols_to_include in polars_rules:
             try:
-                samples, samples_source = self.collect_samples_for_rule(rule_obj, predicate, n, cols_to_include)
-                rule_result.samples = samples
+                # One extra row tells whether more samples exist. failed_count
+                # can't: unique counts the extra copies, not the sampled rows.
+                samples, samples_source = self.collect_samples_for_rule(
+                    rule_obj, predicate, n + 1, cols_to_include
+                )
+                rule_result.samples = samples[:n]
                 rule_result.samples_source = samples_source
 
-                if len(samples) == per_rule_cap and rule_result.failed_count > per_rule_cap:
+                if len(samples) > n:
                     rule_result.samples_truncated = True
                     rule_result.samples_reason = SampleReason.TRUNCATED_LIMIT
 
@@ -1065,7 +1066,6 @@ class SamplingOrchestrator:
     def _execute_batched_sql_sampling(
         self,
         sql_rules: List[Tuple[Any, Any, int, Optional[List[str]]]],
-        per_rule_cap: int,
     ) -> None:
         """
         Execute batched SQL sampling for rules that support to_sql_filter().
@@ -1128,7 +1128,7 @@ class SamplingOrchestrator:
                                 results[rule_result.rule_id] = []
 
             # Distribute results to rule_result objects
-            for rule_result, rule_obj, n, cols_to_include in sql_rules:
+            for rule_result, _, n, _ in sql_rules:
                 samples = results.get(rule_result.rule_id, [])
                 rule_result.samples = samples
                 rule_result.samples_source = samples_source
@@ -1140,7 +1140,7 @@ class SamplingOrchestrator:
         except Exception as e:
             # Batched sampling is best-effort: record the error on every rule
             _logger.debug("Batched SQL sampling failed: %s", e)
-            for rule_result, rule_obj, n, cols_to_include in sql_rules:
+            for rule_result, _, _, _ in sql_rules:
                 rule_result.samples = None
                 rule_result.samples_reason = f"error: {str(e)[:50]}"
 
@@ -1175,7 +1175,6 @@ class SamplingOrchestrator:
             ValueError: If rule doesn't support row-level samples
             RuntimeError: If data source is unavailable
         """
-        import polars as pl
 
         # Cap n at 100
         n = min(n, 100)

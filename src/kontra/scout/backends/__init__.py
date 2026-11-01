@@ -10,7 +10,7 @@ __all__ = ["ProfilerBackend", "DuckDBBackend"]
 
 # PostgreSQL backend (optional - requires psycopg)
 try:
-    from .postgres_backend import PostgreSQLBackend
+    from .postgres_backend import PostgreSQLBackend  # noqa: F401 - optional re-export, added to __all__ below
 
     __all__.append("PostgreSQLBackend")
 except ImportError:

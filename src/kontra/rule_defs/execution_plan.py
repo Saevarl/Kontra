@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Iterable, List, Dict, Any, Optional, Set
 if TYPE_CHECKING:
     import polars as pl
 
-from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.base import BaseRule, all_rows_failed
 from kontra.rule_defs.predicates import Predicate
 from kontra.logging import get_logger, log_exception
 
@@ -266,7 +266,7 @@ class RuleExecutionPlan:
                     missing_col_results.append({
                         "rule_id": p.rule_id,
                         "passed": False,
-                        "failed_count": df.height,
+                        "failed_count": all_rows_failed(df),
                         "message": msg,
                         "execution_source": "polars",
                         "severity": rule_severity_map.get(p.rule_id, "blocking"),
@@ -301,7 +301,7 @@ class RuleExecutionPlan:
                                 vec_results.append({
                                     "rule_id": p.rule_id,
                                     "passed": False,
-                                    "failed_count": int(df.height),
+                                    "failed_count": all_rows_failed(df),
                                     "message": f"Rule execution failed: {e}",
                                     "execution_source": "polars",
                                     "severity": rule_severity_map.get(p.rule_id, "blocking"),
@@ -342,7 +342,7 @@ class RuleExecutionPlan:
                                 vec_results.append({
                                     "rule_id": p.rule_id,
                                     "passed": False,
-                                    "failed_count": int(df.height),
+                                    "failed_count": all_rows_failed(df),
                                     "message": f"Rule execution failed: {e}",
                                     "execution_source": "polars",
                                     "severity": rule_severity_map.get(p.rule_id, "blocking"),
@@ -390,7 +390,7 @@ class RuleExecutionPlan:
                     {
                         "rule_id": rule_id,
                         "passed": False,
-                        "failed_count": int(df.height),
+                        "failed_count": all_rows_failed(df),
                         "message": f"Rule execution failed: {type(e).__name__}: {e}",
                         "execution_source": "polars",
                         "severity": severity,

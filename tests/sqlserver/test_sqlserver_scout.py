@@ -45,8 +45,7 @@ class TestSqlServerScout:
         assert age_col.numeric.min == 18.0
         assert age_col.numeric.max == 80.0  # 18 + (i % 63) where i goes to 1000
         assert age_col.numeric.mean is not None
-        # Note: median not available for SQL Server (PERCENTILE_CONT requires different syntax)
-        # assert age_col.numeric.median is not None
+        # Note: median is skipped in strategic mode for performance; interrogate has it
 
         # Should have top values
         status_col = next(c for c in profile.columns if c.name == "status")

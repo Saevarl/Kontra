@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional, Set, TYPE_CHECKING
 if TYPE_CHECKING:
     import polars as pl
 
-from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.base import BaseRule, all_rows_failed
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
@@ -136,7 +136,7 @@ class CompareRule(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": (
                     f"Cannot compare '{self._left}' ({left_dtype}) {self._op} "
                     f"'{self._right}' ({right_dtype}): {e}"
