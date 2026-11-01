@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, unquote
 import os
 

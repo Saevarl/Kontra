@@ -31,11 +31,10 @@ the caller-owned `external_conn` used for BYOC.
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 import os
-import re
 from urllib.parse import urlparse
 
 # Re-export mask_credentials from db_utils for backward compatibility
-from kontra.connectors.db_utils import mask_credentials
+from kontra.connectors.db_utils import mask_credentials  # noqa: F401 - re-exported, imported from here across the package
 
 
 # Map a URI scheme/format onto the dialect label used for materializer routing.

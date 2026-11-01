@@ -24,6 +24,9 @@ from kontra.api.sampling import (
 if TYPE_CHECKING:
     import polars as pl
 
+    from kontra.scout.types import DatasetProfile
+    from kontra.state.types import StateDiff
+
 _logger = logging.getLogger(__name__)
 
 

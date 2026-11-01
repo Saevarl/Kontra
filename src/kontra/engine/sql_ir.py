@@ -20,6 +20,7 @@ for cold start; see the lazy-loading invariant in CLAUDE.md).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, List, Literal, Optional
 
@@ -33,6 +34,19 @@ SQL_OP_MAP = {
     "<=": "<=",
     "==": "=",
     "!=": "<>",
+}
+
+# Polars' order for floats as SQL over a non-NULL pair: NaN equals NaN and is
+# above every number. {l}/{r} are the operands, {ln}/{rn} whether each is NaN.
+# SQL engines that follow IEEE compare NaN as false, so the float-aware
+# executors write comparisons out with this table.
+FLOAT_ORDER = {
+    "==": "({ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} = {r})",
+    "!=": "NOT (({ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} = {r}))",
+    "<": "(NOT {ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} < {r})",
+    "<=": "{rn} OR (NOT {ln} AND {l} <= {r})",
+    ">": "({ln} AND NOT {rn}) OR (NOT {ln} AND NOT {rn} AND {l} > {r})",
+    ">=": "{ln} OR (NOT {rn} AND {l} >= {r})",
 }
 
 
@@ -181,6 +195,16 @@ class IsNull(Node):
 
 
 @dataclass(frozen=True)
+class IsNaN(Node):
+    """True for a NaN value. Only for numeric expressions."""
+
+    inner: Node
+
+    def sql(self, r: "Renderer") -> str:
+        return r.is_nan(self.inner.sql(r))
+
+
+@dataclass(frozen=True)
 class IsNotNull(Node):
     inner: Node
 
@@ -220,6 +244,29 @@ class In(Node):
     def sql(self, r: "Renderer") -> str:
         keyword = "NOT IN" if self.negate else "IN"
         return f"{self.expr.sql(r)} {keyword} ({val_list(self.values, r.dialect)})"
+
+
+@dataclass(frozen=True)
+class NumberIn(Node):
+    """``expr [NOT] IN (...)`` for a list of numbers.
+
+    Dialects that compared value lists as text (Postgres, SQL Server,
+    ClickHouse) get the numbers as quoted literals, which each converts to the
+    column's type. As text they didn't match (Postgres prints 100.0 as '100',
+    ClickHouse 1e300 as '1e300', SQL Server keeps about six digits of a float),
+    and as bare double literals they'd miss a REAL value such as 0.1. DuckDB and
+    Trino compared bare numbers already, which agrees with Polars, so they keep
+    doing that.
+    """
+
+    expr: Node
+    values: List[Any]
+    negate: bool = False
+
+    def sql(self, r: "Renderer") -> str:
+        keyword = "NOT IN" if self.negate else "IN"
+        render = _number_text if r.quote_numbers else str
+        return f"{self.expr.sql(r)} {keyword} ({', '.join(render(v) for v in self.values)})"
 
 
 @dataclass(frozen=True)
@@ -307,6 +354,8 @@ class Renderer:
     """
 
     dialect: Dialect = "duckdb"
+    # Number lists in IN (...) as quoted literals (see NumberIn).
+    quote_numbers: bool = False
 
     # --- identifier & literal primitives ---
     def ident(self, name: str) -> str:
@@ -319,6 +368,10 @@ class Renderer:
 
     def len_of(self, inner_sql: str) -> str:
         return f"LENGTH({inner_sql})"
+
+    def is_nan(self, inner_sql: str) -> str:
+        """NaN test that accepts any numeric type (integers just give false)."""
+        return f"isnan({inner_sql})"
 
     def like_escape(self) -> str:
         """Trailing `` ESCAPE '\\' `` clause for LIKE. escape_like_pattern
@@ -414,9 +467,16 @@ class DuckDBRenderer(Renderer):
 
 class PostgresRenderer(Renderer):
     dialect: Dialect = "postgres"
+    quote_numbers = True
 
     def cast_text(self, inner_sql: str) -> str:
         return f"{inner_sql}::text"
+
+    def is_nan(self, inner_sql: str) -> str:
+        # Postgres has no isnan(); NaN equals NaN in its total order. A numeric
+        # NaN keeps a NUMERIC column out of float8, which would overflow above
+        # ~1e308; float columns compare with it through float8.
+        return f"({inner_sql} = 'NaN'::numeric)"
 
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         escaped_pattern = pattern.replace("'", "''")
@@ -435,9 +495,14 @@ class PostgresRenderer(Renderer):
 
 class SqlServerRenderer(Renderer):
     dialect: Dialect = "sqlserver"
+    quote_numbers = True
 
     def cast_text(self, inner_sql: str) -> str:
         return f"CAST({inner_sql} AS NVARCHAR(MAX))"
+
+    def is_nan(self, inner_sql: str) -> str:
+        # FLOAT and REAL can't hold NaN.
+        return "1=0"
 
     def len_of(self, inner_sql: str) -> str:
         # Plain LEN() ignores trailing spaces, so "abc   " reports length 3 —
@@ -487,12 +552,16 @@ class SqlServerRenderer(Renderer):
 
 class ClickHouseRenderer(Renderer):
     dialect: Dialect = "clickhouse"
+    quote_numbers = True
 
     def cast_text(self, inner_sql: str) -> str:
         # toString handles any type -> String; needed so numeric columns
         # compare against a string value-list. NULL propagates through
         # toString, and the value-list conditions guard NULL separately.
         return f"toString({inner_sql})"
+
+    def is_nan(self, inner_sql: str) -> str:
+        return f"isNaN(toFloat64({inner_sql}))"
 
     def len_of(self, inner_sql: str) -> str:
         # length() counts BYTES on ClickHouse; lengthUTF8() counts characters,
@@ -688,6 +757,9 @@ def trino_regex(pattern: str) -> str | None:
 class TrinoRenderer(Renderer):
     dialect: Dialect = "trino"
 
+    def is_nan(self, inner_sql: str) -> str:
+        return f"is_nan(CAST({inner_sql} AS double))"
+
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         # Only patterns in the shared Rust/Java subset reach here; the Trino
         # executor leaves the rest to Polars. Trino string literals take no
@@ -732,6 +804,33 @@ def renderer_for(dialect: Dialect) -> Renderer:
 # =============================================================================
 # Small IR-building helpers shared by rule builders
 # =============================================================================
+
+def numeric_literals(*values: Any) -> bool:
+    """Whether every non-None value is a number (bool excluded), and there is one."""
+    present = [v for v in values if v is not None]
+    return bool(present) and all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) for v in present
+    )
+
+
+def value_list_check(col: Node, values: List[Any], negate: bool) -> Node:
+    """``col [NOT] IN (...)`` for a list of non-None values.
+
+    A list of numbers compares with the column as numbers (NumberIn); other
+    lists compare as text, so a mixed or string list can match any column.
+    """
+    if numeric_literals(*values):
+        return NumberIn(col, values, negate)
+    return In(CastText(col), values, negate=negate)
+
+
+def _number_text(value: Any) -> str:
+    """A number as a string literal, integral floats as integers (5.0 -> '5') so
+    the literal also converts to an integer column."""
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return lit_str(str(int(value)))
+    return lit_str(repr(value))
+
 
 def bounds(expr: Node, min_val: Optional[Any], max_val: Optional[Any]) -> List[Node]:
     """Out-of-bounds comparison nodes for an expression (either bound optional).
@@ -781,7 +880,7 @@ def allowed_values_violation(column: str, values: List[Any]) -> Node:
     if not non_null_values:
         # Only None in values — everything non-null is a violation
         return IsNotNull(col)
-    in_check = In(CastText(col), non_null_values, negate=True)
+    in_check = value_list_check(col, non_null_values, negate=True)
     if null_allowed:
         return And(IsNotNull(col), in_check)
     return Or(IsNull(col), in_check)

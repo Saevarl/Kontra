@@ -502,7 +502,7 @@ class TestConditionalNotNullParquetPreplan:
         spec = RuleSpec(name="conditional_not_null", id="custom", params={"column": "contact", "when": "status == 'active'"})
         preds = extract_static_predicates(rules=RuleFactory([spec]).build_rules())
 
-        assert preds == [("custom", "contact", "not_null_when", True)]
+        assert preds == [("custom", "contact", "not_null_when", "status")]
 
 
 class TestConditionalNotNullSqlUtils:

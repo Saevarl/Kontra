@@ -10,11 +10,11 @@ from __future__ import annotations
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import polars as pl
     import pyarrow.fs as pafs
     from kontra.connectors.handle import DatasetHandle
     from kontra.engine.types import CompilationContext, PreplanResult, PushdownResult
 
+from kontra.engine.materializers.base import present_columns
 from kontra.engine.types import ResidualResult
 from kontra.engine.stats import now_ms
 from kontra.logging import get_logger, log_exception
@@ -128,6 +128,8 @@ def execute_residual(
         else:
             residual_path = handle.uri
         with pq.ParquetFile(residual_path, filesystem=residual_fs) as pf:
+            if cols:
+                cols = present_columns(cols, pf.schema_arrow.names)
             pa_tbl = pf.read_row_groups(preplan.row_groups, columns=cols or None)
         df = pl.from_arrow(pa_tbl)
     else:

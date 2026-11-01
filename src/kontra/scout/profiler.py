@@ -16,7 +16,6 @@ Efficiency optimizations:
 
 from __future__ import annotations
 
-import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -1014,11 +1013,8 @@ class ScoutProfiler:
                     f"MAX({c}) AS {esc(f'__max__{col}')}",
                     f"{avg_expr} AS {esc(f'__mean__{col}')}",
                 ])
-            # SQL Server requires different PERCENTILE_CONT syntax (window function)
-            # Skip median/percentiles for SQL Server - use STDEV instead of STDDEV
-            if is_sqlserver:
-                exprs.append(f"STDEV({c}) AS {esc(f'__std__{col}')}")
-            elif is_duckdb:
+            std_fn = "STDEV" if is_sqlserver else "STDDEV"
+            if is_duckdb:
                 finite_col = f"CASE WHEN ISFINITE({c}) THEN {c} END"
                 if self.include_percentiles:
                     # One exact quantile aggregate shares selection work across
@@ -1034,12 +1030,14 @@ class ScoutProfiler:
                         f"AS {esc(f'__median__{col}')}"
                     )
                 exprs.append(f"STDDEV({finite_col}) AS {esc(f'__std__{col}')}")
-            elif source_fmt in ("postgres", "clickhouse", "trino") and self.include_percentiles:
+            elif (source_fmt in ("postgres", "clickhouse", "trino", "sqlserver")
+                    and self.include_percentiles):
                 fractions = [0.5] + [p / 100 for p in self.percentiles if p != 50]
                 levels = ", ".join(str(p) for p in fractions)
                 # Keep each backend's existing exact definition: PostgreSQL
                 # interpolates, whereas ClickHouse uses quantileExact. The
-                # Trino backend rewrites the PostgreSQL form exactly.
+                # Trino and SQL Server backends rewrite the PostgreSQL form
+                # exactly.
                 aggregate = (
                     f"quantilesExact({levels})({c})"
                     if source_fmt == "clickhouse"
@@ -1047,12 +1045,12 @@ class ScoutProfiler:
                 )
                 exprs.extend([
                     f"{aggregate} AS {esc(f'__quantiles__{col}')}",
-                    f"STDDEV({c}) AS {esc(f'__std__{col}')}",
+                    f"{std_fn}({c}) AS {esc(f'__std__{col}')}",
                 ])
             else:
                 exprs.extend([
                     f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {c}) AS {esc(f'__median__{col}')}",
-                    f"STDDEV({c}) AS {esc(f'__std__{col}')}",
+                    f"{std_fn}({c}) AS {esc(f'__std__{col}')}",
                 ])
                 # Additional percentiles: expensive, only in interrogate preset
                 if self.include_percentiles:
@@ -1134,8 +1132,10 @@ class ScoutProfiler:
             if quantiles is not None:
                 percentiles = {
                     f"p{p}": float(value)
+                    # Not strict: a backend returning a short quantile array
+                    # yields fewer percentiles rather than failing the profile.
                     for p, value in zip(
-                        (p for p in self.percentiles if p != 50), quantiles[1:]
+                        (p for p in self.percentiles if p != 50), quantiles[1:], strict=False
                     )
                     if value is not None
                 }

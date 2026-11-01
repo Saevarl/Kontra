@@ -95,7 +95,7 @@ def register(app: typer.Typer) -> None:
                 typer.secho(
                     f"Config error: {format_error_for_cli(e)}", fg=typer.colors.RED
                 )
-                raise typer.Exit(code=EXIT_CONFIG_ERROR)
+                raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
             effective_state_backend = config.state_backend
 
@@ -178,7 +178,7 @@ def register(app: typer.Typer) -> None:
 
                 except ValueError as e:
                     typer.secho(f"Error: {e}", fg=typer.colors.RED)
-                    raise typer.Exit(code=EXIT_CONFIG_ERROR)
+                    raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
             elif run:
                 # Parse specific date/time
@@ -209,7 +209,7 @@ def register(app: typer.Typer) -> None:
                         f"Invalid date format: {run}. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM.",
                         fg=typer.colors.RED,
                     )
-                    raise typer.Exit(code=EXIT_CONFIG_ERROR)
+                    raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
             else:
                 # Default: compare to previous run
@@ -248,7 +248,7 @@ def register(app: typer.Typer) -> None:
 
         except FileNotFoundError as e:
             typer.secho(f"Error: {e}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except (ContractError, ConfigError) as e:
             # Missing/invalid contract or config is a config error (exit 2),
@@ -257,7 +257,7 @@ def register(app: typer.Typer) -> None:
             from kontra.errors import format_error_for_cli
 
             typer.secho(f"Error: {format_error_for_cli(e)}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except Exception as e:
             from kontra.errors import format_error_for_cli
@@ -271,7 +271,7 @@ def register(app: typer.Typer) -> None:
                 )
             else:
                 typer.secho(f"Error: {msg}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_RUNTIME_ERROR)
+            raise typer.Exit(code=EXIT_RUNTIME_ERROR) from None
 
     @app.command("profile-diff")
     def profile_diff_cmd(
@@ -388,7 +388,7 @@ def register(app: typer.Typer) -> None:
 
                 except ValueError as e:
                     typer.secho(f"Error: {e}", fg=typer.colors.RED)
-                    raise typer.Exit(code=EXIT_CONFIG_ERROR)
+                    raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
             else:
                 # Default: compare to previous profile
                 if len(history) < 2:
@@ -423,7 +423,7 @@ def register(app: typer.Typer) -> None:
 
         except FileNotFoundError as e:
             typer.secho(f"Error: {e}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except Exception as e:
             from kontra.errors import format_error_for_cli
@@ -437,7 +437,7 @@ def register(app: typer.Typer) -> None:
                 )
             else:
                 typer.secho(f"Error: {msg}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_RUNTIME_ERROR)
+            raise typer.Exit(code=EXIT_RUNTIME_ERROR) from None
 
     # Deprecated alias for scout-diff
     @app.command("scout-diff", hidden=True)

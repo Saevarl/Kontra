@@ -102,7 +102,7 @@ class RuleFactory:
                 raise ValueError(
                     f"Unknown rule '{rule_name}'. "
                     f"Available rules: {', '.join(available)}"
-                )
+                ) from None
 
             try:
                 # IMPORTANT: constructor accepts (name, params) only

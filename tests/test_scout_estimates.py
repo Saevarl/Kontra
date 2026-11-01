@@ -499,3 +499,60 @@ class TestSqlServerMetadata:
         count = ss_backend.get_row_count()
         assert count == 250000
         assert ss_backend.row_count_estimated is True
+
+
+# ---------------------------------------------------------------------------
+# Parquet footer null counts (lite preset)
+# ---------------------------------------------------------------------------
+
+
+class TestParquetMetadataNullCounts:
+    """The lite preset sums Parquet row-group null counts; it may only call the
+    sum exact when every row group actually carried one."""
+
+    def _lite_columns(self, path):
+        from kontra.scout.profiler import ScoutProfiler
+
+        profile = ScoutProfiler(str(path), preset="lite").profile()
+        return {c.name: c for c in profile.columns}
+
+    def test_full_statistics_are_exact(self, tmp_path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        path = tmp_path / "full.parquet"
+        pq.write_table(
+            pa.table({"a": [1, None, 3, None]}), path, row_group_size=2
+        )
+        cols = self._lite_columns(path)
+        assert cols["a"].null_count == 2
+        assert cols["a"].null_count_estimated is False
+
+    def test_missing_statistics_not_reported_as_exact_zero(self, tmp_path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        path = tmp_path / "nostats.parquet"
+        pq.write_table(
+            pa.table({"a": [1, None, 3, None]}), path, write_statistics=False
+        )
+        cols = self._lite_columns(path)
+        # Footer has no null counts at all: 0 is a placeholder, not a fact.
+        assert cols["a"].null_count_estimated is True
+
+    def test_partial_statistics_flagged_as_estimated(self, tmp_path):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        path = tmp_path / "partial.parquet"
+        # Statistics only for "b"; "a" has 2 nulls the footer never reports.
+        pq.write_table(
+            pa.table({"a": [1, None, 3, None], "b": [1, 2, None, 4]}),
+            path,
+            row_group_size=2,
+            write_statistics=["b"],
+        )
+        cols = self._lite_columns(path)
+        assert cols["a"].null_count_estimated is True
+        assert cols["b"].null_count == 1
+        assert cols["b"].null_count_estimated is False

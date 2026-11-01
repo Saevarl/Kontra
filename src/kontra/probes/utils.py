@@ -6,7 +6,7 @@ Shared utilities for probe implementations.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 import polars as pl
 

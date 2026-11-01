@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Set, Union, TYPE_CHECKING
 if TYPE_CHECKING:
     import polars as pl
 
-from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.base import BaseRule, all_rows_failed
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
 from kontra.rule_defs.condition_parser import parse_condition, ConditionParseError
@@ -173,6 +173,12 @@ class ConditionalRangeRule(BaseRule):
             # No bounds (should not happen — validated at construction)
             out_of_range = pl.lit(False)
 
+        # NaN is out of range, as in RangeRule. `NaN < min` is False in Polars,
+        # so a min-only bound needs the explicit test; is_nan() raises on
+        # non-float columns, hence the dtype gate.
+        if target_dtype is not None and target_dtype.is_float():
+            out_of_range = out_of_range | col.is_nan()
+
         return null_expr | out_of_range
 
     def validate(self, df: "pl.DataFrame") -> Dict[str, Any]:
@@ -201,7 +207,7 @@ class ConditionalRangeRule(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": f"Rule execution failed: {e}",
             }
 
@@ -293,6 +299,12 @@ class ConditionalRangeRule(BaseRule):
         return details
 
     def compile_predicate(self) -> Optional[Predicate]:
+        # Without the schema a min-only bound can't catch NaN (see
+        # _build_range_violation_expr); validate() has the dtype. A max bound
+        # catches NaN through `> max`, since Polars orders NaN above numbers.
+        if self._max_val is None:
+            return None
+
         message = self._build_message()
 
         def _expr():
@@ -361,6 +373,8 @@ class ConditionalRangeRule(BaseRule):
             range_parts.append(f"{col} < {lit_value(self._min_val, dialect)}")
         if self._max_val is not None:
             range_parts.append(f"{col} > {lit_value(self._max_val, dialect)}")
+        from kontra.rule_defs.builtin.range import nan_filter
+        range_parts += nan_filter(col, dialect, self._min_val, self._max_val)
 
         range_violation = " OR ".join(range_parts)
 

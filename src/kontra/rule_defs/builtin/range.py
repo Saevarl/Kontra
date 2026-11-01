@@ -5,10 +5,25 @@ from typing import Dict, Any, Optional, Union, TYPE_CHECKING
 if TYPE_CHECKING:
     import polars as pl
 
-from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.base import BaseRule, all_rows_failed
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
 from kontra.state.types import FailureMode
+
+
+def nan_filter(col_sql: str, dialect: str, *bounds: Any) -> list[str]:
+    """The NaN condition for a range filter, when the bounds are numeric.
+
+    NaN is out of range, but SQL comparisons miss it (see
+    ``sql_utils._out_of_range``). A numeric bound implies a numeric column, so
+    the test is type-safe; an unknown dialect gets none.
+    """
+    from kontra.engine.sql_ir import _RENDERERS, numeric_literals
+
+    renderer = _RENDERERS.get(dialect)
+    if renderer is None or not numeric_literals(*bounds):
+        return []
+    return [renderer.is_nan(col_sql)]
 
 
 def _coerce_temporal(val: Any, target_dtype: Optional[pl.DataType] = None) -> Any:
@@ -162,6 +177,10 @@ class RangeRule(BaseRule):
                 rule_name, param_name,
                 f"must be numeric, got bool ({val})"
             )
+        # A NaN bound orders nothing, and the routes disagree on what it means.
+        if isinstance(val, float) and val != val:
+            from kontra.errors import RuleParameterError
+            raise RuleParameterError(rule_name, param_name, "must be a number, got NaN")
         # Already numeric or temporal — OK
         if isinstance(val, (int, float, date, datetime)):
             return val
@@ -251,7 +270,7 @@ class RangeRule(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": f"Rule execution failed: {e}",
             }
 
@@ -394,5 +413,6 @@ class RangeRule(BaseRule):
 
         # NULL is also a failure
         conditions.append(f"{col} IS NULL")
+        conditions += nan_filter(col, dialect, min_val, max_val)
 
         return " OR ".join(conditions)
