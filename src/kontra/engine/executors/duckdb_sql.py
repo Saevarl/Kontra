@@ -53,6 +53,7 @@ from kontra.engine.sql_utils import (
     agg_conditional_range,
     agg_allowed_values,
     agg_disallowed_values,
+    agg_metric,
     # EXISTS functions (early termination)
     exists_not_null,
     exists_unique,
@@ -109,7 +110,7 @@ def _get_required_columns(spec: Dict[str, Any]) -> set:
     # Single column rules
     if kind in ("not_null", "unique", "allowed_values", "disallowed_values",
                 "range", "length", "regex", "contains", "starts_with", "ends_with",
-                "freshness", "dtype"):
+                "freshness", "dtype", "metric"):
         col = spec.get("column")
         if col:
             cols.add(col)
@@ -132,6 +133,22 @@ def _get_required_columns(spec: Dict[str, Any]) -> set:
     # custom_agg rules - we can't easily determine columns, assume valid
 
     return cols
+
+
+_NUMERIC_TYPES = frozenset({
+    "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
+    "FLOAT", "DOUBLE", "DECIMAL",
+})
+
+
+def _metric_fits_column(spec: Dict[str, Any], col_types: Dict[str, str]) -> bool:
+    """False for a numeric-only drift metric on a column DuckDB reads as non-numeric."""
+    if spec.get("kind") != "metric" or spec.get("metric") not in ("mean", "min", "max"):
+        return True
+    col_type = col_types.get(spec.get("column") or "")
+    # A missing column is handled by the required-columns check.
+    return col_type is None or col_type.split("(")[0].upper() in _NUMERIC_TYPES
 
 
 # ------------------------------- CSV helpers -------------------------------- #
@@ -351,7 +368,7 @@ class DuckDBSqlExecutor(SqlExecutor):
         "range", "length",
         "regex", "contains", "starts_with", "ends_with",
         "compare", "conditional_not_null", "conditional_range",
-        "custom_agg", "allowed_values", "disallowed_values"
+        "custom_agg", "allowed_values", "disallowed_values", "metric"
     }
 
     def supports(
@@ -577,6 +594,12 @@ class DuckDBSqlExecutor(SqlExecutor):
                         aggregate_specs.append(spec)
                     supported_specs.append(spec)
 
+            elif kind == "metric":
+                # A drift measurement: one value per table, never an EXISTS probe.
+                aggregate_selects.append(agg_metric(spec["metric"], spec.get("column"), rid, DIALECT))
+                aggregate_specs.append(spec)
+                supported_specs.append(spec)
+
             elif kind == "custom_agg":
                 # Custom rule with to_sql_agg() and optional to_sql_exists()
                 sql_agg = spec.get("sql_agg", {})
@@ -648,6 +671,7 @@ class DuckDBSqlExecutor(SqlExecutor):
             cur = con.execute(f"SELECT * FROM {esc_ident(view)} LIMIT 0")
             available_cols = [d[0] for d in cur.description] if cur.description else []
             available_cols_set = set(available_cols)
+            col_types = {d[0]: str(d[1]) for d in cur.description or []}
 
             # Filter exists_specs to only include rules with valid columns
             valid_exists_specs = []
@@ -667,6 +691,11 @@ class DuckDBSqlExecutor(SqlExecutor):
             valid_aggregate_selects = []
             for i, spec in enumerate(aggregate_specs_list):
                 cols_needed = _get_required_columns(spec)
+                if not _metric_fits_column(spec, col_types):
+                    # AVG/MIN/MAX of a non-numeric column would fail the whole
+                    # batch; Polars reports the rule's config error instead.
+                    _logger.debug(f"Skipping SQL for {spec.get('rule_id')}: non-numeric column")
+                    continue
                 if cols_needed <= available_cols_set:
                     valid_aggregate_specs.append(spec)
                     if i < len(aggregate_selects):

@@ -416,6 +416,50 @@ class Renderer:
             f"AS {self.ident(rule_id)}"
         )
 
+    # --- measurements (drift rule): one value for the table, not a count ---
+    def count_of(self, inner_sql: str) -> str:
+        return f"COUNT({inner_sql})"
+
+    def to_double(self, inner_sql: str) -> str:
+        return f"CAST({inner_sql} AS DOUBLE)"
+
+    def mean_of(self, col_sql: str) -> str:
+        # As double, so integer sums don't overflow or truncate (SQL Server's
+        # integer AVG does). The DuckDB and Trino executors check the column
+        # type first; elsewhere a cast that accepts numeric-looking text is a
+        # known gap, not worth failing the shared batch over.
+        return f"AVG({self.to_double(col_sql)})"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        """MIN or MAX skipping NaN, as Polars does (NaN only if every value is)."""
+        # DuckDB orders NaN above every number, so MAX would return it.
+        return f"{func}(CASE WHEN isnan({col_sql}) THEN NULL ELSE {col_sql} END)"
+
+    def metric(self, metric: str, col_sql: Optional[str], rule_id: str) -> str:
+        """
+        One drift measurement AS rule_id. NULL means undefined (an empty table's
+        null_rate, an all-NULL column's mean), as in the Polars tier.
+        """
+        rows = self.count_of("*")
+        if metric == "row_count":
+            expr = rows
+        elif metric == "null_count":
+            expr = f"({rows} - {self.count_of(col_sql)})"
+        elif metric == "null_rate":
+            nulls = self.to_double(f"{rows} - {self.count_of(col_sql)}")
+            expr = f"{nulls} / NULLIF({rows}, 0)"
+        elif metric == "distinct_count":
+            expr = self.count_of(f"DISTINCT {col_sql}")
+        elif metric == "mean":
+            expr = self.mean_of(col_sql)
+        elif metric == "min":
+            expr = self.extremum("MIN", col_sql)
+        elif metric == "max":
+            expr = self.extremum("MAX", col_sql)
+        else:
+            raise ValueError(f"Unknown drift metric: {metric!r}")
+        return f"{expr} AS {self.ident(rule_id)}"
+
 
 class DuckDBRenderer(Renderer):
     dialect: Dialect = "duckdb"
@@ -437,6 +481,16 @@ class PostgresRenderer(Renderer):
     def regex_no_match(self, col_sql: str, pattern: str) -> str:
         escaped_pattern = pattern.replace("'", "''")
         return f"{col_sql} IS NULL OR NOT ({col_sql}::text ~ '{escaped_pattern}')"
+
+    def to_double(self, inner_sql: str) -> str:
+        return f"CAST({inner_sql} AS DOUBLE PRECISION)"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        # PostgreSQL orders NaN above every number. The text form reads 'NaN'
+        # for float and numeric NaN alike and works on any column type: a
+        # float8 comparison would overflow a NUMERIC above ~1e308 and fail
+        # the whole batch on a text column.
+        return f"{func}(CASE WHEN {col_sql}::text = 'NaN' THEN NULL ELSE {col_sql} END)"
 
 
 class SqlServerRenderer(Renderer):
@@ -485,6 +539,16 @@ class SqlServerRenderer(Renderer):
             f"AS {self.ident(rule_id)}"
         )
 
+    def count_of(self, inner_sql: str) -> str:
+        # COUNT returns INT and overflows past 2^31 - 1 rows.
+        return f"COUNT_BIG({inner_sql})"
+
+    def to_double(self, inner_sql: str) -> str:
+        return f"CAST({inner_sql} AS FLOAT)"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        return f"{func}({col_sql})"  # FLOAT holds no NaN
+
 
 class ClickHouseRenderer(Renderer):
     dialect: Dialect = "clickhouse"
@@ -519,6 +583,17 @@ class ClickHouseRenderer(Renderer):
         # patterns, which RE2 and Polars agree on.
         escaped_pattern = pattern.replace("\\", "\\\\").replace("'", "''")
         return f"{col_sql} IS NULL OR NOT match(toString({col_sql}), '{escaped_pattern}')"
+
+    def to_double(self, inner_sql: str) -> str:
+        # CAST(... AS Float64) rejects NULL; toFloat64 keeps a Nullable column
+        # nullable, so AVG skips NULLs as everywhere else.
+        return f"toFloat64({inner_sql})"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        # min/max of no rows return the type's default (0) for a non-Nullable
+        # column; the OrNull forms return NULL, which is undefined as in
+        # Polars. ClickHouse's min/max already skip NaN.
+        return f"{func.lower()}OrNull({col_sql})"
 
 
 # Trino regex subset. Trino evaluates patterns with Java semantics; the Polars
@@ -700,6 +775,10 @@ class TrinoRenderer(Renderer):
         # (NULL is not true), and returns 0 instead of NULL on an empty table.
         condition = " OR ".join(f"({c})" for c in conditions)
         return f"count_if({condition}) AS {self.ident(rule_id)}"
+
+    def extremum(self, func: str, col_sql: str) -> str:
+        # Trino's MIN/MAX skip NaN (NaN only if every value is), as Polars does.
+        return f"{func}({col_sql})"
 
     def freshness(self, col_sql: str, secs: int, rule_id: str) -> str:
         # date_add takes a bigint; an INTERVAL ... SECOND literal is capped at

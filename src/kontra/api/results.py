@@ -325,7 +325,10 @@ class RuleResult:
         status = "PASS" if self.passed else "FAIL"
         parts = [f"{self.rule_id}: {status}"]
 
-        if self.failed_count > 0:
+        if self.name == "drift" and self.details:
+            # The verdict is a comparison with history, not a row count.
+            parts.append(f"({self.message})")
+        elif self.failed_count > 0:
             if self.tally:
                 parts.append(f"({self.failed_count:,} failures)")
             else:
@@ -750,8 +753,8 @@ class ValidationResult:
         if blocking:
             parts = []
             for r in blocking[:5]:
-                # dtype is binary - show message instead of count
-                if r.rule_id.endswith(":dtype"):
+                # dtype and drift aren't row counts - show message instead
+                if r.rule_id.endswith(":dtype") or r.name == "drift":
                     parts.append(f"{r.rule_id} ({r.message})")
                 elif r.failed_count > 0:
                     parts.append(f"{r.rule_id} ({r.failed_count:,})")
@@ -767,8 +770,8 @@ class ValidationResult:
         if warnings:
             parts = []
             for r in warnings[:5]:
-                # dtype is binary - show message instead of count
-                if r.rule_id.endswith(":dtype"):
+                # dtype and drift aren't row counts - show message instead
+                if r.rule_id.endswith(":dtype") or r.name == "drift":
                     parts.append(f"{r.rule_id} ({r.message})")
                 elif r.failed_count > 0:
                     parts.append(f"{r.rule_id} ({r.failed_count:,})")
@@ -784,8 +787,8 @@ class ValidationResult:
         if info:
             parts = []
             for r in info[:5]:
-                # dtype is binary - show message instead of count
-                if r.rule_id.endswith(":dtype"):
+                # dtype and drift aren't row counts - show message instead
+                if r.rule_id.endswith(":dtype") or r.name == "drift":
                     parts.append(f"{r.rule_id} ({r.message})")
                 elif r.failed_count > 0:
                     parts.append(f"{r.rule_id} ({r.failed_count:,})")
@@ -798,6 +801,19 @@ class ValidationResult:
 
         # Passed summary
         lines.append(f"PASSED: {self.passed_count} rules")
+
+        # Drift rules without an earlier run weren't checked; a bare PASS
+        # would read as a checked one.
+        unchecked = [
+            r.rule_id
+            for r in self.rules
+            if r.name == "drift" and (r.details or {}).get("status") == "no_baseline"
+        ]
+        if unchecked:
+            line = "NO BASELINE (drift not checked): " + ", ".join(unchecked[:5])
+            if len(unchecked) > 5:
+                line += f" ... +{len(unchecked) - 5} more"
+            lines.append(line)
 
         # Context metadata from rules (if any rules have context)
         rules_with_context = [(r, r.context) for r in self.rules if r.context]

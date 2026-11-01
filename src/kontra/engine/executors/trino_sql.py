@@ -284,6 +284,7 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             "conditional_range",
             "custom_sql_check",
             "custom_agg",
+            "metric",
         }
     )
 
@@ -383,6 +384,8 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
 
         if kind in ("min_rows", "max_rows", "custom_sql_check", "custom_agg"):
             return True
+        if kind == "metric":
+            return self._metric_is_exact(spec.get("metric"), fam("column"))
         if kind == "not_null":
             return fam("column") is not None
         if kind in _CHAR_RULES and fam("column") == "char":
@@ -423,6 +426,21 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             # Naive values compare with UTC now, as in Polars (_freshness_select).
             return fam("column") in ("timestamptz", "timestamp", "date")
         return False
+
+    @staticmethod
+    def _metric_is_exact(metric: str | None, family: str | None) -> bool:
+        """Whether a drift measurement on a column of this family matches Polars."""
+        if metric == "row_count":
+            return True
+        if metric in ("null_count", "null_rate"):
+            return family is not None
+        if metric == "distinct_count":
+            # As for unique: COUNT(DISTINCT) agrees for these, and treats NaN as one value.
+            return family in _ORDERED | {"float"}
+        if metric == "mean":
+            return family in ("integer", "decimal", "float")
+        # MIN/MAX skip NaN in Trino; Polars does not, so floats stay in Polars.
+        return metric in ("min", "max") and family in ("integer", "decimal")
 
     def execute(
         self,

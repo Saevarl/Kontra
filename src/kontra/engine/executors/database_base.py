@@ -38,6 +38,7 @@ from kontra.engine.sql_utils import (
     agg_compare,
     agg_conditional_not_null,
     agg_conditional_range,
+    agg_metric,
     # EXISTS functions (early termination)
     exists_not_null,
     exists_unique,
@@ -265,6 +266,14 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                 # Dataset rule - always aggregate (tally not applicable)
                 threshold = spec.get("threshold", 0)
                 aggregate_selects.append(agg_max_rows(int(threshold), rule_id, self.DIALECT))
+                aggregate_specs.append(spec)
+                supported_specs.append(spec)
+
+            elif kind == "metric":
+                # A drift measurement: one value per table, never an EXISTS probe.
+                aggregate_selects.append(
+                    agg_metric(spec["metric"], spec.get("column"), rule_id, self.DIALECT)
+                )
                 aggregate_specs.append(spec)
                 supported_specs.append(spec)
 
