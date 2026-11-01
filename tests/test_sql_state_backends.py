@@ -61,11 +61,10 @@ def test_missing_driver_raises_from_every_method(
         lambda: store.clear(),
         lambda: store.save_annotation(Annotation(run_id=1)),
         lambda: store.get_annotations(1),
+        lambda: store.get_annotations_for_contract("fp"),
         lambda: store.get_run_with_annotations("fp"),
         lambda: store.get_history_with_annotations("fp"),
     ]
-    if cls is postgres.PostgresStore:
-        calls.append(lambda: store.get_annotations_for_contract("fp"))
     for call in calls:
         with pytest.raises(RuntimeError, match=f"requires '{driver}'"):
             call()

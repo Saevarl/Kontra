@@ -24,7 +24,6 @@ from types import ModuleType
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
 
-from .base import StateBackend
 from .sql_base import SQLStateBackend
 
 _logger = logging.getLogger(__name__)
@@ -204,10 +203,6 @@ class SQLServerStore(SQLStateBackend):
     )
     _logger = _logger
     _db_error = staticmethod(_get_db_error)
-
-    # The cross-run annotation query has not been implemented for SQL Server;
-    # keep StateBackend's empty default rather than change results here.
-    get_annotations_for_contract = StateBackend.get_annotations_for_contract
 
     @staticmethod
     def _parse_connection_params(uri: str) -> Dict[str, Any]:
