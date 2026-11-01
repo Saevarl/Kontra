@@ -818,7 +818,10 @@ def value_list_check(col: Node, values: List[Any], negate: bool) -> Node:
 
     A list of numbers compares with the column as numbers (NumberIn); other
     lists compare as text, so a mixed or string list can match any column.
+    Beside a number, True/False are 1/0, as when Polars builds the list.
     """
+    if any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
+        values = [int(v) if isinstance(v, bool) else v for v in values]
     if numeric_literals(*values):
         return NumberIn(col, values, negate)
     return In(CastText(col), values, negate=negate)

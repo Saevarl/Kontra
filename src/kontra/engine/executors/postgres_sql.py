@@ -105,6 +105,16 @@ class PostgresSqlExecutor(DatabaseSqlExecutor):
             return params.schema, params.table
         raise ValueError("Handle has neither table_ref nor db_params")
 
+    def _column_kinds(self, conn, cursor, handle: DatasetHandle) -> dict[str, str | None]:
+        """From the declared types the Postgres materializer loads columns as."""
+        from kontra.engine.materializers.postgres import _pg_declared_types
+        from kontra.rule_defs.value_lists import polars_kind
+
+        cursor.execute(f"SELECT * FROM {self._get_table_reference(handle)} LIMIT 0")
+        # The zone only types timestamptz values, which are datetimes either way.
+        types = _pg_declared_types(cursor.description or [], "UTC")
+        return {name: polars_kind(dtype) if dtype else None for name, dtype in types.items()}
+
     def _get_cursor(self, conn):
         """Get a cursor using context manager."""
         # PostgreSQL cursors support context managers

@@ -46,7 +46,8 @@ def _ss_type_dtype(type_name: str) -> Any:
 
     Matches what Polars makes of pymssql's Python values: integers as Int64,
     decimals as Decimal(38, scale), money as Decimal(38, 4), datetimeoffset
-    in UTC. None for types without a fixed dtype (uniqueidentifier, xml, ...).
+    in UTC. REAL is Float32, as SQL Server compares it (see to_polars). None
+    for types without a fixed dtype (uniqueidentifier, xml, ...).
     """
     import polars as pl
 
@@ -56,7 +57,9 @@ def _ss_type_dtype(type_name: str) -> Any:
         return pl.Int64
     if base == "bit":
         return pl.Boolean
-    if base in ("real", "float"):
+    if base == "real":
+        return pl.Float32
+    if base == "float":
         return pl.Float64
     if base in ("decimal", "numeric"):
         args = t[len(base) :].strip("() ").split(",")
@@ -212,7 +215,7 @@ class SqlServerMaterializer(BaseMaterializer):
             ImportError: If polars is not installed.
         """
         try:
-            import polars  # noqa: F401 - lazy, only needed when residual rules exist
+            import polars as pl  # lazy, only needed when residual rules exist
         except ImportError as e:
             raise ImportError(
                 "Polars is required to materialize data for validation but is not installed. "
@@ -246,14 +249,27 @@ class SqlServerMaterializer(BaseMaterializer):
             col_names = [desc[0] for desc in description]
             pyodbc_types = _pyodbc_declared_types(description)
 
+            described: list[DeclaredTypes] = []
+
+            def describe() -> DeclaredTypes:
+                # At most one lookup, on the connection still open here.
+                if not described:
+                    described.append(_describe_result_types(conn, query))
+                return described[0]
+
             def declared() -> DeclaredTypes:
-                # pymssql: one lookup, only for an empty result or an all-NULL
-                # column, on the connection still open here.
+                # pymssql: only for an empty result or an all-NULL column.
                 if pyodbc_types is not None:
                     return pyodbc_types
-                return _describe_result_types(conn, query)
+                return describe()
 
             df = frame_from_rows(rows, col_names, declared)
+            # Both drivers return REAL values as Python floats, which load as
+            # Float64. SQL Server compares a REAL in single precision (0.1 is
+            # in a REAL column holding 0.1), so they load as Float32.
+            if any(dtype == pl.Float64 for dtype in df.schema.values()):
+                single = [n for n, dtype in describe().items() if dtype == pl.Float32]
+                df = df.with_columns(pl.col(n).cast(pl.Float32) for n in single if n in df.columns)
 
         if self._io_debug_enabled:
             self._last_io_debug = {

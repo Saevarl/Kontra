@@ -98,6 +98,10 @@ def test_ineligible_plans_keep_sql(tmp_path, monkeypatch, reason):
         save=False,
         **kwargs,
     )
+    if reason == "coercion":
+        # Text on an integer column is a config error, which Polars reports.
+        assert [(r.passed, r.failure_mode) for r in result.rules] == [(False, "config_error")]
+        return
     assert all(r.source in ("sql", "metadata") for r in result.rules)
 
 

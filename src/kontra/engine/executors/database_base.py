@@ -60,6 +60,7 @@ from kontra.engine.sql_utils import (
 )
 from kontra.engine.sql_validator import validate_sql, replace_table_placeholder, to_count_query
 from kontra.logging import get_logger
+from kontra.rule_defs.value_lists import unfit_values
 
 from .base import SqlExecutor
 
@@ -498,6 +499,10 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
         with self._get_connection_ctx(handle) as conn:
             cursor = self._get_cursor(conn)
             try:
+                plan = self._without_unfit_value_lists(conn, cursor, handle, compiled_plan)
+                exists_specs = plan.get("exists_specs", [])
+                aggregate_selects = plan.get("aggregate_selects", [])
+
                 # Phase 1: EXISTS checks (early termination for tally=False)
                 if exists_specs:
                     exists_exprs = []
@@ -599,6 +604,46 @@ class DatabaseSqlExecutor(SqlExecutor, ABC):
                 self._close_cursor(cursor)
 
         return {"results": results, "row_count": row_count, "staging": None}
+
+    def _column_kinds(self, conn, cursor, handle: DatasetHandle) -> dict[str, str | None]:
+        """
+        The value_lists column kind of each column, as the Polars tier loads it.
+
+        Default: none known, so value lists stay in SQL.
+        """
+        return {}
+
+    def _without_unfit_value_lists(
+        self, conn, cursor, handle: DatasetHandle, compiled_plan: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        The plan without the allowed/disallowed_values rules whose values are
+        of another type than their column. Polars reports those as config
+        errors, as it does a missing column.
+        """
+        specs = compiled_plan.get("exists_specs", []) + compiled_plan.get("aggregate_specs", [])
+        specs = [s for s in specs if s.get("kind") in ("allowed_values", "disallowed_values")]
+        if not specs:
+            return compiled_plan
+        kinds = self._column_kinds(conn, cursor, handle)
+        unfit = {
+            s["rule_id"] for s in specs
+            if unfit_values(s.get("values") or [], kinds.get(s.get("column")))
+        }
+        if not unfit:
+            return compiled_plan
+        _logger.info("%s pushdown left %d value list(s) to Polars: %s", self.name, len(unfit), sorted(unfit))
+        plan = dict(compiled_plan)
+        plan["exists_specs"] = [s for s in plan["exists_specs"] if s["rule_id"] not in unfit]
+        # aggregate_selects[i] is aggregate_specs[i]'s expression.
+        kept = [
+            (spec, select)
+            for spec, select in zip(plan["aggregate_specs"], plan["aggregate_selects"])
+            if spec["rule_id"] not in unfit
+        ]
+        plan["aggregate_specs"] = [spec for spec, _ in kept]
+        plan["aggregate_selects"] = [select for _, select in kept]
+        return plan
 
     def _execute_custom_sql_queries(
         self,

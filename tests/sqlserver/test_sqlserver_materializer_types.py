@@ -177,7 +177,7 @@ _TYPES = {
     "c_int": ("INT", "1", pl.Int64),
     "c_big": ("BIGINT", "1", pl.Int64),
     "c_bit": ("BIT", "1", pl.Boolean),
-    "c_real": ("REAL", "1.5", pl.Float64),
+    "c_real": ("REAL", "1.5", pl.Float32),
     "c_float": ("FLOAT", "1.5", pl.Float64),
     "c_dec": ("DECIMAL(10,2)", "1.25", pl.Decimal(38, 2)),
     "c_num0": ("NUMERIC(18,0)", "12", pl.Decimal(38, 0)),
@@ -230,3 +230,25 @@ def test_empty_and_all_null_load_as_populated(make_table, driver):
         assert df["c_bit"][0] is True
     finally:
         conn.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("preplan,pushdown", [("on", "on"), ("on", "off"), ("off", "on"), ("off", "off")])
+def test_real_is_float32_on_every_route(make_table, preplan, pushdown):
+    """A REAL column is a float32, not a float64, from metadata and in Polars,
+    and its 0.1 is in [0.1] as SQL Server compares it."""
+    name = make_table("(h REAL)", ["(0.1)"])
+
+    result = kontra.validate(
+        _URI.format(name),
+        rules=[
+            rules.dtype("h", "float32", id="f32"),
+            rules.dtype("h", "float64", id="f64"),
+            rules.allowed_values("h", [0.1], id="in"),
+        ],
+        save=False,
+        preplan=preplan,
+        pushdown=pushdown,
+    )
+
+    assert {r.rule_id: r.passed for r in result.rules} == {"f32": True, "f64": False, "in": True}

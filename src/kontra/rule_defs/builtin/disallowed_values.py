@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
+from kontra.rule_defs.value_lists import is_in
 from kontra.state.types import FailureMode
 
 
@@ -56,14 +57,14 @@ class DisallowedValuesRule(BaseRule):
         return {self._column}
 
     def validate(self, df: pl.DataFrame) -> Dict[str, Any]:
-        # Check column exists before accessing
-        col_check = self._check_columns(df, {self._column})
+        # Check column exists, and that the values fit it, before accessing
+        col_check = self._check_columns(df, {self._column}) or self.frame_error(df)
         if col_check is not None:
             return col_check
 
         # Failure = value IS in the disallowed list (not including NULL)
         # is_in returns NULL for NULL values, we want NULL -> not a failure
-        mask = df[self._column].is_in(list(self._values)).fill_null(False)
+        mask = is_in(df[self._column], self._values).fill_null(False)
 
         res = super()._failures(df, mask, f"{self._column} contains disallowed values")
         res["rule_id"] = self.rule_id
@@ -73,6 +74,9 @@ class DisallowedValuesRule(BaseRule):
             res["details"] = self._explain_failure(df, mask)
 
         return res
+
+    def frame_error(self, df: pl.DataFrame) -> dict[str, Any] | None:
+        return self._check_values(df, self._column, self._values)
 
     def _explain_failure(self, df: pl.DataFrame, mask: pl.Series) -> Dict[str, Any]:
         """Generate detailed failure explanation."""
@@ -103,8 +107,13 @@ class DisallowedValuesRule(BaseRule):
         def _expr():
             import polars as pl
 
-            # Failure = value IS in the disallowed list
-            return pl.col(self._column).is_in(self._values).fill_null(False)
+            # Failure = value IS in the disallowed list. The list takes the
+            # column's type, which only the data knows.
+            values = self._values
+            in_list = pl.col(self._column).map_batches(
+                lambda s: is_in(s, values), return_dtype=pl.Boolean
+            )
+            return in_list.fill_null(False)
 
         return Predicate(
             rule_id=self.rule_id,
