@@ -13,6 +13,7 @@ For databases and cloud storage:
 pip install "kontra[postgres]"     # PostgreSQL
 pip install "kontra[sqlserver]"    # SQL Server
 pip install "kontra[clickhouse]"   # ClickHouse
+pip install "kontra[trino]"        # Trino
 pip install "kontra[s3]"           # S3 / MinIO
 ```
 
@@ -45,7 +46,7 @@ for r in result.rules:
 # COL:email:unique: sql
 ```
 
-`metadata` (also called preplan) means Kontra proved the rule from available metadata (Parquet stats, database catalogs) without scanning data. `sql` means it ran as a pushdown query in the active engine (DuckDB, PostgreSQL, or SQL Server). This is why large datasets validate fast.
+`metadata` (also called preplan) means Kontra proved the rule from available metadata (Parquet stats, database catalogs) without scanning data. `sql` means it ran as a pushdown query in the active engine (DuckDB, PostgreSQL, SQL Server, ClickHouse, or Trino). This is why large datasets validate fast.
 
 ## Profile First, Then Validate
 
@@ -103,7 +104,7 @@ conn = psycopg.connect(host="localhost", dbname="myapp")
 result = kontra.validate(conn, table="public.users", rules=[...])
 ```
 
-Bring-your-own connections work with PostgreSQL and SQL Server. ClickHouse is
+Bring-your-own connections work with PostgreSQL, SQL Server and Trino. ClickHouse is
 supported through `clickhouse://` URIs and named datasources. See
 [Configuration](reference/config.md) for connection setup.
 
