@@ -65,7 +65,6 @@ def sqlserver_state_db() -> str:
 @pytest.mark.integration
 class TestSQLServerStateStore(StateStoreCases):
     store_class = SQLServerStore
-    supports_contract_annotations = False
 
     @pytest.fixture
     def store_uri(self, sqlserver_state_db: str) -> str:

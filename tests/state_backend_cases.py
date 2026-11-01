@@ -144,10 +144,6 @@ class StateStoreCases:
         "get_history_with_annotations": 3,
     }
 
-    # SQLServerStore has never implemented the cross-run annotation query and
-    # falls back to StateBackend's empty default.
-    supports_contract_annotations = True
-
     @pytest.fixture
     def store(self, store_uri):
         store = self.store_class(store_uri)
@@ -477,10 +473,6 @@ class StateStoreCases:
         store.save(make_state(OTHER_FP))
 
         result = store.get_annotations_for_contract(FP)
-        if not self.supports_contract_annotations:
-            assert result == []
-            return
-
         assert [a.id for a in result] == [
             anns["rule_resolution"].id,
             anns["run_note"].id,
@@ -501,6 +493,76 @@ class StateStoreCases:
 
         assert len(store.get_annotations_for_contract(FP, limit=1)) == 1
         assert store.get_annotations_for_contract(OTHER_FP) == []
+
+    def test_public_get_annotations_across_runs(self, store, monkeypatch, tmp_path):
+        """kontra.get_annotations() with this store as the state store."""
+        import kontra
+        from kontra.state import backends
+
+        monkeypatch.setattr(backends, "get_default_store", lambda: store)
+        monkeypatch.chdir(tmp_path)
+
+        self._save_three(store)
+        other = make_state(OTHER_FP)
+        other.contract_name = "orders_contract"
+        store.save(other)
+        # Reload so rule results carry their ids
+        runs = list(reversed(store.get_history(FP)))
+        other = store.get_latest(OTHER_FP)
+
+        def ann(state, rule_index, annotation_type, hours):
+            return Annotation(
+                run_id=state.id,
+                rule_result_id=None if rule_index is None else state.rules[rule_index].id,
+                actor_type="agent",
+                actor_id=f"agent-{hours}",
+                annotation_type=annotation_type,
+                summary=f"{annotation_type} at +{hours}h",
+                payload={"hours": hours},
+                created_at=BASE_TIME + timedelta(hours=hours),
+            )
+
+        # One annotation per run plus a second on the newest run. Saved out of
+        # time order so ids and insertion order differ from newest-first.
+        newest = ann(runs[2], 0, "resolution", 4)
+        oldest = ann(runs[0], 0, "root_cause", 1)
+        min_rows_note = ann(runs[2], 1, "note", 3)
+        other_ann = ann(other, 0, "resolution", 5)
+        run_note = ann(runs[1], None, "note", 2)
+        for a in (newest, oldest, min_rows_note, other_ann, run_note):
+            store.save_annotation(a)
+
+        def ids(**kwargs):
+            return [a["id"] for a in kontra.get_annotations("users_contract", **kwargs)]
+
+        result = kontra.get_annotations("users_contract")
+        assert [a["id"] for a in result] == [
+            newest.id, min_rows_note.id, run_note.id, oldest.id,
+        ]
+        assert [a["run_id"] for a in result] == [
+            runs[2].id, runs[2].id, runs[1].id, runs[0].id,
+        ]
+        assert [a.get("rule_id") for a in result] == [
+            "COL:email:not_null", "DATASET:min_rows", None, "COL:email:not_null",
+        ]
+        first = result[0]
+        assert first["actor_type"] == "agent"
+        assert first["actor_id"] == "agent-4"
+        assert first["annotation_type"] == "resolution"
+        assert first["summary"] == "resolution at +4h"
+        assert first["payload"] == {"hours": 4}
+        assert datetime.fromisoformat(first["created_at"]) == BASE_TIME + timedelta(hours=4)
+
+        assert ids(rule_id="COL:email:not_null") == [newest.id, oldest.id]
+        assert ids(annotation_type="note") == [min_rows_note.id, run_note.id]
+        assert ids(rule_id="COL:email:not_null", annotation_type="resolution") == [newest.id]
+        assert ids(limit=2) == [newest.id, min_rows_note.id]
+        assert ids(rule_id="COL:email:not_null", limit=1) == [newest.id]
+        assert ids(annotation_type="note", limit=1) == [min_rows_note.id]
+
+        # Control: the other contract's annotation exists, is newest overall and
+        # matches the rule_id/type filters above, yet never appeared for users_contract.
+        assert [a["id"] for a in kontra.get_annotations("orders_contract")] == [other_ann.id]
 
     # ------------------------------------------------------------------
     # Round trips
@@ -538,7 +600,4 @@ class StateStoreCases:
         finally:
             store._conn = counting._conn
 
-        expected = dict(self.expected_statements)
-        if not self.supports_contract_annotations:
-            expected["get_annotations_for_contract"] = 0
-        assert observed == expected
+        assert observed == self.expected_statements
