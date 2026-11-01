@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     import polars as pl
 
 from kontra.connectors.handle import DatasetHandle
-from .base import BaseMaterializer
+from .base import BaseMaterializer, present_columns
 from .registry import register_materializer
 
 
@@ -136,7 +136,7 @@ class PolarsConnectorMaterializer(BaseMaterializer):
             raise IOError(f"Unsupported file format: '{uri}'. Kontra supports .parquet and .csv files.")
 
         if columns:
-            lf = lf.select([pl.col(c) for c in columns])
+            lf = lf.select(present_columns(columns, lf.collect_schema().names()))
 
         # NOTE: streaming=True is deprecated; default engine suffices for tests and CI.
         return lf.collect()

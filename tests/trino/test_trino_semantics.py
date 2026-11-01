@@ -287,8 +287,8 @@ def no_timestamps_table(request, trino_container):
 @pytest.mark.parametrize("tally", [True, False], ids=["tally", "fail_fast"])
 @pytest.mark.parametrize("zone", ["UTC", "America/Los_Angeles", None], ids=["utc", "la", "own"])
 def test_freshness_without_timestamps(no_timestamps_table, zone, tally):
-    """No timestamps: FAIL counting every row, from SQL, as the Polars tier says."""
-    fq, rows = no_timestamps_table
+    """No timestamps: FAIL with one violation, from SQL, as the Polars tier says."""
+    fq, _rows = no_timestamps_table
     rules = [
         {"name": "freshness", "id": "ts_2h", "params": {"column": "ts", "max_age": "2h"}},
         {"name": "freshness", "id": "d_2h", "params": {"column": "d", "max_age": "2h"}},
@@ -304,5 +304,5 @@ def test_freshness_without_timestamps(no_timestamps_table, zone, tally):
             conn.close()
     for rid, column in (("ts_2h", "ts"), ("d_2h", "d")):
         assert on[rid].passed is False, rid
-        assert on[rid].failed_count == rows, rid
+        assert on[rid].failed_count == 1, rid
         assert on[rid].message == f"Column '{column}' has no non-null timestamps", rid

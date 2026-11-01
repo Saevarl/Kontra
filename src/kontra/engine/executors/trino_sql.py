@@ -58,6 +58,7 @@ from kontra.connectors.detection import parse_table_reference
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.trino import TrinoConnectionParams
 from kontra.engine.sql_ir import (
+    FLOAT_ORDER,
     And,
     In,
     IsNotNull,
@@ -116,24 +117,13 @@ _CHAR_RULES = {
 # Integers up to 2^53 convert to double exactly, so both sides round alike.
 _EXACT_DOUBLE_INT = 2**53
 
-# Polars' order for floats as SQL over a non-NULL pair: NaN equals NaN and is
-# above every number. {l}/{r} are the columns, {ln}/{rn} whether each is NaN.
-_FLOAT_ORDER = {
-    "==": "({ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} = {r})",
-    "!=": "NOT (({ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} = {r}))",
-    "<": "(NOT {ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} < {r})",
-    "<=": "{rn} OR (NOT {ln} AND {l} <= {r})",
-    ">": "({ln} AND NOT {rn}) OR (NOT {ln} AND NOT {rn} AND {l} > {r})",
-    ">=": "{ln} OR (NOT {rn} AND {l} >= {r})",
-}
-
-
-def _no_timestamps(rule_id: str, column: str, row_count: int) -> dict[str, Any]:
-    """Freshness with no non-NULL value: a failure counting every row, as in Polars."""
+def _no_timestamps(rule_id: str, column: str) -> dict[str, Any]:
+    """Freshness with no non-NULL value: one violation, as for stale data and
+    as in Polars."""
     return {
         "rule_id": rule_id,
         "passed": False,
-        "failed_count": row_count,
+        "failed_count": 1,
         "tally": False,
         "message": f"Column '{column}' has no non-null timestamps",
         "severity": "ERROR",
@@ -225,7 +215,7 @@ def _float_range_violation(column: str, data_type: str, spec: dict[str, Any]) ->
 def _float_compare_violation(spec: dict[str, Any]) -> Node:
     """NULL on either side, or the comparison false in Polars' float order."""
     left, right = (esc_ident(spec[k], "trino") for k in ("left", "right"))
-    holds = _FLOAT_ORDER[spec["op"]].format(
+    holds = FLOAT_ORDER[spec["op"]].format(
         l=left, r=right, ln=f"is_nan({left})", rn=f"is_nan({right})"
     )
     return Or(IsNull(RawExpr(left)), IsNull(RawExpr(right)), RawExpr(f"NOT ({holds})"))
@@ -417,7 +407,7 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
             left, right = fam("left"), fam("right")
             numeric = {"integer", "decimal"}
             if left == right == "float":
-                return spec.get("op") in _FLOAT_ORDER
+                return spec.get("op") in FLOAT_ORDER
             return left in _ORDERED and (left == right or {left, right} <= numeric)
         if kind in ("conditional_not_null", "conditional_range"):
             when = fam("when_column")
@@ -560,7 +550,7 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
         columns_of = {s["rule_id"]: s.get("column") for s, _ in specs}
         for rule_id, value in cells:
             if kinds.get(rule_id) == "freshness" and value == _NO_TIMESTAMPS:
-                results.append(_no_timestamps(rule_id, columns_of[rule_id], row_count))
+                results.append(_no_timestamps(rule_id, columns_of[rule_id]))
                 continue
             results += results_from_row(
                 [rule_id], (value,), is_exists=rule_id in fail_fast, rule_kinds=kinds

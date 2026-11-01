@@ -36,13 +36,12 @@ from kontra.engine.sql_ir import (
     escape_like_pattern,
     # IR nodes
     Col,
-    CastText,
     LenOf,
     IsNull,
+    IsNaN,
     IsNotNull,
     Cmp,
     Not,
-    In,
     Like,
     RegexNoMatch,
     Group,
@@ -54,6 +53,8 @@ from kontra.engine.sql_ir import (
     bounds,
     when_condition,
     allowed_values_violation,
+    numeric_literals,
+    value_list_check,
     renderer_for,
 )
 
@@ -131,10 +132,24 @@ def _like_violation(column: str, pattern: str) -> Node:
     return Or(IsNull(col), Like(col, pattern, negate=True))
 
 
+def _out_of_range(col: Node, min_val: Optional[Any], max_val: Optional[Any]) -> List[Node]:
+    """Out-of-bounds conditions, with NaN out of range as the Polars rule has it.
+
+    Comparisons alone miss NaN: DuckDB and Postgres order it above every number,
+    so it slips past a min-only bound, and ClickHouse follows IEEE, where every
+    comparison with NaN is false. A numeric bound implies a numeric column, so
+    the NaN test is type-safe; temporal and string bounds skip it.
+    """
+    out = bounds(col, min_val, max_val)
+    if numeric_literals(min_val, max_val):
+        out.append(IsNaN(col))
+    return out
+
+
 def _range_violation(column: str, min_val: Optional[Any], max_val: Optional[Any]) -> Node:
     """NULL-or-out-of-bounds condition on a column (flat, no grouping)."""
     col = Col(column)
-    return Or(IsNull(col), *bounds(col, min_val, max_val))
+    return Or(IsNull(col), *_out_of_range(col, min_val, max_val))
 
 
 def _length_violation(column: str, min_len: Optional[int], max_len: Optional[int]) -> Node:
@@ -156,7 +171,7 @@ def _compare_violation(left: str, right: str, op: str) -> Node:
 def _disallowed_in_check(column: str, values: List[Any]) -> Node:
     """Non-null value that IS in the disallowed set."""
     col = Col(column)
-    return And(IsNotNull(col), In(CastText(col), values, negate=False))
+    return And(IsNotNull(col), value_list_check(col, values, negate=False))
 
 
 # =============================================================================
@@ -206,7 +221,7 @@ def agg_allowed_values(
     if not non_null_values:
         return r.sum_case([IsNotNull(column).sql(r)], rule_id)
 
-    in_check = In(CastText(column), non_null_values, negate=True)
+    in_check = value_list_check(column, non_null_values, negate=True)
     if null_allowed:
         return r.sum_case([And(IsNotNull(column), in_check).sql(r)], rule_id)
     # NULL is not allowed — count NULLs AND non-null values not in the list
@@ -246,7 +261,7 @@ def agg_range(
     """Count values outside [min, max] range. NULLs are failures."""
     r = renderer_for(dialect)
     column = Col(col)
-    out_of_range = bounds(column, min_val, max_val)
+    out_of_range = _out_of_range(column, min_val, max_val)
     inner = Or(*out_of_range) if out_of_range else Raw("0=1")
     condition = Or(IsNull(column), Group(inner))
     return r.sum_case([condition.sql(r)], rule_id)

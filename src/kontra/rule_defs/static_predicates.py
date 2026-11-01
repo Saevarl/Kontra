@@ -9,7 +9,9 @@ from kontra.rule_defs.base import BaseRule
 PredicateT = Tuple[str, str, str, Any]
 # "not_null_when": not_null on the rows a condition selects (conditional_not_null).
 # Metadata can prove it PASS (no nulls at all) but never FAIL (the nulls may
-# all sit outside the condition).
+# all sit outside the condition). Its value names the condition's column: the
+# proof ignores the condition, so a planner may settle the rule only when that
+# column exists too; otherwise the scan reports the missing column.
 ALLOWED_OPS = {"==", "!=", ">=", ">", "<=", "<", "^=", "not_null", "not_null_when", "dtype", "unique"}
 
 
@@ -78,8 +80,9 @@ def _conservative_builtin_mapping(rule: BaseRule) -> List[PredicateT]:
     # conditional_not_null(column, when) — pass-only, see ALLOWED_OPS
     if name == "conditional_not_null":
         col = params.get("column")
-        if isinstance(col, str) and col:
-            out.append((rid, col, "not_null_when", True))
+        when_col = getattr(rule, "_when_column", None)
+        if isinstance(col, str) and col and isinstance(when_col, str) and when_col:
+            out.append((rid, col, "not_null_when", when_col))
 
     # equals / allowed_values (single value)
     if name in {"equals", "allowed_values"}:
