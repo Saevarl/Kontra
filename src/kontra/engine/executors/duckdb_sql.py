@@ -35,6 +35,7 @@ from kontra.engine.backends.duckdb_utils import (
 )
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.uri_utils import is_azure_uri
+from kontra.rule_defs.value_lists import unfit_values
 from kontra.engine.sql_utils import (
     # Aggregate functions (exact counts)
     agg_min_rows,
@@ -149,6 +150,38 @@ def _metric_fits_column(spec: Dict[str, Any], col_types: Dict[str, str]) -> bool
     col_type = col_types.get(spec.get("column") or "")
     # A missing column is handled by the required-columns check.
     return col_type is None or col_type.split("(")[0].upper() in _NUMERIC_TYPES
+
+
+# DuckDB type -> value_lists column kind.
+_DUCKDB_KINDS = {
+    **dict.fromkeys(
+        ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+         "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"),
+        "integer",
+    ),
+    "FLOAT": "float",
+    "DOUBLE": "float",
+    "DECIMAL": "decimal",
+    "VARCHAR": "text",
+    "BOOLEAN": "boolean",
+    "DATE": "date",
+    "TIMESTAMP": "datetime",
+    "TIMESTAMP_S": "datetime",
+    "TIMESTAMP_MS": "datetime",
+    "TIMESTAMP_NS": "datetime",
+    "TIMESTAMP WITH TIME ZONE": "datetime",
+    "TIME": "time",
+    "TIME_NS": "time",
+}
+
+
+def _values_fit_column(spec: dict[str, Any], col_types: dict[str, str]) -> bool:
+    """False for a value list of another type than its column, which Polars reports."""
+    if spec.get("kind") not in ("allowed_values", "disallowed_values"):
+        return True
+    col_type = col_types.get(spec.get("column") or "")
+    kind = _DUCKDB_KINDS.get(col_type.split("(")[0].upper()) if col_type else None
+    return not unfit_values(spec.get("values") or [], kind)
 
 
 # ------------------------------- CSV helpers -------------------------------- #
@@ -677,7 +710,10 @@ class DuckDBSqlExecutor(SqlExecutor):
             valid_exists_specs = []
             for spec in exists_specs:
                 cols_needed = _get_required_columns(spec)
-                if cols_needed <= available_cols_set:
+                if not _values_fit_column(spec, col_types):
+                    # Polars reports the rule's config error instead.
+                    _logger.debug(f"Skipping SQL for {spec.get('rule_id')}: values don't fit the column")
+                elif cols_needed <= available_cols_set:
                     valid_exists_specs.append(spec)
                 else:
                     # Rule has missing columns - skip SQL, will fall back to Polars
@@ -695,6 +731,9 @@ class DuckDBSqlExecutor(SqlExecutor):
                     # AVG/MIN/MAX of a non-numeric column would fail the whole
                     # batch; Polars reports the rule's config error instead.
                     _logger.debug(f"Skipping SQL for {spec.get('rule_id')}: non-numeric column")
+                    continue
+                if not _values_fit_column(spec, col_types):
+                    _logger.debug(f"Skipping SQL for {spec.get('rule_id')}: values don't fit the column")
                     continue
                 if cols_needed <= available_cols_set:
                     valid_aggregate_specs.append(spec)

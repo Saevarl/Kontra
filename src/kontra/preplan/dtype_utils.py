@@ -48,8 +48,9 @@ SS_TYPE_MAP: Dict[str, List[str]] = {
     "int64": ["bigint"],
     # Float family
     "float": ["float", "real", "decimal", "numeric", "money", "smallmoney"],
-    "float64": ["float", "real", "decimal", "numeric", "money", "smallmoney"],
-    "double": ["float", "real", "decimal", "numeric", "money", "smallmoney"],
+    # REAL loads as Float32 (materializers/sqlserver.py), so it isn't a float64.
+    "float64": ["float", "decimal", "numeric", "money", "smallmoney"],
+    "double": ["float", "decimal", "numeric", "money", "smallmoney"],
     "float32": ["real"],
     "numeric": ["tinyint", "smallint", "int", "bigint", "float", "real", "decimal", "numeric"],
     # String family

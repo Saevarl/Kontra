@@ -60,6 +60,16 @@ _FLOATS = {"float32", "float64"}
 # Integers Polars compares with a float in Float64. (Int8/Int16 against Float32
 # compare in Float32, which holds them exactly, so Float64 agrees there too.)
 _INTEGERS = {"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"}
+# _normalize_ch_type family -> value_lists column kind (integers: _INTEGERS).
+_CH_KINDS = {
+    "float32": "float",
+    "float64": "float",
+    "decimal": "decimal",
+    "string": "text",
+    "boolean": "boolean",
+    "date": "date",
+    "datetime": "datetime",
+}
 # Rules whose SQL depends on whether a column they compare is a float.
 _FLOAT_RULES = {"compare", "unique", "range", "conditional_not_null", "conditional_range"}
 # Integers up to 2^53 convert to Float64 exactly, so a cast to Float32 rounds
@@ -275,6 +285,14 @@ class ClickHouseSqlExecutor(DatabaseSqlExecutor):
             "ORDER BY position"
         )
         return [(r[0], r[1]) for r in cursor.fetchall()]
+
+    def _column_kinds(self, conn, cursor, handle: DatasetHandle) -> dict[str, str | None]:
+        """From the column types, named as the materializer loads them."""
+        kinds: dict[str, str | None] = {}
+        for name, ch_type in self._column_types(cursor, handle):
+            family = _normalize_ch_type(ch_type)
+            kinds[name] = "integer" if family in _INTEGERS else _CH_KINDS.get(family)
+        return kinds
 
     def execute(
         self,

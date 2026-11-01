@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple
 
@@ -7,6 +8,8 @@ if TYPE_CHECKING:
     import pyarrow.fs as pafs
 
 from kontra.logging import get_logger
+
+from kontra.rule_defs.value_lists import unfit_values
 
 from .parquet_meta import ParquetMeta, ParquetMetaError, read_parquet_meta
 from .types import PrePlan, Decision
@@ -168,6 +171,23 @@ def _normalize_arrow_type(pa_type: str) -> str:
         return "time"
 
     return pa_type
+
+
+def _parquet_kind(normalized: str) -> str | None:
+    """The value_lists column kind of a normalized Parquet type."""
+    if normalized in ("int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"):
+        return "integer"
+    if normalized in ("float32", "float64"):
+        return "float"
+    if normalized.startswith("decimal"):
+        return "decimal"
+    return {
+        "string": "text",
+        "boolean": "boolean",
+        "date": "date",
+        "datetime": "datetime",
+        "time": "time",
+    }.get(normalized)
 
 
 def _dtype_matches(actual: str, expected: str) -> bool:
@@ -450,9 +470,29 @@ def preplan_single_parquet(
     rule_decisions: Dict[str, Decision] = {}
     fail_details: Dict[str, Dict[str, Any]] = {}
 
+    # "==" is allowed_values with one value. A value of another kind than the
+    # column is a config error Polars reports, so the scan decides it, over
+    # every row group; on a float32 column, Polars compares the value as a
+    # float32.
+    scan_ids = set()
+    fitted: list[Predicate] = []
+    for rule_id, col, op, val in predicates:
+        if op == "==" and col in schema_types:
+            if unfit_values([val], _parquet_kind(schema_types[col])):
+                scan_ids.add(rule_id)
+            elif schema_types[col] == "float32" and type(val) in (int, float):
+                try:
+                    val = struct.unpack("<f", struct.pack("<f", val))[0]
+                except OverflowError:
+                    scan_ids.add(rule_id)
+        fitted.append((rule_id, col, op, val))
+    predicates = fitted
+
     def decide(col, op, val, rule_id) -> Decision:
         # If column doesn't exist in schema, skip to Polars for proper error (BUG-014)
         if op != "dtype" and col not in schema_names_set:
+            return "unknown"
+        if rule_id in scan_ids:
             return "unknown"
         # The not_null_when proof ignores the condition, whose column is val.
         if op == "not_null_when" and val not in schema_names_set:
@@ -505,8 +545,8 @@ def preplan_single_parquet(
         for i, per_col in enumerate(rg_stats):
             # Keep if ANY unknown predicate "may overlap"
             keep = False
-            for _, col, op, val in unknown_preds:
-                verdict = _verdict_overlaps(op, val, per_col.get(col))
+            for rid, col, op, val in unknown_preds:
+                verdict = None if rid in scan_ids else _verdict_overlaps(op, val, per_col.get(col))
                 # Verdict True  -> overlaps; Verdict None -> unknown -> keep to be safe
                 if verdict is True or verdict is None:
                     keep = True

@@ -239,6 +239,9 @@ class RuleExecutionPlan:
 
         # Build rule_id -> severity mapping for predicates
         rule_severity_map = self._build_severity_map()
+        frame_errors = {
+            getattr(r, "rule_id", r.name): getattr(r, "frame_error", None) for r in self.rules
+        }
         available_cols = set(df.columns)
         rule_tally_map = rule_tally_map or {}
 
@@ -275,6 +278,17 @@ class RuleExecutionPlan:
                             "missing_columns": missing_list,
                             "available_columns": sorted(available_cols)[:20],
                         },
+                    })
+                # Present columns the rule can't read as asked (a value list of
+                # another type) are a config error too.
+                elif (
+                    frame_errors.get(p.rule_id)
+                    and (error := frame_errors[p.rule_id](df)) is not None
+                ):
+                    missing_col_results.append({
+                        **error,
+                        "execution_source": "polars",
+                        "severity": rule_severity_map.get(p.rule_id, "blocking"),
                     })
                 else:
                     valid_predicates.append(p)

@@ -102,6 +102,14 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
             return f"{self._esc(params.schema)}.{self._esc(params.table)}"
         raise ValueError("Handle has neither table_ref nor db_params")
 
+    def _column_kinds(self, conn, cursor, handle: DatasetHandle) -> dict[str, str | None]:
+        """From the declared types the SQL Server materializer loads columns as."""
+        from kontra.engine.materializers.sqlserver import _describe_result_types
+        from kontra.rule_defs.value_lists import polars_kind
+
+        types = _describe_result_types(conn, f"SELECT * FROM {self._get_table_reference(handle)}")
+        return {name: polars_kind(dtype) if dtype else None for name, dtype in types.items()}
+
     def _get_schema_and_table(self, handle: DatasetHandle) -> Tuple[str, str]:
         """
         Get schema and table name separately for custom SQL placeholder replacement.

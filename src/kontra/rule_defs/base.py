@@ -78,6 +78,15 @@ class BaseRule(ABC):
         """
         return False
 
+    def frame_error(self, df: "pl.DataFrame") -> dict[str, Any] | None:
+        """
+        A config-error result when the rule's columns exist but can't be read
+        the way its parameters ask (a value list of another type), else None.
+        The vectorized Polars pass asks it beside the missing-column check,
+        before it runs the rule's predicate.
+        """
+        return None
+
     def _get_required_param(self, key: str, param_type: type = str) -> Any:
         """
         Get a required parameter, raising a clear error if missing or wrong type.
@@ -180,6 +189,32 @@ class BaseRule(ABC):
                 "missing_columns": missing_list,
                 "available_columns": available_list[:20],  # Limit for readability
             },
+        }
+
+    def _check_values(
+        self, df: "pl.DataFrame", column: str, values: list[Any]
+    ) -> dict[str, Any] | None:
+        """
+        Check that a value list can be compared with a column (see value_lists).
+
+        Returns a config-error failure, like a missing column's, when some
+        values are of another kind than the column; None when they fit.
+        """
+        from kontra.rule_defs.value_lists import polars_kind, unfit_message, unfit_values
+        from kontra.state.types import FailureMode
+
+        dtype = df.schema[column]
+        kind = polars_kind(dtype)
+        unfit = unfit_values(values, kind)
+        if not unfit:
+            return None
+        return {
+            "rule_id": getattr(self, "rule_id", self.name),
+            "passed": False,
+            "failed_count": all_rows_failed(df),
+            "message": unfit_message(column, kind, unfit),
+            "failure_mode": str(FailureMode.CONFIG_ERROR),
+            "details": {"column": column, "column_type": str(dtype)},
         }
 
     def to_sql_filter(self, dialect: str = "postgres") -> str | None:

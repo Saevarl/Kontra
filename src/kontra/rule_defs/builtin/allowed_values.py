@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 from kontra.rule_defs.base import BaseRule
 from kontra.rule_defs.registry import register_rule
 from kontra.rule_defs.predicates import Predicate
+from kontra.rule_defs.value_lists import is_in
 from kontra.state.types import FailureMode
 
 @register_rule("allowed_values", _builtin=True)
@@ -31,8 +32,8 @@ class AllowedValuesRule(BaseRule):
         column = self.params["column"]
         values: Sequence[Any] = self.params["values"]
 
-        # Check column exists before accessing
-        col_check = self._check_columns(df, {column})
+        # Check column exists, and that the values fit it, before accessing
+        col_check = self._check_columns(df, {column}) or self.frame_error(df)
         if col_check is not None:
             return col_check
 
@@ -43,7 +44,8 @@ class AllowedValuesRule(BaseRule):
         # is_in returns NULL for NULL values, fill_null decides if NULL is violation
         # If NULL is in allowed values, NULL should NOT be a violation (fill_null(False))
         # If NULL is not allowed, NULL IS a violation (fill_null(True))
-        mask = (~df[column].is_in(list(values))).fill_null(not null_allowed)
+        in_list = is_in(df[column], values)
+        mask = (~in_list).fill_null(not null_allowed)
         values_str = self._format_values_list(values)
         res = super()._failures(df, mask, f"{column} value not in [{values_str}]")
         res["rule_id"] = self.rule_id
@@ -51,11 +53,16 @@ class AllowedValuesRule(BaseRule):
         # Add detailed explanation for failures
         if res["failed_count"] > 0:
             res["failure_mode"] = str(FailureMode.NOVEL_CATEGORY)
-            res["details"] = self._explain_failure(df, column, allowed_set)
+            res["details"] = self._explain_failure(df, column, in_list, allowed_set)
 
         return res
 
-    def _explain_failure(self, df: pl.DataFrame, column: str, allowed: set) -> Dict[str, Any]:
+    def frame_error(self, df: pl.DataFrame) -> dict[str, Any] | None:
+        return self._check_values(df, self.params["column"], self.params["values"])
+
+    def _explain_failure(
+        self, df: pl.DataFrame, column: str, in_list: pl.Series, allowed: set
+    ) -> Dict[str, Any]:
         """Generate detailed failure explanation."""
         import polars as pl
 
@@ -63,7 +70,7 @@ class AllowedValuesRule(BaseRule):
 
         # Find unexpected values and their counts
         unexpected = (
-            df.filter(~col.is_in(list(allowed)) & col.is_not_null())
+            df.filter(~in_list & col.is_not_null())
             .group_by(column)
             .agg(pl.len().alias("count"))
             .sort("count", descending=True)
@@ -118,8 +125,12 @@ class AllowedValuesRule(BaseRule):
         def _expr():
             import polars as pl
 
+            # The list takes the column's type, which only the data knows.
+            in_list = pl.col(column).map_batches(
+                lambda s: is_in(s, values), return_dtype=pl.Boolean
+            )
             # If NULL is allowed, don't treat NULL as violation
-            return (~pl.col(column).is_in(values)).fill_null(not null_allowed)
+            return (~in_list).fill_null(not null_allowed)
 
         return Predicate(
             rule_id=self.rule_id,
