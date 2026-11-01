@@ -188,13 +188,9 @@ class DtypeRule(BaseRule):
                 "message": "Missing required 'column' parameter for dtype rule",
             }
 
-        if column not in df.columns:
-            return {
-                "rule_id": self.rule_id,
-                "passed": False,
-                "failed_count": int(df.height),
-                "message": f"Column '{column}' not found for dtype check",
-            }
+        col_check = self._check_columns(df, {column})
+        if col_check is not None:
+            return col_check
 
         label, allowed = self._normalize_expected(str(expected_type) if expected_type is not None else "")
         if allowed is None:

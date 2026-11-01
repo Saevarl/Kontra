@@ -184,7 +184,7 @@ def preplan_clickhouse(
         ch_type = col_types.get(column)
 
         if op in ("not_null", "not_null_when"):
-            if ch_type is None:
+            if ch_type is None or (op == "not_null_when" and value not in col_types):
                 rule_decisions[rule_id] = "unknown"
             elif not _is_nullable_type(ch_type):
                 # Non-Nullable column CANNOT contain NULL — proven pass, no scan.
