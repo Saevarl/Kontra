@@ -3,12 +3,23 @@
 SQL Server backend for Scout profiler.
 
 Uses system metadata views for efficient profiling.
+
+The profiler requests percentiles as the aggregate
+``PERCENTILE_CONT(<fraction or ARRAY[...]>) WITHIN GROUP (ORDER BY c)``. SQL
+Server has PERCENTILE_CONT only as a window function, which cannot sit in the
+stats aggregate, so those expressions are computed in one separate query for
+all columns (see ``_percentile_sql``). The result is exact, with the linear
+interpolation PostgreSQL uses, at every table size: ``interrogate`` is exact
+on every backend, and APPROX_PERCENTILE_CONT (2022+) would make SQL Server's
+the only approximate percentiles, with nothing in the profile saying so.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import random
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from kontra.connectors.handle import DatasetHandle
@@ -41,6 +52,56 @@ def _get_db_error():
     return _DbErrors
 
 
+# A bracket-quoted identifier, as produced by SqlServerBackend.esc_ident.
+_IDENT = r"\[(?:[^\]]|\]\])*\]"
+
+_PERCENTILE_RE = re.compile(
+    r"\s*PERCENTILE_CONT\(\s*(ARRAY\[[^\]]*\]|[0-9.]+)\s*\)\s+WITHIN\s+GROUP\s*\(\s*"
+    rf"ORDER\s+BY\s+({_IDENT})\s*\)\s+AS\s+({_IDENT})\s*",
+    re.IGNORECASE,
+)
+
+
+def _percentile_sql(columns: list[str], fractions: list[float], source: str) -> str:
+    """Exact PERCENTILE_CONT of each column, all columns in one query.
+
+    The columns are unpivoted into (column index, value) rows and numbered
+    within each column, so one sort serves every column and fraction; on a
+    2M-row, 6-column table this ran in about a tenth of the time of
+    ``PERCENTILE_CONT(...) OVER (PARTITION BY ...)`` over the same rows, and
+    a third of one ``OVER ()`` per column and fraction. Values are read as
+    FLOAT, the type PERCENTILE_CONT returns, which also keeps the
+    interpolation clear of DECIMAL and MONEY overflow.
+
+    For n sorted non-null values and fraction f, the position is
+    p = f * (n - 1); the result interpolates between the values at floor(p)
+    and ceil(p). A column with no non-null values has no row.
+    Returns rows of (column index, one value per fraction).
+    """
+    values = ", ".join(f"({i}, CAST({col} AS FLOAT))" for i, col in enumerate(columns))
+    outs = []
+    for f in fractions:
+        # FLOAT: a bare 0.333 is a DECIMAL literal, and DECIMAL's precision
+        # rules round the interpolation weight (p33.3 of [0, 1000] gave 300).
+        pos = f"CAST({f!r} AS FLOAT) * (q.n - 1)"
+        lo = f"MAX(CASE WHEN q.rn = FLOOR({pos}) THEN q.val END)"
+        hi = f"MAX(CASE WHEN q.rn = CEILING({pos}) THEN q.val END)"
+        outs.append(f"{lo} + ({pos} - FLOOR({pos})) * ({hi} - {lo})")
+    return (
+        f"SELECT q.col, {', '.join(outs)} FROM ("
+        "SELECT v.col, v.val, "
+        "ROW_NUMBER() OVER (PARTITION BY v.col ORDER BY v.val) - 1 AS rn, "
+        "COUNT_BIG(*) OVER (PARTITION BY v.col) AS n "
+        f"FROM {source} CROSS APPLY (VALUES {values}) AS v(col, val) "
+        "WHERE v.val IS NOT NULL"
+        ") AS q GROUP BY q.col, q.n"
+    )
+
+
+def _unescape_ident(ident: str) -> str:
+    return ident[1:-1].replace("]]", "]")
+
+
 class SqlServerBackend:
     """
     SQL Server-based profiler backend.
@@ -63,6 +124,10 @@ class SqlServerBackend:
         self.handle = handle
         self.params: SqlServerConnectionParams = handle.db_params
         self.sample_size = sample_size
+        # TABLESAMPLE picks different pages on every query unless seeded. The
+        # stats and percentile queries share this seed so the median comes
+        # from the same sample as the min, max and counts.
+        self._sample_seed = random.randint(1, 2**31 - 1)
         self._conn = None
         self._schema: Optional[List[Tuple[str, str]]] = None
         # True when get_row_count returned a sys.dm_db_partition_stats estimate
@@ -170,32 +235,72 @@ class SqlServerBackend:
             cursor.close()
 
     def execute_stats_query(self, exprs: List[str]) -> Dict[str, Any]:
-        """Execute aggregation query."""
+        """Execute aggregation query.
+
+        PERCENTILE_CONT expressions are answered by a second query (see the
+        module docstring): a list for ``ARRAY[...]`` fractions, a number for a
+        single fraction, None for a column with no non-null values.
+        """
         if not exprs:
             return {}
 
-        exprs = self._widen_overflow_prone_aggregates(exprs)
+        percentiles = []
+        aggregates = []
+        for expr in exprs:
+            match = _PERCENTILE_RE.fullmatch(expr)
+            if match:
+                percentiles.append(match)
+            else:
+                aggregates.append(expr)
 
-        # Build query with optional sampling
-        table = self._qualified_table()
+        source = self._qualified_table()
         if self.sample_size:
-            # SQL Server sampling: TABLESAMPLE ROWS
-            sql = f"""
-                SELECT {', '.join(exprs)}
-                FROM {table}
-                TABLESAMPLE ({self.sample_size} ROWS)
-            """
-        else:
-            sql = f"SELECT {', '.join(exprs)} FROM {table}"
+            source += f" TABLESAMPLE ({self.sample_size} ROWS) REPEATABLE ({self._sample_seed})"
 
+        result: dict[str, Any] = {}
+        if aggregates:
+            aggregates = self._widen_overflow_prone_aggregates(aggregates)
+            cursor = self._conn.cursor()
+            try:
+                cursor.execute(f"SELECT {', '.join(aggregates)} FROM {source}")
+                row = cursor.fetchone()
+                col_names = [desc[0] for desc in cursor.description]
+                result = dict(zip(col_names, row, strict=True)) if row else {}
+            finally:
+                cursor.close()
+        if percentiles:
+            result.update(self._fetch_percentiles(percentiles, source))
+        return result
+
+    def _fetch_percentiles(
+        self, matches: list[re.Match[str]], source: str
+    ) -> dict[str, Any]:
+        """Run the percentile query for PERCENTILE_CONT expressions."""
+        specs = []
+        fractions: list[float] = []
+        for match in matches:
+            levels, col, alias = match.groups()
+            scalar = not levels.upper().startswith("ARRAY")
+            wanted = [float(x) for x in (levels if scalar else levels[6:-1]).split(",")]
+            for f in wanted:
+                if not 0 <= f <= 1:
+                    raise ValueError(f"Percentile fraction {f} must be between 0 and 1")
+                if f not in fractions:
+                    fractions.append(f)
+            specs.append((_unescape_ident(alias), col, wanted, scalar))
+
+        result: dict[str, Any] = {alias: None for alias, _, _, _ in specs}
+        sql = _percentile_sql([col for _, col, _, _ in specs], fractions, source)
         cursor = self._conn.cursor()
         try:
             cursor.execute(sql)
-            row = cursor.fetchone()
-            col_names = [desc[0] for desc in cursor.description]
-            return dict(zip(col_names, row, strict=True)) if row else {}
+            for row in cursor.fetchall():
+                alias, _, wanted, scalar = specs[int(row[0])]
+                values = [row[1 + fractions.index(f)] for f in wanted]
+                result[alias] = values[0] if scalar else values
         finally:
             cursor.close()
+        return result
 
     def fetch_top_values(self, column: str, limit: int) -> List[Tuple[Any, int]]:
         """Fetch top N most frequent values."""

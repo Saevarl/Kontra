@@ -88,6 +88,34 @@ def sql_profile_table(request):
         conn.close()
 
 
+def _scalar_percentiles(family, backend, column, levels):
+    """{level: PERCENTILE_CONT(level / 100)} from each database's own scalar SQL."""
+    col = backend.esc_ident(column)
+    if family == "sqlserver":
+        # SQL Server has PERCENTILE_CONT only as a window function.
+        cur = backend._conn.cursor()
+        try:
+            cur.execute(
+                "SELECT TOP 1 "
+                + ", ".join(
+                    f"PERCENTILE_CONT({level / 100}) WITHIN GROUP (ORDER BY {col}) OVER ()"
+                    for level in levels
+                )
+                + f" FROM {backend._qualified_table()}"
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+        return dict(zip(levels, row or [None] * len(levels)))
+    result = backend.execute_stats_query(
+        [
+            f"PERCENTILE_CONT({level / 100}) WITHIN GROUP (ORDER BY {col}) AS {backend.esc_ident('q' + str(i))}"
+            for i, level in enumerate(levels)
+        ]
+    )
+    return {level: result[f"q{i}"] for i, level in enumerate(levels)}
+
+
 def test_native_distributions_projection_and_new_calls(sql_profile_table):
     _family, uri, _cls, execute, name = sql_profile_table
     p = kontra.profile(uri, preset="interrogate", save=False)
@@ -114,27 +142,17 @@ def test_quantiles_keep_backend_exact_semantics(sql_profile_table, levels):
     family, uri, cls, _execute, _name = sql_profile_table
     p = kontra.profile(uri, preset="interrogate", columns=["x"], percentiles=levels, save=False)
     x = p.columns[0]
-    if family == "sqlserver":
-        assert x.numeric.median is None and x.numeric.percentiles == {}
-        return
     from kontra.connectors.handle import DatasetHandle
 
     backend = cls(DatasetHandle.from_uri(uri))
     backend.connect()
     try:
         # Scalar SQL is the old algorithm, independent of the new array decoder.
-        expected = backend.execute_stats_query(
-            [
-                f"PERCENTILE_CONT({level / 100}) WITHIN GROUP (ORDER BY x) AS {backend.esc_ident('q' + str(i))}"
-                for i, level in enumerate([50] + [v for v in levels if v != 50])
-            ]
-        )
+        expected = _scalar_percentiles(family, backend, "x", [50] + levels)
     finally:
         backend.close()
-    assert x.numeric.median == expected["q0"]
-    assert x.numeric.percentiles == {
-        f"p{v}": expected[f"q{i}"] for i, v in enumerate([v for v in levels if v != 50], 1)
-    }
+    assert x.numeric.median == expected[50]
+    assert x.numeric.percentiles == {f"p{v}": expected[v] for v in levels if v != 50}
 
 
 def test_combined_value_failure_uses_original_queries(sql_profile_table, monkeypatch):
@@ -250,8 +268,8 @@ def test_nonfinite_and_all_null_quantiles_match_scalar_sql(sql_profile_table):
     elif family == "clickhouse":
         values = "(nan),(inf),(-inf),(1),(3),(3),(NULL)"
     else:
-        # SQL Server FLOAT cannot represent IEEE non-finite values. Its null
-        # behavior and intentionally absent percentiles still need preservation.
+        # SQL Server FLOAT cannot represent IEEE non-finite values; its null
+        # handling is still checked.
         values = "(NULL),(NULL),(NULL)"
     execute("INSERT INTO sqlprof_regression (x) VALUES " + values)
     p = kontra.profile(uri, preset="interrogate", columns=["x", "nothing"], save=False)
@@ -265,21 +283,14 @@ def test_nonfinite_and_all_null_quantiles_match_scalar_sql(sql_profile_table):
         for name in ("x", "nothing"):
             c = p.get_column(name)
             if family == "sqlserver":
-                assert c.numeric.median is None and c.numeric.percentiles == {}
                 assert c.null_count == p.row_count
-                continue
-            expected = backend.execute_stats_query(
-                [
-                    f"PERCENTILE_CONT({level / 100}) WITHIN GROUP (ORDER BY {backend.esc_ident(name)}) AS {backend.esc_ident('q' + str(level))}"
-                    for level in (25, 50, 75, 99)
-                ]
-            )
+            expected = _scalar_percentiles(family, backend, name, [25, 50, 75, 99])
             actual = {
                 50: c.numeric.median,
                 **{i: c.numeric.percentiles.get(f"p{i}") for i in (25, 75, 99)},
             }
             for level, value in actual.items():
-                ref = expected[f"q{level}"]
+                ref = expected[level]
                 assert value == ref or (
                     value is not None and ref is not None and isnan(value) and isnan(ref)
                 )
@@ -290,8 +301,8 @@ def test_nonfinite_and_all_null_quantiles_match_scalar_sql(sql_profile_table):
 @pytest.mark.parametrize("values", ["(nan),(nan)", None])
 def test_no_finite_values_quantiles_match_scalar_sql(sql_profile_table, values):
     family, uri, cls, execute, _name = sql_profile_table
-    if family == "sqlserver":
-        pytest.skip("SQL Server profiles do not compute percentiles")
+    if family == "sqlserver" and values is not None:
+        pytest.skip("SQL Server FLOAT cannot store NaN")
     execute(
         "DELETE FROM sqlprof_regression"
         if family != "clickhouse"
@@ -310,16 +321,11 @@ def test_no_finite_values_quantiles_match_scalar_sql(sql_profile_table, values):
     backend = cls(DatasetHandle.from_uri(uri))
     backend.connect()
     try:
-        expected = backend.execute_stats_query(
-            [
-                f"PERCENTILE_CONT({level / 100}) WITHIN GROUP (ORDER BY x) AS q{level}"
-                for level in (25, 50, 75, 99)
-            ]
-        )
+        expected = _scalar_percentiles(family, backend, "x", [25, 50, 75, 99])
     finally:
         backend.close()
     c = p.get_column("x")
     actual = {50: c.numeric.median, **{i: c.numeric.percentiles.get(f"p{i}") for i in (25, 75, 99)}}
     for level, value in actual.items():
-        ref = expected[f"q{level}"]
+        ref = expected[level]
         assert value == ref or (value is not None and ref is not None and isnan(value) and isnan(ref))
