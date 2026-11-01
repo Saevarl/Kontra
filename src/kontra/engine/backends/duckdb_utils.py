@@ -21,18 +21,24 @@ def lit_str(s: str) -> str:
 # does: a header row always (DuckDB would guess, and a header-only file whose
 # names look like values, such as t/f, loses its column names); a quoted empty
 # field as an empty string, not NULL (only an unquoted empty field is NULL in
-# Polars); and '"' as the quote and escape character (DuckDB may sniff "'" from
-# fields like a lone apostrophe and then merge rows). The delimiter is still
-# sniffed. Keys are read_csv's Python keyword arguments.
+# Polars); '"' as the quote and escape character (DuckDB may sniff "'" from
+# fields like a lone apostrophe and then merge rows); and only the column types
+# Polars infers (DuckDB would read date-, time- and timestamp-looking text as
+# DATE, TIME and TIMESTAMP, which Polars keeps as strings). The delimiter is
+# still sniffed. Keys are read_csv's Python keyword arguments.
 CSV_READ_OPTIONS = {
     "header": True,
     "allow_quoted_nulls": False,
     "quotechar": '"',
     "escapechar": '"',
+    "auto_type_candidates": ["BOOLEAN", "BIGINT", "DOUBLE", "VARCHAR"],
 }
 
 # The same options under their SQL read_csv_auto parameter names.
-_CSV_SQL_OPTIONS = "header = true, allow_quoted_nulls = false, quote = '\"', escape = '\"'"
+_CSV_SQL_OPTIONS = (
+    "header = true, allow_quoted_nulls = false, quote = '\"', escape = '\"', "
+    "auto_type_candidates = ['BOOLEAN', 'BIGINT', 'DOUBLE', 'VARCHAR']"
+)
 
 
 def csv_read_sql(source: str) -> str:

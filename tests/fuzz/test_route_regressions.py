@@ -148,6 +148,23 @@ def test_lone_apostrophes_do_not_become_quotes(csv_mode, pushdown, tmp_path: Pat
     assert [(x.passed, x.failed_count) for x in result.rules] == [(False, 3), (True, 0)]
 
 
+def test_csv_dates_stay_text_on_every_route(tmp_path: Path):
+    """DuckDB read date- and timestamp-looking CSV text as DATE and TIMESTAMP,
+    so the two values below were equal there. Polars keeps both as strings, and
+    the shorter string sorts first, so ``d >= t`` fails on its one row."""
+    import kontra
+
+    path = tmp_path / "dates.csv"
+    path.write_text("d,t\n2000-01-01,2000-01-01 00:00:00\n")
+    got = {}
+    for csv_mode in ("auto", "duckdb", "parquet"):
+        for pushdown in ("on", "off"):
+            result = kontra.validate(str(path), rules=[r.compare("d", "t", ">=")], save=False,
+                                     csv_mode=csv_mode, pushdown=pushdown, tally=True)
+            got[csv_mode, pushdown] = (result.rules[0].passed, result.rules[0].failed_count)
+    assert got == {key: (False, 1) for key in got}
+
+
 def test_nan_bounds_are_rejected():
     """A NaN bound orders nothing; routes disagreed on what it meant."""
     from kontra.errors import RuleParameterError
