@@ -166,15 +166,6 @@ def check_csv(df: pl.DataFrame, rules: list, workdir: Path) -> list[str]:
     # not a route bug, so such frames are left out.
     if any(df[name].null_count() == df.height for name in df.columns):
         return []
-    # A CSV column's type is whatever its reader infers: DuckDB parses dates
-    # and timestamps, Polars keeps them as strings. Until that's settled, leave
-    # out temporal columns and dtype rules, which only measure the inference.
-    temporal = {name for name, dtype in df.schema.items() if dtype.is_temporal()}
-    df = df.drop(temporal)
-    rules = [rule for rule in rules if rule["name"] != "dtype"
-             and not temporal & {rule["params"].get(k) for k in ("column", "left", "right")}]
-    if not rules:
-        return []
     path = workdir / "data.csv"
     df.write_csv(path)
     runs = [run_route(name, route, df, str(path), rules, tally)
