@@ -34,7 +34,7 @@ except ImportError:
 from kontra.connectors.handle import DatasetHandle
 from kontra.engine.backends.duckdb_session import create_duckdb_connection
 from kontra.engine.backends.duckdb_utils import esc_ident as duckdb_esc_ident
-from kontra.engine.backends.duckdb_utils import lit_str
+from kontra.engine.backends.duckdb_utils import CSV_READ_OPTIONS, lit_str
 
 
 class DuckDBBackend:
@@ -279,7 +279,7 @@ class DuckDBBackend:
             # A SQL read_csv_auto view repeats dialect/schema inference for
             # every aggregate and value query. Bind the reader once for this
             # connection; each public profile() call still opens a fresh reader.
-            reader = self.con.read_csv(uri)
+            reader = self.con.read_csv(uri, **CSV_READ_OPTIONS)
             if not self.sample_size:
                 reader.create_view(self._view_name, replace=True)
                 return

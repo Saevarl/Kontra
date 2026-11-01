@@ -72,6 +72,8 @@ all = [
 dev = [
     "pytest>=8.4,<10",
     "pytest-cov>=7,<8",
+    # Route fuzzer (tests/fuzz).
+    "hypothesis>=6.100,<7",
     "ruff>=0.14,<0.17",
     # Required by conftest and pandas/MCP tests; [all] is backend-only.
     "numpy>=2.2,<3",

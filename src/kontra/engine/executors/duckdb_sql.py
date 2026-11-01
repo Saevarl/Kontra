@@ -28,7 +28,12 @@ _logger = get_logger(__name__)
 
 # --- Kontra Imports ---
 from kontra.engine.backends.duckdb_session import create_duckdb_connection
-from kontra.engine.backends.duckdb_utils import esc_ident, lit_str
+from kontra.engine.backends.duckdb_utils import (
+    CSV_READ_OPTIONS,
+    csv_read_sql,
+    esc_ident,
+    lit_str,
+)
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.uri_utils import is_azure_uri
 from kontra.engine.sql_utils import (
@@ -164,7 +169,7 @@ def _stage_csv_to_parquet_with_duckdb(
     # Ensure httpfs is loaded for remote URIs; COPY will stream CSV → Parquet.
     # We explicitly go through a SELECT to allow future CSV options if needed.
     con.execute(
-        f"COPY (SELECT * FROM read_csv_auto({lit_str(source_uri)})) "
+        f"COPY (SELECT * FROM {csv_read_sql(source_uri)}) "
         f"TO {lit_str(str(stage_path))} (FORMAT PARQUET)"
     )
     return str(stage_path), tmpdir
@@ -260,7 +265,7 @@ def _create_source_view(
             # A SQL text view reruns automatic detection for every query,
             # including LIMIT 0. This binding lives only for this connection;
             # every validation still reads the source and infers it afresh.
-            con.read_csv(handle.uri).create_view(view, replace=True)
+            con.read_csv(handle.uri, **CSV_READ_OPTIONS).create_view(view, replace=True)
             return None, None, "duckdb"
         except duckdb.Error:
             if mode == "duckdb":

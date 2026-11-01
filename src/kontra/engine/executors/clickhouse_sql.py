@@ -105,12 +105,10 @@ def _float_holds(op: str, left: str, right: str, left_nan: bool, right_nan: bool
     return f"NOT isNaN({left}) AND {cmp}"
 
 
-def _float_range(spec: dict[str, Any], family: str, nan_out_of_range: bool) -> Node | object:
-    """NULL or outside [min, max] on a float column, in Polars' order."""
+def _float_range(spec: dict[str, Any], family: str) -> Node | object:
+    """NULL, NaN or outside [min, max] on a float column, in Polars' order."""
     c = esc_ident(spec["column"], "clickhouse")
-    out: list[Node] = [IsNull(RawExpr(c))]
-    if nan_out_of_range:
-        out.append(RawExpr(f"isNaN({c})"))
+    out: list[Node] = [IsNull(RawExpr(c)), RawExpr(f"isNaN({c})")]
     for op, key in (("<", "min"), (">", "max")):
         if spec.get(key) is not None:
             bound = _float_literal(spec[key], family)
@@ -156,7 +154,7 @@ def _float_sql(spec: dict[str, Any], families: dict[str, str]) -> Node | object 
     if kind == "range":
         family = fam("column")
         # Polars' range rule counts NaN as out of range whatever the bounds.
-        return _float_range(spec, family, nan_out_of_range=True) if family in _FLOATS else None
+        return _float_range(spec, family) if family in _FLOATS else None
     if kind == "compare":
         left, right = fam("left"), fam("right")
         if left not in _FLOATS and right not in _FLOATS:
@@ -176,9 +174,8 @@ def _float_sql(spec: dict[str, Any], families: dict[str, str]) -> Node | object 
         when = _float_when(spec, fam("when_column"))
         target = None
         if kind == "conditional_range" and fam("column") in _FLOATS:
-            # Unlike range, Polars' conditional_range only compares: NaN is
-            # out of range when above a max.
-            target = _float_range(spec, fam("column"), nan_out_of_range=False)
+            # NaN is out of range whatever the bounds, as in range.
+            target = _float_range(spec, fam("column"))
         if when is _DEFER or target is _DEFER:
             return _DEFER
         if when is None and target is None:

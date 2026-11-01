@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, Set, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     import polars as pl
 
-from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.base import BaseRule, all_rows_failed
 from kontra.rule_defs.registry import register_rule
 from kontra.state.types import FailureMode
 
@@ -176,7 +176,7 @@ class DtypeRule(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": f"Unsupported dtype mode '{mode}'; only 'strict' is implemented.",
             }
 
@@ -184,7 +184,7 @@ class DtypeRule(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": "Missing required 'column' parameter for dtype rule",
             }
 
@@ -197,7 +197,7 @@ class DtypeRule(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": f"Invalid expected dtype '{expected_type}'",
             }
 
@@ -210,7 +210,7 @@ class DtypeRule(BaseRule):
         result: Dict[str, Any] = {
             "rule_id": self.rule_id,
             "passed": bool(passed),
-            "failed_count": 0 if passed else int(df.height),
+            "failed_count": 0 if passed else all_rows_failed(df),
             "message": "Passed" if passed else f"{column} expected {label}, found {self._dtype_label(actual)}",
         }
 

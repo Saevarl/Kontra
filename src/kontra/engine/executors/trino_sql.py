@@ -117,12 +117,13 @@ _CHAR_RULES = {
 # Integers up to 2^53 convert to double exactly, so both sides round alike.
 _EXACT_DOUBLE_INT = 2**53
 
-def _no_timestamps(rule_id: str, column: str, row_count: int) -> dict[str, Any]:
-    """Freshness with no non-NULL value: a failure counting every row, as in Polars."""
+def _no_timestamps(rule_id: str, column: str) -> dict[str, Any]:
+    """Freshness with no non-NULL value: one violation, as for stale data and
+    as in Polars."""
     return {
         "rule_id": rule_id,
         "passed": False,
-        "failed_count": row_count,
+        "failed_count": 1,
         "tally": False,
         "message": f"Column '{column}' has no non-null timestamps",
         "severity": "ERROR",
@@ -549,7 +550,7 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
         columns_of = {s["rule_id"]: s.get("column") for s, _ in specs}
         for rule_id, value in cells:
             if kinds.get(rule_id) == "freshness" and value == _NO_TIMESTAMPS:
-                results.append(_no_timestamps(rule_id, columns_of[rule_id], row_count))
+                results.append(_no_timestamps(rule_id, columns_of[rule_id]))
                 continue
             results += results_from_row(
                 [rule_id], (value,), is_exists=rule_id in fail_fast, rule_kinds=kinds
