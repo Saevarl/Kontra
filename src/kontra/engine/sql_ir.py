@@ -35,6 +35,19 @@ SQL_OP_MAP = {
     "!=": "<>",
 }
 
+# Polars' order for floats as SQL over a non-NULL pair: NaN equals NaN and is
+# above every number. {l}/{r} are the operands, {ln}/{rn} whether each is NaN.
+# SQL engines that follow IEEE compare NaN as false, so the float-aware
+# executors write comparisons out with this table.
+FLOAT_ORDER = {
+    "==": "({ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} = {r})",
+    "!=": "NOT (({ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} = {r}))",
+    "<": "(NOT {ln} AND {rn}) OR (NOT {ln} AND NOT {rn} AND {l} < {r})",
+    "<=": "{rn} OR (NOT {ln} AND {l} <= {r})",
+    ">": "({ln} AND NOT {rn}) OR (NOT {ln} AND NOT {rn} AND {l} > {r})",
+    ">=": "{ln} OR (NOT {rn} AND {l} >= {r})",
+}
+
 
 # =============================================================================
 # Identifier and Literal Escaping (dialect primitives)
