@@ -320,9 +320,7 @@ class StateBackend(ABC):
         # Default: get latest and attach empty annotations
         state = self.get_latest(contract_fingerprint) if run_id is None else None
         if state:
-            state.annotations = []
-            for rule in state.rules:
-                rule.annotations = []
+            self._attach_annotations_to_state(state, [])
         return state
 
     def get_history_with_annotations(
@@ -342,7 +340,5 @@ class StateBackend(ABC):
         """
         states = self.get_history(contract_fingerprint, limit=limit)
         for state in states:
-            state.annotations = []
-            for rule in state.rules:
-                rule.annotations = []
+            self._attach_annotations_to_state(state, [])
         return states

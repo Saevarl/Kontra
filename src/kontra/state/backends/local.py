@@ -411,9 +411,7 @@ class LocalStore(StateBackend):
         # Load annotations
         runs_dir = self._runs_dir(contract_fingerprint)
         if not runs_dir.exists():
-            state.annotations = []
-            for rule in state.rules:
-                rule.annotations = []
+            self._attach_annotations_to_state(state, [])
             return state
 
         # Find the corresponding run file to get run_id string
@@ -427,9 +425,7 @@ class LocalStore(StateBackend):
                 break
 
         if not run_id_str:
-            state.annotations = []
-            for rule in state.rules:
-                rule.annotations = []
+            self._attach_annotations_to_state(state, [])
             return state
 
         # Load annotations from JSONL
@@ -455,9 +451,7 @@ class LocalStore(StateBackend):
         runs_dir = self._runs_dir(contract_fingerprint)
         if not runs_dir.exists():
             for state in states:
-                state.annotations = []
-                for rule in state.rules:
-                    rule.annotations = []
+                self._attach_annotations_to_state(state, [])
             return states
 
         # Build ID to run_id_str mapping
@@ -472,9 +466,7 @@ class LocalStore(StateBackend):
         # Load annotations for each state
         for state in states:
             if state.id is None or state.id not in id_to_run_id:
-                state.annotations = []
-                for rule in state.rules:
-                    rule.annotations = []
+                self._attach_annotations_to_state(state, [])
                 continue
 
             run_id_str = id_to_run_id[state.id]
