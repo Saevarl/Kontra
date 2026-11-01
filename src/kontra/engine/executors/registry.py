@@ -37,7 +37,7 @@ def pick_executor(
         return None  # Nothing to push down
 
     # Iterate over registered constructors
-    for name, ctor in _EXECUTORS.items():
+    for ctor in _EXECUTORS.values():
         executor = ctor()  # Instantiate the executor
         try:
             if executor.supports(handle, sql_specs):
@@ -100,34 +100,34 @@ def register_executors_for_path(
         if database_type == "postgres":
             try:
                 from . import postgres_sql  # noqa: F401
-            except ImportError:
+            except ImportError as e:
                 raise ImportError(
                     "PostgreSQL support requires psycopg. "
                     "Install with: pip install 'psycopg[binary]'"
-                )
+                ) from e
         elif database_type == "sqlserver":
             try:
                 from . import sqlserver_sql  # noqa: F401
-            except ImportError:
+            except ImportError as e:
                 raise ImportError(
                     "SQL Server support requires pymssql. "
                     "Install with: pip install pymssql"
-                )
+                ) from e
         elif database_type == "clickhouse":
             try:
                 from . import clickhouse_sql  # noqa: F401
-            except ImportError:
+            except ImportError as e:
                 raise ImportError(
                     "ClickHouse support requires clickhouse-connect. "
                     "Install with: pip install 'kontra[clickhouse]'"
-                )
+                ) from e
         elif database_type == "trino":
             try:
                 from . import trino_sql  # noqa: F401
-            except ImportError:
+            except ImportError as e:
                 raise ImportError(
                     "Trino support requires trino. Install with: pip install 'kontra[trino]'"
-                )
+                ) from e
         else:
             raise ValueError(f"Unknown database_type: {database_type}")
 

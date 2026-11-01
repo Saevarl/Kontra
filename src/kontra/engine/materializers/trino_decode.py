@@ -117,7 +117,7 @@ class FrameDecoder:
         self._names = names
         self._dtypes = dtypes
         self._mappers = mappers
-        self._fast = [_fast_decoder(t, d) for t, d in zip(types, dtypes)]
+        self._fast = [_fast_decoder(t, d) for t, d in zip(types, dtypes, strict=True)]
         self._parts: list[dict[str, pl.Series]] = []
         # Columns without a fast decode keep the client's objects until the
         # end, so their dtype is inferred over every row, as before.
@@ -130,7 +130,7 @@ class FrameDecoder:
 
         # What a fast decode raises on values it doesn't take as they are.
         refused = (pl.exceptions.PolarsError, TypeError, ValueError, OverflowError, KeyError)
-        columns = list(zip(*rows)) if rows else [() for _ in self._names]
+        columns = list(zip(*rows, strict=True)) if rows else [() for _ in self._names]
         part: dict[str, pl.Series] = {}
         for i, values in enumerate(columns):
             values = list(values)
@@ -173,7 +173,7 @@ class FrameDecoder:
             # Python's astimezone, so an instant beyond year 1 or 9999 in UTC
             # ('9999-12-31 23:59:59 -05:00') loads, as it did before.
             offsets = [None if v is None else v.utcoffset() for v in objects]
-            if all(o is not None for v, o in zip(objects, offsets) if v is not None):
+            if all(o is not None for v, o in zip(objects, offsets, strict=True) if v is not None):
                 wall = pl.Series([v if v is None else v.replace(tzinfo=None) for v in objects])
                 s = wall.cast(pl.Datetime("us")) - pl.Series(offsets, dtype=pl.Duration("us"))
                 return s.dt.replace_time_zone("UTC").cast(dtype).alias(name)
@@ -186,7 +186,9 @@ class FrameDecoder:
         import polars as pl
 
         if self.rows == 0:
-            return pl.DataFrame(schema={n: d or pl.Utf8 for n, d in zip(self._names, self._dtypes)})
+            return pl.DataFrame(
+                schema={n: d or pl.Utf8 for n, d in zip(self._names, self._dtypes, strict=True)}
+            )
         columns: list[pl.Series] = []
         for i, name in enumerate(self._names):
             if i in self._objects:

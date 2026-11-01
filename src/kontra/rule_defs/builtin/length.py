@@ -18,7 +18,7 @@ At least one of `min` or `max` must be specified.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import polars as pl
@@ -57,7 +57,7 @@ class LengthRule(BaseRule):
         # Validate at least one bound is provided
         if self._min_len is None and self._max_len is None:
             raise ValueError(
-                f"Rule 'length' requires at least one of 'min' or 'max' parameters"
+                "Rule 'length' requires at least one of 'min' or 'max' parameters"
             )
 
         # Validate min <= max if both provided

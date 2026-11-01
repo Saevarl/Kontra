@@ -387,7 +387,7 @@ class TrinoBackend:
             # which aborts a caller's transaction.
             rows = cur.fetchall()
             col_names = [desc[0] for desc in cur.description]
-            return dict(zip(col_names, rows[0])) if rows else {}
+            return dict(zip(col_names, rows[0], strict=True)) if rows else {}
         finally:
             cur.close()
 

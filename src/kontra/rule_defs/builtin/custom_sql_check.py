@@ -49,9 +49,9 @@ class CustomSQLCheck(BaseRule):
         if sql and "{table}" not in sql:
             import warnings
             warnings.warn(
-                f"custom_sql_check SQL should use {{table}} placeholder instead of "
-                f"hardcoded table names. Without it, remote execution (PostgreSQL/SQL Server) "
-                f"will fail. Example: SELECT * FROM {{table}} WHERE balance < 0",
+                "custom_sql_check SQL should use {table} placeholder instead of "
+                "hardcoded table names. Without it, remote execution (PostgreSQL/SQL Server) "
+                "will fail. Example: SELECT * FROM {table} WHERE balance < 0",
                 UserWarning,
                 stacklevel=4,
             )

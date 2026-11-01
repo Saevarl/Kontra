@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import polars as pl
     import pyarrow.fs as pafs
     from kontra.connectors.handle import DatasetHandle
     from kontra.engine.types import CompilationContext, PreplanResult, PushdownResult

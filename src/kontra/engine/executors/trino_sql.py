@@ -543,8 +543,8 @@ class TrinoSqlExecutor(DatabaseSqlExecutor):
 
         fused_columns, fused_row = outputs[0]
         row_count = int(fused_row[-1] or 0)
-        cells = list(zip(fused_columns[:-1], fused_row[:-1]))
-        for spec, (_, row) in zip(grouped, outputs[1 : 1 + len(grouped)]):
+        cells = list(zip(fused_columns[:-1], fused_row[:-1], strict=True))
+        for spec, (_, row) in zip(grouped, outputs[1 : 1 + len(grouped)], strict=True):
             cells.append((spec["rule_id"], row[0]))
         results: list[dict[str, Any]] = []
         columns_of = {s["rule_id"]: s.get("column") for s, _ in specs}

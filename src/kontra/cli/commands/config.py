@@ -132,7 +132,7 @@ def register(app: typer.Typer) -> None:
             from kontra.errors import format_error_for_cli
 
             typer.secho(f"Error: {format_error_for_cli(e)}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         typer.secho("Effective configuration", fg=typer.colors.CYAN)
         if env:

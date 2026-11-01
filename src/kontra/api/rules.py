@@ -286,7 +286,7 @@ def regex(
         re.compile(pattern)
     except re.error as e:
         pos_info = f" at position {e.pos}" if e.pos is not None else ""
-        raise ValueError(f"Invalid regex pattern{pos_info}: {e.msg}\n  Pattern: {pattern}")
+        raise ValueError(f"Invalid regex pattern{pos_info}: {e.msg}\n  Pattern: {pattern}") from None
     return _build_rule("regex", {"column": column, "pattern": pattern}, severity, id, tally, context)
 
 

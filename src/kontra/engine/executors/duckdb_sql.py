@@ -14,7 +14,6 @@ light introspection. The engine may reuse staged Parquet for materialization
 to avoid a second CSV parse.
 """
 
-import logging
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -37,7 +36,6 @@ from kontra.engine.backends.duckdb_utils import (
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.uri_utils import is_azure_uri
 from kontra.engine.sql_utils import (
-    esc_ident as sql_esc_ident,
     # Aggregate functions (exact counts)
     agg_min_rows,
     agg_max_rows,
@@ -73,7 +71,6 @@ from kontra.engine.sql_utils import (
     # Utilities
     results_from_row,
     SQL_OP_MAP,
-    RULE_KIND_TO_FAILURE_MODE,
 )
 
 def _has_s3fs() -> bool:
