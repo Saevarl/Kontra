@@ -186,10 +186,10 @@ class SqlServerMaterializer(BaseMaterializer):
             execute_with_params(
                 cursor,
                 """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = %s AND table_name = %s
-                ORDER BY ordinal_position
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                ORDER BY ORDINAL_POSITION
                 """,
                 (self._schema_name, self._table_name),
             )

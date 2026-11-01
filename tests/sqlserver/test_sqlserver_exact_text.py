@@ -98,6 +98,36 @@ _CASES = {
 }
 
 
+# case -> (passed, failed_count) by Polars' exact-text rules, worked out by hand.
+# CHAR(4)/NCHAR(4) values carry their padding: 'ab' is 'ab  ', and NCHAR(4)
+# holding an emoji (two UTF-16 units) is the emoji plus two spaces.
+_EXPECTED = {
+    "unique_nvarchar": (True, 0),
+    "unique_varchar": (True, 0),
+    "unique_char": (True, 0),
+    "allowed_case_and_space": (False, 2),
+    "allowed_emoji": (True, 0),
+    "allowed_char_padding": (False, 1),
+    "allowed_null_listed": (False, 1),
+    "disallowed_case_and_space": (True, 0),
+    "compare_eq": (False, 2),
+    "compare_ne": (True, 0),
+    "compare_lt_to_polars": (True, 0),
+    "when_eq_space": (True, 0),
+    "when_ne_case": (False, 1),
+    "when_gt_to_polars": (False, 1),
+    "range_text_to_polars": (True, 0),
+    "when_range_text_to_polars": (True, 0),
+    "length_emoji": (True, 0),
+    "length_nchar_emoji": (False, 1),
+    "starts_with_case": (False, 1),
+    "ends_with_case": (False, 1),
+    "ends_with_varchar_space": (False, 1),
+    "ends_with_char_padding": (False, 1),
+    "contains_emoji": (True, 0),
+}
+
+
 def _connect():
     pymssql = pytest.importorskip("pymssql")
     try:
@@ -148,6 +178,7 @@ def _run(name: str, rule, pushdown: str, tally: bool):
 def test_pushdown_matches_polars(make_table, case):
     _conn, make = make_table
     rule, rows, tier = _CASES[case]
+    passed, failed_count = _EXPECTED[case]
     name = make(rows)
     for tally in (True, False):
         sql = _run(name, rule, "on", tally)
@@ -155,9 +186,10 @@ def test_pushdown_matches_polars(make_table, case):
 
         assert sql.source == tier, f"tally={tally}"
         assert polars.source == "polars"
-        assert sql.passed == polars.passed, f"tally={tally}"
-        if tally:
-            assert sql.failed_count == polars.failed_count
+        for r in (sql, polars):
+            assert r.passed is passed, (r.source, tally)
+            if tally:
+                assert r.failed_count == failed_count, r.source
 
 
 @pytest.mark.integration
@@ -200,3 +232,37 @@ def test_distinct_count_and_unique_keep_nul_and_case_apart(make_table):
         assert sql.source == "sql"
         assert sql.passed, f"tally={tally}"
         assert _run(name, rules.unique("s"), "off", tally).passed
+
+
+@pytest.mark.integration
+def test_case_sensitive_database_keeps_text_columns_apart():
+    """In a case-sensitive database, the metadata lookups must resolve
+    INFORMATION_SCHEMA and tell column ``s`` (text) from ``S`` (float), on
+    every route and in profiles."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute(
+        "IF DB_ID('kontra_test_cs') IS NULL "
+        "CREATE DATABASE kontra_test_cs COLLATE Latin1_General_100_CS_AS"
+    )
+    cur.execute("USE kontra_test_cs")
+    name = f"kontra_exact_text_{uuid.uuid4().hex[:10]}"
+    cur.execute(f"CREATE TABLE dbo.{name} (s NVARCHAR(10), S FLOAT)")
+    try:
+        cur.executemany(f"INSERT INTO dbo.{name} VALUES (%s, %s)", [("a", 1.0), ("A", 1.0)])
+        uri = f"mssql://{_USER}:{_PASSWORD}@localhost:{_PORT}/kontra_test_cs/dbo.{name}"
+        # Hand-worked: 'a'/'A' are distinct text; S holds 1.0 twice.
+        for column, passed, failed_count in (("s", True, 0), ("S", False, 1)):
+            for pushdown, tier in (("on", "sql"), ("off", "polars")):
+                for tally in (True, False):
+                    result = kontra.validate(uri, rules=[rules.unique(column)], save=False,
+                                             preplan="off", pushdown=pushdown, tally=tally)
+                    (r,) = result.rules
+                    assert r.source == tier, (column, pushdown, tally, r.message)
+                    assert r.passed is passed, (column, pushdown, tally)
+                    if tally:
+                        assert r.failed_count == failed_count, (column, pushdown)
+        kontra.profile(uri)  # reads the column list the same way
+    finally:
+        cur.execute(f"DROP TABLE dbo.{name}")
+        conn.close()

@@ -113,7 +113,7 @@ def _text_in(col_sql: str, values: list, negate: bool) -> Node:
 def _text_when(spec: dict[str, Any], texts: set) -> Node | object | None:
     """A conditional rule's when clause on a text column; None if the column isn't one."""
     column, op, value = spec["when_column"], spec["when_op"], spec.get("when_value")
-    if column.lower() not in texts or not isinstance(value, str):
+    if column not in texts or not isinstance(value, str):
         return None  # IS [NOT] NULL, or a number the server converts the text to
     if op not in ("==", "!="):
         return _DEFER
@@ -131,7 +131,7 @@ def _text_sql(spec: dict[str, Any], texts: set) -> Node | object | None:
 
     def is_text(key: str) -> bool:
         col = spec.get(key)
-        return isinstance(col, str) and col.lower() in texts
+        return isinstance(col, str) and col in texts
 
     def esc(key: str) -> str:
         return esc_ident(spec[key], "sqlserver")
@@ -279,19 +279,23 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
         raise ValueError("Handle has neither table_ref nor db_params")
 
     def _text_columns(self, cursor, handle: DatasetHandle) -> set:
-        """Lowercase names of the table's text columns, from information_schema."""
+        """Names of the table's text columns, from INFORMATION_SCHEMA.
+
+        Upper-case identifiers and exact names, so a case-sensitive database
+        resolves the view and keeps columns ``s`` and ``S`` apart.
+        """
         schema, table_name = self._get_schema_and_table(handle)
         execute_with_params(
             cursor,
             """
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = %s AND table_name = %s
+            SELECT COLUMN_NAME, DATA_TYPE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
             """,
             (schema, table_name),
         )
         rows = cursor.fetchall()
-        return {name.lower() for name, data_type in rows if data_type.lower() in _TEXT_TYPES}
+        return {name for name, data_type in rows if data_type.lower() in _TEXT_TYPES}
 
     def execute(
         self,
@@ -430,10 +434,10 @@ class SqlServerSqlExecutor(DatabaseSqlExecutor):
                 execute_with_params(
                     cursor,
                     """
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_schema = %s AND table_name = %s
-                    ORDER BY ordinal_position
+                    SELECT COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                    ORDER BY ORDINAL_POSITION
                     """,
                     (schema, table_name),
                 )
