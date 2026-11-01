@@ -81,12 +81,12 @@ def unfit_values(values: Iterable[Any], column_kind: str | None) -> list[Any]:
     want = _ACCEPTS.get(column_kind or "")
     if want is None:
         return []
-    out = []
-    for v in values:
-        kind = _value_kind(v)
-        if kind is not None and kind != want:
-            out.append(v)
-    return out
+    values = list(values)
+    kinds = [_value_kind(v) for v in values]
+    # Beside a number, Polars builds the list as numbers and True/False as
+    # 1/0, so [1, 2, True] compares with a number column.
+    fits = {want, "boolean"} if want == "number" and "number" in kinds else {want}
+    return [v for v, kind in zip(values, kinds, strict=True) if kind is not None and kind not in fits]
 
 
 def polars_kind(dtype: pl.DataType) -> str | None:

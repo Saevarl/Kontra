@@ -60,6 +60,9 @@ CASES = [
     ("allowed-float32", float32([0.1]), r.allowed_values("h", [0.1]), True),
     ("disallowed-float32", float32([0.1]), r.disallowed_values("h", [0.1]), False),
     ("allowed-integral-float-on-int", frame(i=[5]), r.allowed_values("i", [5.0]), True),
+    # Beside a number, True is 1: valid on main on every route, so not a config error.
+    ("allowed-int-and-bool-on-int", frame(i=[1, 2]), r.allowed_values("i", [2, True]), True),
+    ("disallowed-int-and-bool-on-int", frame(i=[1, 3]), r.disallowed_values("i", [2, True]), False),
     # Ints and floats in one list: Polars took the list's type from the first.
     ("allowed-mixed-numbers-on-float", frame(f=[1.0, 2.5]), r.allowed_values("f", [1, 2.5]), True),
     # A list of another type than its column is a config error (see
