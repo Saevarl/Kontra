@@ -143,8 +143,7 @@ def test_when_literal_cast_to_float32(table):
 
 
 def test_conditional_range_float_target(table):
-    # Polars' conditional_range only compares: NaN is out of range above a max,
-    # not below a min.
+    # NaN is out of range whatever the bounds, as in range.
     _load(table, [{"f": "nan", "h": "nan", "i": "1"}, {"f": "-0.", "h": "0.1", "i": "1"}])
     _assert_agree([
         R.conditional_range("f", "i == 1", min=0, id="f_min"),

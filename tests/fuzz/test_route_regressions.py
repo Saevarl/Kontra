@@ -65,8 +65,6 @@ CASES = [
 # Cases still open on one backend, some fixed on their own branches. Drop an entry
 # when its fix lands; the case then runs there too.
 OPEN = {
-    ("dtype-mismatch-empty-table", "postgres"): "fix-materializer-column-types",
-    ("dtype-mismatch-empty-table", "sqlserver"): "fix-materializer-column-types",
     # ClickHouse IN keeps -0.0 apart from 0.0 (SELECT -0. IN (0) is 0). Open.
     ("disallowed-negative-zero", "clickhouse"): "open: ClickHouse IN on -0.0",
     # Polars' is_in compares single-precision values with the list as doubles
