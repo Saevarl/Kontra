@@ -62,12 +62,13 @@ CASES = [
 ]
 
 
-# Cases still open on one backend, fixed on their own branches. Drop an entry
+# Cases still open on one backend, some fixed on their own branches. Drop an entry
 # when its fix lands; the case then runs there too.
 OPEN = {
     ("dtype-mismatch-empty-table", "postgres"): "fix-materializer-column-types",
     ("dtype-mismatch-empty-table", "sqlserver"): "fix-materializer-column-types",
-    ("disallowed-negative-zero", "clickhouse"): "clickhouse-float-semantics",
+    # ClickHouse IN keeps -0.0 apart from 0.0 (SELECT -0. IN (0) is 0). Open.
+    ("disallowed-negative-zero", "clickhouse"): "open: ClickHouse IN on -0.0",
     # Polars' is_in compares single-precision values with the list as doubles
     # (a Float32 column locally, REAL/Float32 values from pymssql and ClickHouse),
     # while SQL casts the literal to the column type. Predates this suite;
