@@ -11,13 +11,14 @@ if TYPE_CHECKING:
 
 # --- Kontra Imports ---
 from kontra.engine.backends.duckdb_utils import (
+    csv_read_sql,
     esc_ident,
     lit_str,
 )
 from kontra.connectors.handle import DatasetHandle
 from kontra.connectors.uri_utils import is_azure_uri
 
-from .base import BaseMaterializer  # Import from new base file
+from .base import BaseMaterializer, present_columns
 from .registry import register_materializer
 
 
@@ -72,11 +73,8 @@ class DuckDBMaterializer(BaseMaterializer):
         """
         import duckdb
 
-        read_fn = self._get_read_function()
         try:
-            cur = self.con.execute(
-                f"SELECT * FROM {read_fn}({lit_str(self.source)}) LIMIT 0"
-            )
+            cur = self.con.execute(f"SELECT * FROM {self._read_call()} LIMIT 0")
         except duckdb.Error as e:
             _raise_if_azure_error(self.handle, e)
             raise
@@ -92,16 +90,21 @@ class DuckDBMaterializer(BaseMaterializer):
         # Route through Arrow for consistent, low-copy materialization.
         import pyarrow as pa  # noqa: F401
 
-        cols_sql = (
-            ", ".join(esc_ident(c) for c in (columns or [])) if columns else "*"
-        )
-        read_func = self._get_read_function()
+        def select(cols: list[str] | None):
+            cols_sql = ", ".join(esc_ident(c) for c in cols) if cols else "*"
+            query = f"SELECT {cols_sql} FROM {self._read_call()}"
+            return self.con.execute(query).fetch_arrow_table()
 
         t0 = time.perf_counter()
-        query = f"SELECT {cols_sql} FROM {read_func}({lit_str(self.source)})"
         try:
-            cur = self.con.execute(query)
-            table = cur.fetch_arrow_table()
+            try:
+                table = select(columns)
+            except duckdb.BinderException:
+                if not columns:
+                    raise
+                # A missing column fails the projection. Reading the schema
+                # only then keeps the usual load to one remote query.
+                table = select(present_columns(columns, self.schema()))
         except duckdb.Error as e:
             _raise_if_azure_error(self.handle, e)
             raise
@@ -124,6 +127,13 @@ class DuckDBMaterializer(BaseMaterializer):
         return self._last_io_debug
 
     # ---------- Internals ----------
+
+    def _read_call(self) -> str:
+        """The table function call that reads the source."""
+        read_fn = self._get_read_function()
+        if read_fn == "read_csv_auto":
+            return csv_read_sql(self.source)
+        return f"{read_fn}({lit_str(self.source)})"
 
     def _get_read_function(self) -> str:
         """

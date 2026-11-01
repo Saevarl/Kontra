@@ -230,7 +230,7 @@ class DatasetProfile:
             for w in self.warnings:
                 lines.append(f"  Warning: {w}")
         lines.append(f"  Duration: {self.profile_duration_ms}ms")
-        lines.append(f"  Columns:")
+        lines.append("  Columns:")
         for col in self.columns[:10]:
             # Build concise column summary
             parts = [col.dtype]

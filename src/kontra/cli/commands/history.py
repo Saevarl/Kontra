@@ -97,11 +97,11 @@ def register(app: typer.Typer) -> None:
 
             msg = format_error_for_cli(e)
             typer.secho(f"Error: {msg}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except ValueError as e:
             typer.secho(f"Error: {e}", fg=typer.colors.RED)
-            raise typer.Exit(code=EXIT_CONFIG_ERROR)
+            raise typer.Exit(code=EXIT_CONFIG_ERROR) from None
 
         except Exception as e:
             from kontra.errors import format_error_for_cli
@@ -116,7 +116,7 @@ def register(app: typer.Typer) -> None:
             else:
                 typer.secho(f"Error: {msg}", fg=typer.colors.RED)
                 typer.secho("Use --verbose for full traceback.", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=EXIT_RUNTIME_ERROR)
+            raise typer.Exit(code=EXIT_RUNTIME_ERROR) from None
 
 
 def _render_table(runs: list, contract: str, verbose: bool) -> None:

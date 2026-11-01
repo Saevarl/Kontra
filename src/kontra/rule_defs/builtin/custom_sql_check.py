@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     import polars as pl
 
-from kontra.rule_defs.base import BaseRule
+from kontra.rule_defs.base import BaseRule, all_rows_failed
 from kontra.rule_defs.registry import register_rule
 from kontra.state.types import FailureMode
 
@@ -49,9 +49,9 @@ class CustomSQLCheck(BaseRule):
         if sql and "{table}" not in sql:
             import warnings
             warnings.warn(
-                f"custom_sql_check SQL should use {{table}} placeholder instead of "
-                f"hardcoded table names. Without it, remote execution (PostgreSQL/SQL Server) "
-                f"will fail. Example: SELECT * FROM {{table}} WHERE balance < 0",
+                "custom_sql_check SQL should use {table} placeholder instead of "
+                "hardcoded table names. Without it, remote execution (PostgreSQL/SQL Server) "
+                "will fail. Example: SELECT * FROM {table} WHERE balance < 0",
                 UserWarning,
                 stacklevel=4,
             )
@@ -82,7 +82,7 @@ class CustomSQLCheck(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": "Missing 'sql' parameter",
             }
 
@@ -131,14 +131,14 @@ class CustomSQLCheck(BaseRule):
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": f"SQL execution failed: {e}",
             }
         except ValueError as e:
             return {
                 "rule_id": self.rule_id,
                 "passed": False,
-                "failed_count": int(df.height),
+                "failed_count": all_rows_failed(df),
                 "message": f"Validation error: {e}",
             }
 

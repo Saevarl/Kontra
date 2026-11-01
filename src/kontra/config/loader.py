@@ -184,7 +184,7 @@ class ContractLoader:
             with fs.open(uri, mode="r") as f:
                 raw = yaml.safe_load(f)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Contract file not found on S3: {uri}")
+            raise FileNotFoundError(f"Contract file not found on S3: {uri}") from None
         except PermissionError as e:
             raise RuntimeError(f"Failed to read contract from S3 '{uri}': Permission denied") from e
         except Exception as e:

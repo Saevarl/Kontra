@@ -752,6 +752,38 @@ class TestEagerSampling:
         budget_exhausted = [r for r in sorted_rules if r.samples_reason == "budget_exhausted"]
         assert len(budget_exhausted) >= 1
 
+    def test_budget_limited_polars_rule_flags_truncation(self):
+        """A rule sampled on the Polars path (unique has no SQL filter) whose
+        share is cut by sample_budget is still flagged as truncated, matching
+        the batched SQL path."""
+        df = pl.DataFrame({"a": [1] * 10, "b": [2] * 8 + [3, 4]})
+        result = kontra.validate(
+            df,
+            rules=[rules.unique("a"), rules.unique("b")],
+            sample=3,
+            sample_budget=4,  # "a" takes 3, "b" only gets 1
+            tally=True,
+        )
+
+        by_id = {r.rule_id: r for r in result.rules}
+        b = by_id["COL:b:unique"]
+        assert len(b.samples) == 1
+        assert b.failed_count > 1
+        assert b.samples_truncated is True
+        assert b.samples_reason == "per_rule_limit"
+
+    def test_budget_limited_unique_flags_truncation_when_count_equals_cap(self):
+        """unique counts one violation for [1, 1] but both rows are samples, so a
+        budget of 1 still leaves a row out."""
+        df = pl.DataFrame({"a": [1, 1]})
+        result = kontra.validate(df, rules=[rules.unique("a")], sample=3, sample_budget=1,
+                                 tally=True)
+
+        r = result.rules[0]
+        assert r.failed_count == 1
+        assert len(r.samples) == 1
+        assert r.samples_truncated is True
+
     def test_sample_zero_disables_eager_sampling(self):
         """sample=0 disables eager sampling."""
         df = pl.DataFrame({"email": [None]})
